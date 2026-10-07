@@ -881,7 +881,27 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
     const combinedMap = new Map<string, EmailRecord>();
     for (const item of dbEmails) combinedMap.set(item.id, item);
     for (const item of localFiltered) combinedMap.set(item.id, item);
-    const list = Array.from(combinedMap.values());
+    let list = Array.from(combinedMap.values());
+
+    // Ensure final folder isolation
+    list = list.filter(e => {
+      if (folder === 'all' || folder === 'all_mail') return true;
+      if (folder === 'starred') return Boolean(e.is_starred);
+      if (folder === 'sent') return e.folder === 'sent';
+      if (folder === 'scheduled') return e.folder === 'scheduled';
+      if (folder === 'trash') return e.folder === 'trash';
+      if (folder === 'spam') return e.folder === 'spam';
+      if (folder === 'primary') {
+        return (
+          (!e.folder || e.folder === 'primary') &&
+          e.folder !== 'trash' &&
+          e.folder !== 'spam' &&
+          e.folder !== 'sent' &&
+          e.folder !== 'scheduled'
+        );
+      }
+      return (e.folder || 'primary') === folder;
+    });
 
     // Sort chronologically (newest to oldest)
     list.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
@@ -890,6 +910,30 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
     console.log(`[API /api/emails] activeEmail: ${emailAddress}, folder: ${folder}, count: ${list.length} (very old and new)`);
 
     return res.json(list);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// SYNC emails from client to server (persists across reloads/restarts)
+app.post('/api/emails/sync', (req: Request, res: Response) => {
+  try {
+    const { emails } = req.body;
+    if (Array.isArray(emails)) {
+      let added = 0;
+      for (const e of emails) {
+        if (!e.id) continue;
+        const existingIdx = localEmails.findIndex(item => item.id === e.id);
+        if (existingIdx !== -1) {
+          localEmails[existingIdx] = { ...localEmails[existingIdx], ...e };
+        } else {
+          localEmails.unshift(e);
+          added++;
+        }
+      }
+      if (added > 0) saveData();
+    }
+    return res.json({ success: true, count: localEmails.length });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

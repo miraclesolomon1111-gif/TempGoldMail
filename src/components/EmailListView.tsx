@@ -221,12 +221,16 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
           /* Empty Folder View */
           <div className="max-w-md mx-auto my-16 px-6 text-center space-y-4">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[#1e1f20] flex items-center justify-center text-[#5f6368]">
-              <Inbox className="w-8 h-8" />
+              {currentFolder === 'sent' ? <Send className="w-8 h-8" /> : <Inbox className="w-8 h-8" />}
             </div>
             <div>
               <h3 className="text-base font-medium text-white">Nothing in {getFolderTitle()}</h3>
               <p className="text-xs text-[#9aa0a6] mt-1">
-                Your messages will appear here in real time as they arrive.
+                {currentFolder === 'sent'
+                  ? 'Your sent messages are saved permanently and will appear here.'
+                  : currentFolder === 'scheduled'
+                  ? 'No scheduled messages waiting to be dispatched.'
+                  : 'Your messages will appear here in real time as they arrive.'}
               </p>
             </div>
             <div className="pt-4 flex items-center justify-center gap-3">
@@ -243,9 +247,19 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
           /* Gmail Email List (Screenshot 3 style) */
           <div className="divide-y divide-[#1e1f20]/60">
             {emails.map((msg) => {
-              const senderDisplayName = msg.sender_name || msg.sender.split('@')[0] || 'Unknown';
+              const isOutbound =
+                currentFolder === 'sent' ||
+                currentFolder === 'scheduled' ||
+                msg.folder === 'sent' ||
+                msg.folder === 'scheduled';
+              const targetRecipient = msg.recipient || msg.to_email || '';
+              const senderDisplayName = isOutbound
+                ? (targetRecipient ? `To: ${targetRecipient}` : 'To: (Recipient)')
+                : (msg.sender_name || msg.sender.split('@')[0] || 'Unknown');
               const isUnread = !msg.is_read;
-              const senderInitial = (senderDisplayName || 'S').charAt(0).toUpperCase();
+              const senderInitial = isOutbound
+                ? (targetRecipient ? targetRecipient.replace(/^to:\s*/i, '').trim().charAt(0).toUpperCase() || 'T' : 'T')
+                : (senderDisplayName || 'S').charAt(0).toUpperCase();
 
               return (
                 <div
@@ -259,7 +273,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
                   <div className="pt-0.5 flex-shrink-0">
                     <div
                       className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-medium text-sm shadow-sm ${getAvatarColor(
-                        msg.sender
+                        isOutbound ? targetRecipient : msg.sender
                       )}`}
                     >
                       {senderInitial}

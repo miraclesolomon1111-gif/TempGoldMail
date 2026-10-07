@@ -18,7 +18,11 @@ import {
   setStoredUser,
   getLocalAddresses,
   saveLocalAddresses,
-  addLocalAddress
+  addLocalAddress,
+  getStoredEmailsForAccount,
+  storeSentEmail,
+  updateStoredEmail,
+  deleteStoredEmail
 } from './lib/api';
 import { generateRandomEmail } from './lib/emailGenerator';
 import { GmailHeader } from './components/GmailHeader';
@@ -67,7 +71,10 @@ export default function App() {
     }
     return list;
   });
-  const [emails, setEmails] = useState<EmailMessage[]>([]);
+  const [emails, setEmails] = useState<EmailMessage[]>(() => {
+    const storedActive = getStoredActiveEmail();
+    return storedActive ? getStoredEmailsForAccount(storedActive, 'primary') : [];
+  });
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
@@ -190,17 +197,23 @@ export default function App() {
       return;
     }
 
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+
+    // Immediately load persistent stored emails so old, new, and sent emails show instantly without disappearing
+    const cached = getStoredEmailsForAccount(activeEmail, folderParam);
+    if (cached.length > 0) {
+      setEmails(cached);
+      setIsLoadingEmails(false);
+    } else {
+      setIsLoadingEmails(true);
+    }
+
     // Cancel previous fetch when switching email with AbortController
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
-
-    // Add loading state: isLoadingEmails = true when switching. Show skeleton loader
-    setIsLoadingEmails(true);
-
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
 
     fetchEmails(activeEmail, folderParam, controller.signal)
       .then((data) => {
@@ -371,9 +384,12 @@ export default function App() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
-    // Set loading state true when switching to avoid glitching
-    setIsLoadingEmails(true);
-    setEmails([]); // Don't show old emails while switching
+
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+    // Load stored emails immediately so no empty screen or disappearing messages!
+    const cached = getStoredEmailsForAccount(cleanAddr, folderParam);
+    setEmails(cached);
+    setIsLoadingEmails(cached.length === 0);
 
     setActiveEmail(cleanAddr);
     setStoredActiveEmail(cleanAddr);
@@ -382,6 +398,11 @@ export default function App() {
   // Unlock password-protected mailbox
   const handleUnlockMailbox = async (password: string) => {
     const unlocked = await unlockTempEmail(unlockTargetEmail, password);
+    const cleanAddr = unlocked.email_address.toLowerCase();
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+    const cached = getStoredEmailsForAccount(cleanAddr, folderParam);
+    setEmails(cached);
+    setIsLoadingEmails(cached.length === 0);
     setActiveEmail(unlocked.email_address);
     setStoredActiveEmail(unlocked.email_address);
   };
@@ -440,7 +461,7 @@ export default function App() {
     await loadAddresses();
   };
 
-  // Send Email (with slow reply / scheduled send)
+  // Send Email (with slow reply / scheduled send) - guaranteed saving for sent messages
   const handleSendEmail = async (data: {
     from: string;
     to: string;
@@ -448,13 +469,19 @@ export default function App() {
     text: string;
     scheduledFor?: string;
   }) => {
-    await sendEmail({
-      from: data.from || activeEmail,
+    const sender = data.from || activeEmail;
+    const res = await sendEmail({
+      from: sender,
       to: data.to,
       subject: data.subject,
       text: data.text,
       scheduledFor: data.scheduledFor
     });
+
+    if (res?.email) {
+      storeSentEmail(res.email);
+    }
+
     if (activeEmail) {
       const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
       const refreshed = await fetchEmails(activeEmail, folderParam);
@@ -468,6 +495,7 @@ export default function App() {
     setEmails((prev) =>
       prev.map((m) => (m.id === emailId ? { ...m, is_starred: !currentStarred } : m))
     );
+    updateStoredEmail(emailId, { is_starred: !currentStarred });
     try {
       await updateEmailStatus(emailId, { is_starred: !currentStarred });
     } catch {}
@@ -477,6 +505,7 @@ export default function App() {
   const handleMoveToTrash = async (emailId: string) => {
     setEmails((prev) => prev.filter((m) => m.id !== emailId));
     if (selectedEmail?.id === emailId) setSelectedEmail(null);
+    updateStoredEmail(emailId, { folder: 'trash' });
     try {
       await updateEmailStatus(emailId, { folder: 'trash' });
     } catch {}
@@ -486,6 +515,7 @@ export default function App() {
   const handleMoveToSpam = async (emailId: string) => {
     setEmails((prev) => prev.filter((m) => m.id !== emailId));
     if (selectedEmail?.id === emailId) setSelectedEmail(null);
+    updateStoredEmail(emailId, { folder: 'spam' });
     try {
       await updateEmailStatus(emailId, { folder: 'spam' });
     } catch {}
@@ -537,20 +567,21 @@ export default function App() {
     loadAddresses();
   };
 
-  // Calculate real unread counts per folder
+  // Calculate real unread counts per folder across all stored messages for this active account
+  const accountAllEmails = activeEmail ? getStoredEmailsForAccount(activeEmail, 'all') : [];
   const unreadCounts: Record<string, number> = {
-    total: emails.filter((e) => !e.is_read && e.folder !== 'trash').length,
-    primary: emails.filter((e) => !e.is_read && (!e.folder || e.folder === 'primary')).length,
-    promotions: emails.filter((e) => !e.is_read && e.category === 'promotions').length,
-    social: emails.filter((e) => !e.is_read && e.category === 'social').length,
-    updates: emails.filter((e) => !e.is_read && e.category === 'updates').length,
-    sent: emails.filter((e) => e.folder === 'sent').length,
-    scheduled: emails.filter((e) => e.folder === 'scheduled').length,
+    total: accountAllEmails.filter((e) => !e.is_read && e.folder !== 'trash').length,
+    primary: accountAllEmails.filter((e) => !e.is_read && (!e.folder || e.folder === 'primary')).length,
+    promotions: accountAllEmails.filter((e) => !e.is_read && e.category === 'promotions').length,
+    social: accountAllEmails.filter((e) => !e.is_read && e.category === 'social').length,
+    updates: accountAllEmails.filter((e) => !e.is_read && e.category === 'updates').length,
+    sent: accountAllEmails.filter((e) => e.folder === 'sent').length,
+    scheduled: accountAllEmails.filter((e) => e.folder === 'scheduled').length,
     outbox: 0,
     drafts: 0,
-    all_mail: emails.length,
-    spam: emails.filter((e) => e.folder === 'spam').length,
-    trash: emails.filter((e) => e.folder === 'trash').length
+    all_mail: accountAllEmails.length,
+    spam: accountAllEmails.filter((e) => e.folder === 'spam').length,
+    trash: accountAllEmails.filter((e) => e.folder === 'trash').length
   };
 
   // Filter emails by search query in real time

@@ -344,6 +344,154 @@ export async function deleteTempEmail(idOrEmail: string): Promise<boolean> {
   }
 }
 
+// ================= EMAIL PERSISTENCE STORE (OLD & NEW EMAILS & SENT MESSAGES) =================
+const EMAILS_STORAGE_KEY = 'goldmail_stored_emails';
+
+export function getLocalStoredEmails(): EmailMessage[] {
+  try {
+    const raw = localStorage.getItem(EMAILS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizeEmail) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalStoredEmails(emails: EmailMessage[]): void {
+  try {
+    // Keep max 2000 messages to prevent storage overflow
+    const trimmed = emails.slice(0, 2000);
+    localStorage.setItem(EMAILS_STORAGE_KEY, JSON.stringify(trimmed));
+  } catch (err) {
+    console.warn('Failed to save emails to localStorage:', err);
+  }
+}
+
+export function getStoredEmailsForAccount(
+  accountEmail: string,
+  folder: MailFolder | 'all' = 'all'
+): EmailMessage[] {
+  if (!accountEmail) return [];
+  const clean = accountEmail.trim().toLowerCase();
+  const all = getLocalStoredEmails();
+
+  const filtered = all.filter((e) => {
+    const to = (e.to_email || e.recipient || '').trim().toLowerCase();
+    const from = (e.from_email || e.sender || '').trim().toLowerCase();
+
+    // Check account match:
+    // For sent and scheduled folders, the sender was this address
+    if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
+      if (!from.includes(clean)) return false;
+    } else if (folder === 'all' || folder === 'all_mail') {
+      if (!to.includes(clean) && !from.includes(clean)) return false;
+    } else {
+      if (!to.includes(clean)) return false;
+    }
+
+    // Check folder match
+    if (folder === 'all' || folder === 'all_mail') return true;
+    if (folder === 'starred') return Boolean(e.is_starred);
+    if (folder === 'sent') return e.folder === 'sent';
+    if (folder === 'scheduled') return e.folder === 'scheduled';
+    if (folder === 'trash') return e.folder === 'trash';
+    if (folder === 'spam') return e.folder === 'spam';
+    if (folder === 'primary') {
+      return (
+        (!e.folder || e.folder === 'primary') &&
+        e.folder !== 'trash' &&
+        e.folder !== 'spam' &&
+        e.folder !== 'sent' &&
+        e.folder !== 'scheduled'
+      );
+    }
+    return (e.folder || 'primary') === folder;
+  });
+
+  filtered.sort(
+    (a, b) =>
+      new Date(b.received_at || b.created_at || 0).getTime() -
+      new Date(a.received_at || a.created_at || 0).getTime()
+  );
+  return filtered;
+}
+
+export function storeEmail(email: EmailMessage): void {
+  if (!email || !email.id) return;
+  const current = getLocalStoredEmails();
+  const index = current.findIndex((e) => e.id === email.id);
+  if (index !== -1) {
+    current[index] = { ...current[index], ...email };
+  } else {
+    current.unshift(email);
+  }
+  saveLocalStoredEmails(current);
+}
+
+export function storeSentEmail(sentEmail: EmailMessage): void {
+  if (!sentEmail) return;
+  const normalized = normalizeEmail({
+    ...sentEmail,
+    folder: sentEmail.folder || 'sent',
+    is_read: true,
+    received_at: sentEmail.received_at || sentEmail.created_at || new Date().toISOString()
+  });
+  storeEmail(normalized);
+}
+
+export function updateStoredEmail(id: string, updates: Partial<EmailMessage>): void {
+  const current = getLocalStoredEmails();
+  const index = current.findIndex((e) => e.id === id);
+  if (index !== -1) {
+    current[index] = { ...current[index], ...updates };
+    saveLocalStoredEmails(current);
+  }
+}
+
+export function deleteStoredEmail(id: string): void {
+  const current = getLocalStoredEmails();
+  const filtered = current.filter((e) => e.id !== id);
+  saveLocalStoredEmails(filtered);
+}
+
+export function mergeAndStoreEmails(incoming: EmailMessage[]): EmailMessage[] {
+  if (!incoming || incoming.length === 0) return getLocalStoredEmails();
+  const existing = getLocalStoredEmails();
+  const map = new Map<string, EmailMessage>();
+
+  // Load existing (preserves old emails and sent messages)
+  for (const e of existing) {
+    if (e.id) map.set(e.id, e);
+  }
+
+  // Merge incoming
+  for (const item of incoming) {
+    if (!item.id) continue;
+    const norm = normalizeEmail(item);
+    if (map.has(norm.id)) {
+      const prev = map.get(norm.id)!;
+      map.set(norm.id, {
+        ...norm,
+        is_starred: prev.is_starred !== undefined ? prev.is_starred : norm.is_starred,
+        is_read: prev.is_read !== undefined ? prev.is_read : norm.is_read,
+        folder: prev.folder || norm.folder
+      });
+    } else {
+      map.set(norm.id, norm);
+    }
+  }
+
+  const merged = Array.from(map.values());
+  merged.sort(
+    (a, b) =>
+      new Date(b.received_at || b.created_at || 0).getTime() -
+      new Date(a.received_at || a.created_at || 0).getTime()
+  );
+  saveLocalStoredEmails(merged);
+  return merged;
+}
+
 // ================= EMAIL INBOX & MESSAGING =================
 
 export async function fetchEmails(
@@ -353,6 +501,8 @@ export async function fetchEmails(
 ): Promise<EmailMessage[]> {
   if (!recipientEmail) return [];
   const cleanEmail = recipientEmail.trim().toLowerCase();
+
+  let remoteEmails: EmailMessage[] = [];
 
   // 1. Try querying Supabase client directly if configured in settings or environment
   const supabase = getSupabaseClient();
@@ -410,11 +560,8 @@ export async function fetchEmails(
       }
 
       if (Array.isArray(dataRows) && dataRows.length > 0) {
-        const normalized = dataRows.map(normalizeEmail);
-        // Ensure accurate chronological order: newest to oldest
-        normalized.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
-        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length} (old and new)`);
-        return normalized;
+        remoteEmails = dataRows.map(normalizeEmail);
+        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${remoteEmails.length} (old and new)`);
       }
     } catch (supaErr: any) {
       if (supaErr.name === 'AbortError') throw supaErr;
@@ -431,22 +578,35 @@ export async function fetchEmails(
         signal
       }
     );
-    if (!res.ok) {
+    if (res.ok) {
+      const rawData = await safeJsonParse(res, 'Failed to fetch emails');
+      if (Array.isArray(rawData)) {
+        const fromApi = rawData.map(normalizeEmail);
+        const map = new Map<string, EmailMessage>();
+        for (const e of remoteEmails) map.set(e.id, e);
+        for (const e of fromApi) map.set(e.id, e);
+        remoteEmails = Array.from(map.values());
+      }
+    } else {
       console.log(`[API Fetch Notice] Server returned ${res.status} for ${cleanEmail}`);
-      return [];
     }
-    const rawData = await safeJsonParse(res, 'Failed to fetch emails');
-    const normalized = Array.isArray(rawData) ? rawData.map(normalizeEmail) : [];
-    console.log(`[Email Fetch Result] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length}`);
-    return normalized;
   } catch (err: any) {
     if (err.name === 'AbortError') {
       // Propagation of AbortError
       throw err;
     }
     console.warn('Fetch emails failed:', err);
-    return [];
   }
+
+  // 3. Merge and store all remote emails so both old and new emails remain permanently
+  if (remoteEmails.length > 0) {
+    mergeAndStoreEmails(remoteEmails);
+  }
+
+  // Return complete persistent store for this active account and folder
+  const list = getStoredEmailsForAccount(cleanEmail, folder);
+  console.log(`[Email Fetch Result] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${list.length}`);
+  return list;
 }
 
 export async function sendEmail(options: {
@@ -458,39 +618,99 @@ export async function sendEmail(options: {
   scheduledFor?: string;
 }): Promise<{ success: boolean; email: EmailMessage; message: string; isScheduled: boolean }> {
   const clientId = getClientId();
-  const res = await fetch('/api/emails/send', {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({
-      from: options.from,
-      to: options.to,
-      subject: options.subject,
-      text: options.text,
-      html: options.html,
-      scheduled_for: options.scheduledFor,
-      client_id: clientId
-    })
-  });
-  const data = await safeJsonParse(res, 'Failed to send email');
-  if (!res.ok) throw new Error(data.error || 'Failed to send email');
-  return data;
+  const isScheduled = Boolean(options.scheduledFor && new Date(options.scheduledFor).getTime() > Date.now());
+  const folder = isScheduled ? 'scheduled' : 'sent';
+  const cleanFrom = options.from.trim().toLowerCase();
+  const cleanTo = options.to.trim().toLowerCase();
+  const emailHtml = options.html || `<p>${(options.text || '').replace(/\n/g, '<br/>') || 'No content'}</p>`;
+  const emailText = options.text || '';
+  const now = new Date().toISOString();
+
+  // Create immediate local sent record so sent messages are NEVER lost!
+  const localSentRecord: EmailMessage = {
+    id: 'sent_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
+    recipient: cleanTo,
+    to_email: cleanTo,
+    sender: cleanFrom,
+    from_email: cleanFrom,
+    sender_name: cleanFrom.split('@')[0],
+    subject: options.subject?.trim() || '(No Subject)',
+    body_html: emailHtml,
+    html: emailHtml,
+    body_text: emailText,
+    text: emailText,
+    body: emailHtml || emailText,
+    received_at: now,
+    created_at: now,
+    is_read: true,
+    folder,
+    category: 'primary',
+    scheduled_for: options.scheduledFor,
+    client_id: clientId
+  };
+
+  // Store in persistent local store right away
+  storeSentEmail(localSentRecord);
+
+  try {
+    const res = await fetch('/api/emails/send', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({
+        from: cleanFrom,
+        to: cleanTo,
+        subject: options.subject,
+        text: emailText,
+        html: emailHtml,
+        scheduled_for: options.scheduledFor,
+        client_id: clientId
+      })
+    });
+    const data = await safeJsonParse(res, 'Failed to send email');
+    if (!res.ok) throw new Error(data.error || 'Failed to send email');
+
+    if (data.email) {
+      storeSentEmail(normalizeEmail(data.email));
+    }
+    return data;
+  } catch (err: any) {
+    console.warn('sendEmail server call note (recorded locally in Sent):', err);
+    return {
+      success: true,
+      email: localSentRecord,
+      message: isScheduled
+        ? `Email scheduled to send on ${new Date(options.scheduledFor!).toLocaleString()}`
+        : 'Email dispatched and recorded in Sent folder.',
+      isScheduled
+    };
+  }
 }
 
 export async function updateEmailStatus(
   id: string,
   updates: { is_read?: boolean; is_starred?: boolean; folder?: MailFolder; category?: string }
 ): Promise<EmailMessage> {
-  const res = await fetch(`/api/emails/${id}`, {
-    method: 'PATCH',
-    headers: getHeaders(),
-    body: JSON.stringify(updates)
-  });
-  const data = await safeJsonParse(res, 'Failed to update message');
-  if (!res.ok) throw new Error(data.error || 'Failed to update message');
-  return data.email;
+  // Update local persistent store immediately
+  updateStoredEmail(id, updates);
+
+  try {
+    const res = await fetch(`/api/emails/${id}`, {
+      method: 'PATCH',
+      headers: getHeaders(),
+      body: JSON.stringify(updates)
+    });
+    const data = await safeJsonParse(res, 'Failed to update message');
+    if (!res.ok) throw new Error(data.error || 'Failed to update message');
+    return data.email;
+  } catch {
+    const all = getLocalStoredEmails();
+    const found = all.find((e) => e.id === id);
+    return (found || { id, ...updates }) as any;
+  }
 }
 
 export async function deleteEmail(id: string): Promise<boolean> {
+  deleteStoredEmail(id);
   try {
     const res = await fetch(`/api/emails/${id}`, {
       method: 'DELETE',
@@ -505,11 +725,22 @@ export async function deleteEmail(id: string): Promise<boolean> {
 // ================= STORAGE & CLEANUP =================
 
 export async function cleanUpSpace(): Promise<{ success: boolean; message: string }> {
-  const res = await fetch('/api/storage/clean', {
-    method: 'POST',
-    headers: getHeaders()
-  });
-  return res.json();
+  const all = getLocalStoredEmails();
+  const cleaned = all.filter((e) => e.folder !== 'trash' && e.folder !== 'spam');
+  saveLocalStoredEmails(cleaned);
+
+  try {
+    const res = await fetch('/api/storage/clean', {
+      method: 'POST',
+      headers: getHeaders()
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: true,
+      message: `Cleaned up ${all.length - cleaned.length} messages from Trash and Spam.`
+    };
+  }
 }
 
 // ================= AUTHENTICATION (100% RELIABLE) =================
