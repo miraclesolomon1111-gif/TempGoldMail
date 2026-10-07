@@ -8,6 +8,8 @@ import bcrypt from 'bcryptjs';
 import * as OTPAuth from 'otpauth';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
+import multer from 'multer';
+import { simpleParser } from 'mailparser';
 import { fetchEmailsFromImap, extractCleanAddress } from './imapService.js';
 
 // Server-Sent Events (SSE) for Real-Time email receiving
@@ -28,6 +30,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Multer for multipart/form-data inbound email webhooks (SendGrid, Mailgun, Postmark, AWS SES, etc.)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
 
 // Express middleware
 app.use(express.json({ limit: '25mb' }));
@@ -125,6 +133,7 @@ export interface StoredGoldUser {
   storage_used_bytes: number;
   storage_limit_bytes: number;
   avatar_url?: string;
+  imap_config?: any;
 }
 
 export interface StoredEmail {
@@ -341,27 +350,61 @@ const seedAccounts = () => {
   }
 };
 
-// Load persistent data
-try {
-  if (fs.existsSync(DATA_FILE)) {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    goldUsers = parsed.goldUsers || [];
-    goldEmails = parsed.goldEmails || [];
-    goldDrafts = parsed.goldDrafts || [];
-    userDevices = parsed.userDevices || [];
-    loginAttempts = parsed.loginAttempts || [];
-    oauthClients = parsed.oauthClients || [];
-    oauthCodes = parsed.oauthCodes || [];
-    oauthTokens = parsed.oauthTokens || [];
-    if (parsed.blockedIps) {
-      blockedIps = new Set(parsed.blockedIps);
-    }
-  }
-} catch (e) {
-  console.warn('Notice: initialized memory store');
-}
+let lastDataFileMtime = 0;
 
+// Load persistent data safely and support hot reloading if external process updates DATA_FILE
+export const ensureDataLoaded = () => {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const stat = fs.statSync(DATA_FILE);
+      if (stat.mtimeMs > lastDataFileMtime) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.goldUsers)) {
+          for (const u of parsed.goldUsers) {
+            const existing = goldUsers.find(gu => gu.id === u.id || gu.email.toLowerCase() === u.email.toLowerCase());
+            if (!existing) {
+              goldUsers.push(u);
+            }
+          }
+        }
+        if (Array.isArray(parsed.goldEmails)) {
+          for (const em of parsed.goldEmails) {
+            const existing = goldEmails.find(ge => ge.id === em.id);
+            if (!existing) {
+              goldEmails.push(em);
+            }
+          }
+        }
+        if (Array.isArray(parsed.goldDrafts)) {
+          for (const d of parsed.goldDrafts) {
+            if (!goldDrafts.some(gd => gd.id === d.id)) {
+              goldDrafts.push(d);
+            }
+          }
+        }
+        if (Array.isArray(parsed.userDevices)) {
+          userDevices = parsed.userDevices;
+        }
+        if (Array.isArray(parsed.oauthClients)) {
+          for (const c of parsed.oauthClients) {
+            if (!oauthClients.some(oc => oc.client_id === c.client_id)) {
+              oauthClients.push(c);
+            }
+          }
+        }
+        if (Array.isArray(parsed.blockedIps)) {
+          blockedIps = new Set(parsed.blockedIps);
+        }
+        lastDataFileMtime = stat.mtimeMs;
+      }
+    }
+  } catch (e) {
+    console.warn('Notice: data sync check note', e);
+  }
+};
+
+ensureDataLoaded();
 seedAccounts();
 
 const saveData = () => {
@@ -388,6 +431,9 @@ const saveData = () => {
         2
       )
     );
+    try {
+      lastDataFileMtime = fs.statSync(DATA_FILE).mtimeMs;
+    } catch {}
   } catch (e) {
     console.warn('Save data warning:', e);
   }
@@ -744,6 +790,7 @@ app.get('/api/auth/default-session', (_req: Request, res: Response) => {
 // 1. GET emails for user or recipient
 app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
   try {
+    ensureDataLoaded();
     const rawTarget = req.params.emailAddress || '';
     const cleanTarget = rawTarget.toLowerCase().trim();
     const folder = ((req.query.folder as string) || 'all').toLowerCase().trim();
@@ -801,6 +848,7 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
     });
 
     matches.sort((a, b) => new Date(b.received_at || b.created_at).getTime() - new Date(a.received_at || a.created_at).getTime());
+    console.log(`[EMAILS] Retrieved ${matches.length} emails for target "${cleanTarget}" (folder="${folder}")`);
     return res.json(matches);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -826,13 +874,30 @@ app.get('/api/emails/stream', (req: Request, res: Response) => {
 // 3. Comprehensive Email Sync (IMAP + Resend + Historical & Live)
 app.post('/api/emails/sync', async (req: Request, res: Response) => {
   try {
+    ensureDataLoaded();
     const { email } = req.body;
     const cleanTarget = (email || 'miracle@goldmailer.xyz').toLowerCase().trim();
     let newItemsCount = 0;
 
-    // A. Fetch via IMAP if configured (IMAP_HOST, IMAP_USER, IMAP_PASS)
+    console.log(`[SYNC] Starting email sync for: ${cleanTarget}`);
+
+    // A. Fetch via IMAP if configured (IMAP_HOST, IMAP_USER, IMAP_PASS or custom user IMAP)
     try {
-      const imapMessages = await fetchEmailsFromImap(cleanTarget);
+      const authHeader = req.headers.authorization;
+      let userImapConfig: any = undefined;
+      if (authHeader) {
+        const token = authHeader.replace(/^Bearer\s+/i, '');
+        const decoded = verifyToken(token);
+        if (decoded) {
+          const authUser = goldUsers.find(u => u.id === decoded.id || u.email.toLowerCase() === decoded.email?.toLowerCase());
+          if (authUser?.imap_config) {
+            userImapConfig = authUser.imap_config;
+          }
+        }
+      }
+
+      const imapMessages = await fetchEmailsFromImap(cleanTarget, userImapConfig);
+      console.log(`[SYNC] IMAP returned ${imapMessages.length} messages for ${cleanTarget}`);
       for (const im of imapMessages) {
         const already = goldEmails.some(e => e.id === im.id || (im.messageId && e.raw?.messageId === im.messageId));
         if (!already) {
@@ -841,8 +906,8 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
           broadcastNewEmail(im);
         }
       }
-    } catch (imapErr) {
-      console.warn('IMAP sync note:', imapErr);
+    } catch (imapErr: any) {
+      console.warn('[SYNC] IMAP sync note:', imapErr?.message || imapErr);
     }
 
     // B. Fetch via Resend receiving API if configured
@@ -851,54 +916,83 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
         const client = resendClient || new Resend(resendApiKey);
         if (client.emails && (client.emails as any).receiving && typeof (client.emails as any).receiving.list === 'function') {
           const recRes = await (client.emails as any).receiving.list({ limit: 100 });
-          if (recRes && Array.isArray(recRes.data)) {
-            for (const item of recRes.data) {
-              const itemTo = extractCleanAddress(item.to);
-              if (!cleanTarget || itemTo.includes(cleanTarget) || cleanTarget.includes(itemTo)) {
-                const already = goldEmails.some(e => e.id === String(item.id) || e.id === `msg_${item.id}`);
-                if (!already) {
-                  let fullItem = item;
-                  try {
-                    const fullRes = await (client.emails as any).receiving.get(item.id);
-                    if (fullRes && fullRes.data) fullItem = fullRes.data;
-                  } catch {}
+          // Extract items correctly whether recRes.data is an array or an object with data property
+          const rawItems: any[] = Array.isArray(recRes?.data)
+            ? recRes.data
+            : (Array.isArray(recRes?.data?.data) ? recRes.data.data : []);
 
-                  const html = fullItem.html || fullItem.body_html || '';
-                  const text = fullItem.text || fullItem.body_text || '';
-                  const finalHtml = html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`;
+          console.log(`[SYNC] Resend receiving list returned ${rawItems.length} items`);
 
-                  const syncedEmail: StoredEmail = {
-                    id: String(item.id),
-                    recipient: itemTo || cleanTarget,
-                    to_email: itemTo || cleanTarget,
-                    to: itemTo || cleanTarget,
-                    sender: extractCleanAddress(fullItem.from),
-                    from_email: extractCleanAddress(fullItem.from),
-                    from: extractCleanAddress(fullItem.from),
-                    sender_name: extractCleanAddress(fullItem.from).split('@')[0],
-                    subject: fullItem.subject || '(No Subject)',
-                    body_html: finalHtml,
-                    body_text: text || '',
-                    html: finalHtml,
-                    text: text || '',
-                    body: finalHtml || text,
-                    received_at: fullItem.created_at || new Date().toISOString(),
-                    created_at: fullItem.created_at || new Date().toISOString(),
-                    is_read: false,
-                    is_starred: false,
-                    folder: 'primary',
-                    category: 'primary'
-                  };
-                  goldEmails.unshift(syncedEmail);
-                  newItemsCount++;
-                  broadcastNewEmail(syncedEmail);
+          for (const item of rawItems) {
+            const itemTo = extractCleanAddress(item.to);
+            if (!cleanTarget || itemTo.includes(cleanTarget) || cleanTarget.includes(itemTo) || itemTo.endsWith('@goldmailer.xyz')) {
+              const already = goldEmails.some(e => e.id === String(item.id) || e.id === `msg_${item.id}`);
+              if (!already) {
+                let fullItem = item;
+                let html = item.html || item.body_html || '';
+                let text = item.text || item.body_text || '';
+
+                try {
+                  const fullRes = await (client.emails as any).receiving.get(item.id);
+                  const detail = fullRes?.data?.data || fullRes?.data || fullRes;
+                  if (detail) {
+                    fullItem = detail;
+                    html = detail.html || detail.body_html || html;
+                    text = detail.text || detail.body_text || text;
+                  }
+                } catch (getErr) {
+                  console.warn(`[SYNC] Resend get error for ${item.id}:`, getErr);
                 }
+
+                // If html or text is missing, check if raw download_url can be parsed
+                if ((!html || !text) && fullItem.raw?.download_url) {
+                  try {
+                    const rawDownload = await (client.emails as any).receiving.downloadRaw(fullItem.raw.download_url);
+                    if (rawDownload && rawDownload.content) {
+                      const parsed = await simpleParser(rawDownload.content);
+                      html = parsed.html || html;
+                      text = parsed.text || text;
+                    }
+                  } catch (rawErr) {
+                    console.warn(`[SYNC] Resend downloadRaw error for ${item.id}:`, rawErr);
+                  }
+                }
+
+                const finalHtml = html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`;
+                const senderAddr = extractCleanAddress(fullItem.from);
+
+                const syncedEmail: StoredEmail = {
+                  id: String(item.id),
+                  recipient: itemTo || cleanTarget,
+                  to_email: itemTo || cleanTarget,
+                  to: itemTo || cleanTarget,
+                  sender: senderAddr,
+                  from_email: senderAddr,
+                  from: senderAddr,
+                  sender_name: senderAddr.split('@')[0],
+                  subject: fullItem.subject || '(No Subject)',
+                  body_html: finalHtml,
+                  body_text: text || '',
+                  html: finalHtml,
+                  text: text || '',
+                  body: finalHtml || text,
+                  received_at: fullItem.created_at || new Date().toISOString(),
+                  created_at: fullItem.created_at || new Date().toISOString(),
+                  is_read: false,
+                  is_starred: false,
+                  folder: 'primary',
+                  category: 'primary'
+                };
+                goldEmails.unshift(syncedEmail);
+                newItemsCount++;
+                broadcastNewEmail(syncedEmail);
+                console.log(`[SYNC] Ingested received email ${syncedEmail.id} for ${syncedEmail.recipient}`);
               }
             }
           }
         }
-      } catch (e) {
-        console.warn('Resend receiving sync note:', e);
+      } catch (e: any) {
+        console.warn('[SYNC] Resend receiving sync note:', e?.message || e);
       }
     }
 
@@ -906,6 +1000,7 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
       saveData();
     }
 
+    console.log(`[SYNC] Completed sync for ${cleanTarget}: ${newItemsCount} new, ${goldEmails.length} total`);
     return res.json({
       success: true,
       new_emails_synced: newItemsCount,
@@ -913,6 +1008,7 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
       synced_at: new Date().toISOString()
     });
   } catch (err: any) {
+    console.error('[SYNC] Error during email sync:', err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -1059,6 +1155,7 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
 // 5. Simulate Inbound Email (QA & Testing helper for real-time inbound mail verification)
 app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
   try {
+    ensureDataLoaded();
     const { to, from, sender_name, subject, body_html, body_text } = req.body;
     const recipient = (to || 'miracle@goldmailer.xyz').toLowerCase().trim();
     const sender = from || 'security@google.com';
@@ -1099,9 +1196,11 @@ app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
     goldEmails.unshift(incoming);
     saveData();
     broadcastNewEmail(incoming);
+    console.log(`[SIMULATE-INBOUND] Generated incoming test email ${incoming.id} for ${incoming.recipient} from ${incoming.from}: "${incoming.subject}"`);
 
     return res.json({ success: true, email: incoming });
   } catch (err: any) {
+    console.error('[SIMULATE-INBOUND] Error generating test email:', err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -1141,70 +1240,141 @@ app.delete('/api/emails/:id', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 6. Inbound Webhook (Cloudflare Email Routing, Resend, SendGrid, Mailgun, or external forwarders)
-app.post(['/api/inbound', '/api/receive-email', '/api/emails/inbound', '/api/emails/receive', '/api/webhook', '/api/webhooks/resend', '/api/inbound-webhook'], async (req: Request, res: Response) => {
-  try {
-    const body = req.body || {};
-    const data = body.data || body;
-    let to = extractCleanEmail(data.to || data.recipient || data.to_email || body.to || body.recipient || body.to_email || body['to'] || '');
-    let from = extractCleanSender(data.from || data.sender || data.from_email || body.from || body.sender || body.from_email || 'external@sender.com');
-    let subject = String(data.subject || body.subject || '(No Subject)');
-    let html = String(data.html || data.body_html || data['body-html'] || body.html || body.body_html || body['body-html'] || '');
-    let text = String(data.text || data.body_text || data['body-plain'] || body.text || body.body_text || body['body-plain'] || '');
+// 6. Inbound Webhook (Cloudflare Email Routing, Resend, SendGrid, Mailgun, Postmark, AWS SES, or external forwarders)
+app.post(
+  [
+    '/api/inbound',
+    '/api/receive-email',
+    '/api/emails/inbound',
+    '/api/emails/receive',
+    '/api/webhook',
+    '/api/webhooks/resend',
+    '/api/inbound-webhook'
+  ],
+  upload.any(),
+  async (req: Request, res: Response) => {
+    try {
+      ensureDataLoaded();
+      const body = req.body || {};
+      const data = body.data || body;
+      console.log('[INBOUND WEBHOOK] Received webhook request. Path:', req.path, 'Content-Type:', req.headers['content-type']);
 
-    // Resend inbound webhook resolution if payload only has email_id
-    const emailId = body.email_id || body.data?.email_id || body.id || data.id;
-    if (emailId && (!html || !text) && resendApiKey) {
-      try {
-        const client = resendClient || new Resend(resendApiKey);
-        const fullRes = await (client.emails as any).receiving.get(emailId);
-        if (fullRes && fullRes.data) {
-          const item = fullRes.data;
-          to = extractCleanEmail(item.to || to);
-          from = extractCleanSender(item.from || from);
-          subject = item.subject || subject;
-          html = item.html || item.body_html || html;
-          text = item.text || item.body_text || text;
+      let to = extractCleanEmail(
+        data.to || data.recipient || data.to_email || data.envelope?.to ||
+        body.to || body.recipient || body.to_email || body.envelope?.to || body['to'] ||
+        req.headers['x-forwarded-to'] || req.headers['delivered-to'] || ''
+      );
+      let from = extractCleanSender(
+        data.from || data.sender || data.from_email || data.envelope?.from ||
+        body.from || body.sender || body.from_email || body.envelope?.from ||
+        'external@sender.com'
+      );
+      let subject = String(data.subject || body.subject || '(No Subject)');
+      let html = String(data.html || data.body_html || data['body-html'] || body.html || body.body_html || body['body-html'] || '');
+      let text = String(data.text || data.body_text || data['body-plain'] || body.text || body.body_text || body['body-plain'] || '');
+
+      // Parse raw MIME RFC 822 files uploaded via multipart
+      if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+        for (const file of req.files as Express.Multer.File[]) {
+          if (file.buffer && (file.mimetype?.includes('message/rfc822') || file.originalname?.endsWith('.eml') || file.fieldname === 'email' || file.fieldname === 'message')) {
+            try {
+              const parsed = await simpleParser(file.buffer);
+              if (!to) to = extractCleanEmail(parsed.to);
+              if (!from || from === 'external@sender.com') from = extractCleanSender(parsed.from);
+              if (!subject || subject === '(No Subject)') subject = parsed.subject || subject;
+              if (!html) html = parsed.html || '';
+              if (!text) text = parsed.text || '';
+            } catch (e) {
+              console.warn('[INBOUND WEBHOOK] Multer file parse note:', e);
+            }
+          }
         }
-      } catch (err) {
-        console.warn('Resend webhook detail retrieval note:', err);
       }
+
+      // Parse raw MIME RFC 822 string if payload provides raw content
+      const rawContent = data.raw || body.raw || data.email || body.email || data.message || body.message;
+      if (rawContent && typeof rawContent === 'string' && (!html || !text)) {
+        try {
+          const parsed = await simpleParser(rawContent);
+          if (!to) to = extractCleanEmail(parsed.to);
+          if (!from || from === 'external@sender.com') from = extractCleanSender(parsed.from);
+          if (!subject || subject === '(No Subject)') subject = parsed.subject || subject;
+          if (!html) html = parsed.html || '';
+          if (!text) text = parsed.text || '';
+        } catch (parseErr) {
+          console.warn('[INBOUND WEBHOOK] Raw body parse note:', parseErr);
+        }
+      }
+
+      // Resend inbound webhook resolution if payload contains email_id
+      const emailId = body.email_id || body.data?.email_id || body.id || data.id || data.email_id;
+      if (emailId && (!html || !text) && resendApiKey) {
+        try {
+          const client = resendClient || new Resend(resendApiKey);
+          const fullRes = await (client.emails as any).receiving.get(emailId);
+          const item = fullRes?.data?.data || fullRes?.data || fullRes;
+          if (item) {
+            if (!to) to = extractCleanEmail(item.to || to);
+            if (!from || from === 'external@sender.com') from = extractCleanSender(item.from || from);
+            if (!subject || subject === '(No Subject)') subject = item.subject || subject;
+            html = item.html || item.body_html || html;
+            text = item.text || item.body_text || text;
+
+            if ((!html || !text) && item.raw?.download_url) {
+              try {
+                const rawDownload = await (client.emails as any).receiving.downloadRaw(item.raw.download_url);
+                if (rawDownload && rawDownload.content) {
+                  const parsed = await simpleParser(rawDownload.content);
+                  html = parsed.html || html;
+                  text = parsed.text || text;
+                }
+              } catch (rawErr) {
+                console.warn('[INBOUND WEBHOOK] Resend raw download note:', rawErr);
+              }
+            }
+          }
+        } catch (err: any) {
+          console.warn('[INBOUND WEBHOOK] Resend detail retrieval note:', err?.message || err);
+        }
+      }
+
+      const finalRecipient = to || 'miracle@goldmailer.xyz';
+      const nowIso = new Date().toISOString();
+
+      const newEmail: StoredEmail = {
+        id: 'msg_inbound_' + crypto.randomBytes(8).toString('hex'),
+        recipient: finalRecipient,
+        to_email: finalRecipient,
+        to: finalRecipient,
+        sender: from,
+        from_email: from,
+        from,
+        sender_name: from.split('@')[0],
+        subject,
+        body_html: html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`,
+        body_text: text || (html ? html.replace(/<[^>]+>/g, ' ').trim() : ''),
+        html: html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`,
+        text: text || '',
+        body: html || text,
+        received_at: nowIso,
+        created_at: nowIso,
+        is_read: false,
+        is_starred: false,
+        folder: 'primary',
+        category: 'primary'
+      };
+
+      goldEmails.unshift(newEmail);
+      saveData();
+      broadcastNewEmail(newEmail);
+      console.log(`[INBOUND WEBHOOK] Successfully stored email ${newEmail.id} for ${newEmail.recipient} from ${newEmail.from}: "${newEmail.subject}"`);
+      return res.json({ success: true, id: newEmail.id, recipient: newEmail.recipient });
+    } catch (err: any) {
+      console.error('[INBOUND WEBHOOK] Fatal error:', err);
+      return res.status(500).json({ error: err.message });
     }
-
-    const finalRecipient = to || 'miracle@goldmailer.xyz';
-    const nowIso = new Date().toISOString();
-
-    const newEmail: StoredEmail = {
-      id: 'msg_inbound_' + crypto.randomBytes(8).toString('hex'),
-      recipient: finalRecipient,
-      to_email: finalRecipient,
-      to: finalRecipient,
-      sender: from,
-      from_email: from,
-      from,
-      sender_name: from.split('@')[0],
-      subject,
-      body_html: html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`,
-      body_text: text || html.replace(/<[^>]+>/g, ' ').trim(),
-      html: html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`,
-      text: text || '',
-      body: html || text,
-      received_at: nowIso,
-      created_at: nowIso,
-      is_read: false,
-      is_starred: false,
-      folder: 'primary',
-      category: 'primary'
-    };
-
-    goldEmails.unshift(newEmail);
-    saveData();
-    broadcastNewEmail(newEmail);
-    return res.json({ success: true, id: newEmail.id });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
   }
-});
+);
 
 // ================= DRAFTS AUTO-SAVE =================
 

@@ -13,6 +13,7 @@ import {
   switchActiveAccount,
   fetchEmails,
   syncEmails,
+  simulateInboundEmail,
   fetchDrafts,
   deleteDraft,
   updateEmailStatus,
@@ -247,6 +248,27 @@ export default function App() {
       await loadMailData(activeEmail, false);
     } catch (e: any) {
       console.warn('Sync note:', e);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Test Inbound Receive helper: immediately adds to state + cache + backend
+  const handleTestInbound = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await simulateInboundEmail({ to: activeEmail });
+      console.log('[CLIENT] Inbound test mail received:', res);
+      if (res?.email) {
+        setAllEmails((prev) => {
+          const updated = [res.email, ...prev.filter((e) => e.id !== res.email.id)];
+          setCachedEmails(activeEmail, updated);
+          return updated;
+        });
+      }
+      await loadMailData(activeEmail, true);
+    } catch (e: any) {
+      console.warn('Test inbound error:', e);
     } finally {
       setIsSyncing(false);
     }
@@ -588,6 +610,7 @@ export default function App() {
               isLoading={isLoadingEmails}
               isRefreshing={isSyncing}
               onRefresh={handleSyncEmails}
+              onTestInbound={handleTestInbound}
               onSelectEmail={(m) => setSelectedEmail(m)}
               onSelectDraft={handleSelectDraft}
               onDeleteDraft={handleDeleteDraft}

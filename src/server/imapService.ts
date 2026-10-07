@@ -77,6 +77,8 @@ export async function fetchEmailsFromImap(
     return [];
   }
 
+  console.log(`[IMAP] Connecting to ${host}:${port} as ${user}...`);
+
   const client = new ImapFlow({
     host,
     port,
@@ -98,6 +100,7 @@ export async function fetchEmailsFromImap(
     try {
       const status = await client.status('INBOX', { messages: true, unseen: true });
       const totalMessages = status && typeof status === 'object' && 'messages' in status ? (status.messages || 0) : 0;
+      console.log(`[IMAP] Successfully locked INBOX. Total messages available: ${totalMessages}`);
       if (totalMessages === 0) {
         return [];
       }

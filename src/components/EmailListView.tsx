@@ -27,6 +27,7 @@ interface EmailListViewProps {
   isLoading: boolean;
   isRefreshing: boolean;
   onRefresh: () => void;
+  onTestInbound?: () => void;
   onSelectEmail: (email: EmailMessage) => void;
   onSelectDraft: (draft: Draft) => void;
   onDeleteDraft: (draftId: string, e: React.MouseEvent) => void;
@@ -45,6 +46,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   isLoading,
   isRefreshing,
   onRefresh,
+  onTestInbound,
   onSelectEmail,
   onSelectDraft,
   onDeleteDraft,
@@ -98,8 +100,12 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   const handleTestInbound = async () => {
     setIsSimulating(true);
     try {
-      await simulateInboundEmail({ to: activeEmail });
-      onRefresh();
+      if (onTestInbound) {
+        await onTestInbound();
+      } else {
+        await simulateInboundEmail({ to: activeEmail });
+        onRefresh();
+      }
     } finally {
       setIsSimulating(false);
     }
@@ -124,7 +130,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
             onClick={handleTestInbound}
             disabled={isSimulating}
             title="Receive a live test email directly into this inbox"
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-semibold text-emerald-400 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-semibold text-emerald-400 transition-colors disabled:opacity-50"
           >
             <Mail className="w-3 h-3" />
             <span>{isSimulating ? 'Receiving...' : 'Receive Test Mail'}</span>

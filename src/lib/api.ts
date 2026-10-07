@@ -588,7 +588,18 @@ export async function fetchEmails(emailAddress: string, folder: string = 'all'):
     if (Array.isArray(list)) {
       const normalized = list.map(normalizeEmail);
       if (folder === 'all' || folder === 'all_mail' || folder === 'all_inboxes') {
-        setCachedEmails(emailAddress, normalized);
+        const existingCached = getCachedEmails(emailAddress);
+        const mergedMap = new Map<string, EmailMessage>();
+        for (const em of existingCached) {
+          mergedMap.set(em.id, em);
+        }
+        for (const em of normalized) {
+          mergedMap.set(em.id, em);
+        }
+        const merged = Array.from(mergedMap.values());
+        merged.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
+        setCachedEmails(emailAddress, merged);
+        return merged;
       }
       return normalized;
     }
