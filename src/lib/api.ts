@@ -90,6 +90,90 @@ export function setStoredActiveEmail(email: string): void {
   }
 }
 
+// Multi-Account Manager
+export interface StoredAccount {
+  id: string;
+  email: string;
+  username: string;
+  name: string;
+  token: string;
+  avatar_url?: string;
+  role?: string;
+}
+
+export function getStoredAccounts(): StoredAccount[] {
+  try {
+    const raw = localStorage.getItem('goldmailer_multi_accounts');
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+  } catch {}
+  
+  const curUser = getStoredUser();
+  const token = getAuthToken();
+  if (curUser && token) {
+    const defaultAcc: StoredAccount = {
+      id: curUser.id,
+      email: curUser.email,
+      username: curUser.username,
+      name: curUser.first_name ? `${curUser.first_name} ${curUser.last_name || ''}`.trim() : curUser.username,
+      token,
+      avatar_url: curUser.avatar_url,
+      role: curUser.role
+    };
+    saveStoredAccounts([defaultAcc]);
+    return [defaultAcc];
+  }
+  return [];
+}
+
+export function saveStoredAccounts(accounts: StoredAccount[]): void {
+  localStorage.setItem('goldmailer_multi_accounts', JSON.stringify(accounts));
+}
+
+export function addStoredAccount(account: StoredAccount): void {
+  const list = getStoredAccounts();
+  const idx = list.findIndex(a => a.email.toLowerCase() === account.email.toLowerCase());
+  if (idx !== -1) {
+    list[idx] = { ...list[idx], ...account };
+  } else {
+    list.unshift(account);
+  }
+  saveStoredAccounts(list);
+}
+
+export function removeStoredAccount(email: string): void {
+  let list = getStoredAccounts();
+  list = list.filter(a => a.email.toLowerCase() !== email.toLowerCase());
+  saveStoredAccounts(list);
+  if (getStoredActiveEmail().toLowerCase() === email.toLowerCase()) {
+    if (list.length > 0) {
+      switchActiveAccount(list[0].email);
+    } else {
+      clearAuthToken();
+    }
+  }
+}
+
+export function switchActiveAccount(email: string): StoredAccount | null {
+  const list = getStoredAccounts();
+  const found = list.find(a => a.email.toLowerCase() === email.toLowerCase());
+  if (found) {
+    setAuthToken(found.token);
+    setStoredActiveEmail(found.email);
+    setStoredUser({
+      id: found.id,
+      email: found.email,
+      username: found.username,
+      first_name: found.name,
+      role: (found.role as any) || 'user'
+    });
+    return found;
+  }
+  return null;
+}
+
 // Auth token helpers
 export function getAuthToken(): string | null {
   return localStorage.getItem('goldmail_token');
@@ -217,10 +301,19 @@ export async function registerGoldUser(formData: {
   if (!res.ok) {
     throw new Error(data.error || 'Registration failed');
   }
-  if (data.token) {
+  if (data.token && data.user) {
     setAuthToken(data.token);
     setStoredUser(data.user);
     setStoredActiveEmail(data.user.email);
+    addStoredAccount({
+      id: data.user.id,
+      email: data.user.email,
+      username: data.user.username,
+      name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+      token: data.token,
+      avatar_url: data.user.avatar_url,
+      role: data.user.role
+    });
   }
   return data;
 }
@@ -259,6 +352,15 @@ export async function loginGoldUser(credentials: {
     setAuthToken(data.token);
     setStoredUser(data.user);
     setStoredActiveEmail(data.user.email);
+    addStoredAccount({
+      id: data.user.id,
+      email: data.user.email,
+      username: data.user.username,
+      name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+      token: data.token,
+      avatar_url: data.user.avatar_url,
+      role: data.user.role
+    });
   }
   return data;
 }

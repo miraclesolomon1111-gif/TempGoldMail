@@ -64,7 +64,7 @@ export default function App() {
   // Mailbox State
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
   const [searchQuery, setSearchQuery] = useState('');
-  const [emails, setEmails] = useState<EmailMessage[]>([]);
+  const [allEmails, setAllEmails] = useState<EmailMessage[]>([]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -157,22 +157,25 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
-  // Load emails and drafts for current folder & active email
+  // Load emails and drafts for active email (fetches all_mail and drafts)
   const loadMailData = useCallback(async (silent = false) => {
     if (!silent) setIsLoadingEmails(true);
     try {
-      const [emailList, draftList] = await Promise.all([
-        fetchEmails(activeEmail, currentFolder),
-        fetchDrafts()
-      ]);
-      setEmails(emailList);
-      setDrafts(draftList);
+      const emailPromise = fetchEmails(activeEmail, 'all_mail');
+      const draftPromise = fetchDrafts().catch(() => []);
+      const [emailList, draftList] = await Promise.all([emailPromise, draftPromise]);
+      if (Array.isArray(emailList)) {
+        setAllEmails(emailList);
+      }
+      if (Array.isArray(draftList)) {
+        setDrafts(draftList);
+      }
     } catch {
-      // safe fallback
+      // safe fallback - never wipe existing emails on transient errors
     } finally {
       if (!silent) setIsLoadingEmails(false);
     }
-  }, [activeEmail, currentFolder]);
+  }, [activeEmail]);
 
   useEffect(() => {
     loadMailData();
@@ -209,7 +212,7 @@ export default function App() {
   // Star toggle
   const handleToggleStar = async (emailId: string, currentStarred: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
-    setEmails((prev) =>
+    setAllEmails((prev) =>
       prev.map((m) => (m.id === emailId ? { ...m, is_starred: !currentStarred } : m))
     );
     try {
@@ -266,7 +269,9 @@ export default function App() {
 
   // Email Move to trash
   const handleMoveToTrash = async (id: string) => {
-    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setAllEmails((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder } : m))
+    );
     setSelectedEmail(null);
     try {
       await updateEmailStatus(id, { folder: 'trash' });
@@ -275,7 +280,9 @@ export default function App() {
 
   // Email Move to spam
   const handleMoveToSpam = async (id: string) => {
-    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setAllEmails((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
+    );
     setSelectedEmail(null);
     try {
       await updateEmailStatus(id, { folder: 'spam' });
@@ -284,7 +291,7 @@ export default function App() {
 
   // Delete email permanently
   const handleDeleteEmail = async (id: string) => {
-    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setAllEmails((prev) => prev.filter((m) => m.id !== id));
     setSelectedEmail(null);
     try {
       await deleteEmail(id, true);
@@ -307,7 +314,31 @@ export default function App() {
     setIsSuspiciousModalOpen(true);
   };
 
-  // Logout
+  // Multi-account switch handler
+  const handleSwitchAccount = (email: string) => {
+    const list = JSON.parse(localStorage.getItem('goldmailer_multi_accounts') || '[]');
+    const target = list.find((a: any) => a.email.toLowerCase() === email.toLowerCase());
+    if (target) {
+      localStorage.setItem('goldmail_token', target.token);
+      localStorage.setItem('goldmail_active_email', target.email);
+      const newUser: UserProfile = {
+        id: target.id,
+        email: target.email,
+        username: target.username,
+        first_name: target.name,
+        role: target.role || 'user'
+      };
+      localStorage.setItem('goldmail_user', JSON.stringify(newUser));
+      setUser(newUser);
+      setActiveEmail(target.email);
+    } else {
+      setActiveEmail(email);
+      setStoredActiveEmail(email);
+    }
+    loadMailData(false);
+  };
+
+  // Logout active account
   const handleLogout = () => {
     clearAuthToken();
     setUser(null);
@@ -316,23 +347,85 @@ export default function App() {
     setViewMode('hero');
   };
 
-  // Unread / count metrics for folders
+  // Logout all accounts
+  const handleLogoutAll = () => {
+    localStorage.removeItem('goldmailer_multi_accounts');
+    clearAuthToken();
+    setUser(null);
+    setActiveEmail('miracle@goldmailer.xyz');
+    setStoredActiveEmail('miracle@goldmailer.xyz');
+    setViewMode('hero');
+  };
+
+  // Filter emails for the currently selected folder
+  const emailsForFolder = React.useMemo(() => {
+    return allEmails.filter((e) => {
+      const folder = currentFolder;
+      if (folder === 'all_inboxes' || folder === 'all_mail') {
+        return e.folder !== 'trash';
+      }
+      if (folder === 'primary') {
+        return (
+          (e.folder === 'primary' || !e.folder || (e.folder as string) === 'inbox') &&
+          (!e.category || e.category === 'primary')
+        );
+      }
+      if (folder === 'promotions') {
+        return e.folder === 'promotions' || e.category === 'promotions';
+      }
+      if (folder === 'social') {
+        return e.folder === 'social' || e.category === 'social';
+      }
+      if (folder === 'updates') {
+        return e.folder === 'updates' || e.category === 'updates';
+      }
+      if (folder === 'starred') {
+        return Boolean(e.is_starred) && e.folder !== 'trash';
+      }
+      if (folder === 'sent') {
+        return e.folder === 'sent';
+      }
+      if (folder === 'scheduled' || folder === 'outbox') {
+        return e.folder === folder;
+      }
+      if (folder === 'spam') {
+        return e.folder === 'spam';
+      }
+      if (folder === 'trash') {
+        return e.folder === 'trash';
+      }
+      return true;
+    });
+  }, [allEmails, currentFolder]);
+
+  // Unread / count metrics for folders (computed reliably from all emails)
   const unreadCounts = {
-    primary: emails.filter((e) => !e.is_read && e.folder === 'primary').length,
-    promotions: emails.filter((e) => !e.is_read && e.folder === 'promotions').length,
-    social: emails.filter((e) => !e.is_read && e.folder === 'social').length,
-    updates: emails.filter((e) => !e.is_read && e.folder === 'updates').length,
-    starred: emails.filter((e) => e.is_starred).length,
-    sent: emails.filter((e) => e.folder === 'sent').length,
-    scheduled: emails.filter((e) => e.folder === 'scheduled').length,
+    primary: allEmails.filter(
+      (e) =>
+        !e.is_read &&
+        (e.folder === 'primary' || !e.folder || (e.folder as string) === 'inbox') &&
+        (!e.category || e.category === 'primary')
+    ).length,
+    promotions: allEmails.filter(
+      (e) => !e.is_read && (e.folder === 'promotions' || e.category === 'promotions')
+    ).length,
+    social: allEmails.filter(
+      (e) => !e.is_read && (e.folder === 'social' || e.category === 'social')
+    ).length,
+    updates: allEmails.filter(
+      (e) => !e.is_read && (e.folder === 'updates' || e.category === 'updates')
+    ).length,
+    starred: allEmails.filter((e) => e.is_starred && e.folder !== 'trash').length,
+    sent: allEmails.filter((e) => e.folder === 'sent').length,
+    scheduled: allEmails.filter((e) => e.folder === 'scheduled' || e.folder === 'outbox').length,
     drafts: drafts.length,
-    all_mail: emails.length,
-    spam: emails.filter((e) => e.folder === 'spam').length,
-    trash: emails.filter((e) => e.folder === 'trash').length
+    all_mail: allEmails.filter((e) => e.folder !== 'trash').length,
+    spam: allEmails.filter((e) => e.folder === 'spam').length,
+    trash: allEmails.filter((e) => e.folder === 'trash').length
   };
 
   // Filter emails by search query
-  const filteredEmails = emails.filter((e) => {
+  const filteredEmails = emailsForFolder.filter((e) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -496,12 +589,13 @@ export default function App() {
         activeEmail={activeEmail}
       />
 
-      {/* Account Switcher Sheet */}
+      {/* Account Switcher Sheet (Multi-Account Manager) */}
       <AccountSwitcherSheet
         isOpen={isAccountSwitcherOpen}
         onClose={() => setIsAccountSwitcherOpen(false)}
         activeEmail={activeEmail}
         user={user}
+        onSwitchAccount={handleSwitchAccount}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
         onOpenHeroPage={(section) => {
@@ -513,6 +607,7 @@ export default function App() {
           setIsAuthOpen(true);
         }}
         onLogout={handleLogout}
+        onLogoutAll={handleLogoutAll}
         darkMode={darkMode}
       />
 

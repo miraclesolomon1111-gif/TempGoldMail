@@ -17,7 +17,8 @@ import {
   Copy,
   Check,
   Eye,
-  EyeOff
+  EyeOff,
+  Loader2
 } from 'lucide-react';
 import { COUNTRIES_LIST } from '../lib/emailGenerator';
 import {
@@ -140,49 +141,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
     }
   };
 
-  // Step 5: Send OTP
-  const handleSendOtp = async () => {
-    if (!phone.trim()) {
-      setError('Please enter a valid phone number');
-      return;
-    }
-    setError(null);
-    setIsLoading(true);
-    try {
-      const res = await sendPhoneOtp(phone.trim());
-      setOtpSent(true);
-      if (res.mock_code) {
-        setMockOtpHint(res.mock_code);
-        setOtpCode(res.mock_code); // Pre-fill for instant frictionless demo
-      }
-    } catch (e: any) {
-      setError(e.message || 'Failed to send OTP');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Step 5: Verify OTP
-  const handleVerifyOtp = async () => {
-    if (!otpCode.trim()) {
-      setError('Please enter the 6-digit verification code');
-      return;
-    }
-    setError(null);
-    setIsLoading(true);
-    try {
-      await verifyPhoneOtp(phone.trim(), otpCode.trim());
-      setOtpVerified(true);
-      // Trigger final registration!
-      await handleCompleteRegistration();
-    } catch (e: any) {
-      setError(e.message || 'Invalid verification code');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Step 6: Complete Registration
+  // Step 5: Direct account creation without phone verification code
   const handleCompleteRegistration = async () => {
     setError(null);
     setIsLoading(true);
@@ -689,12 +648,12 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
               </div>
             )}
 
-            {/* Step 5: Phone Number & OTP Verification */}
+            {/* Step 5: Phone Number (Optional Recovery - No SMS Verification Code required) */}
             {step === 5 && (
               <div className="space-y-4 animate-in fade-in">
                 <div>
-                  <h3 className="text-base font-semibold text-white">Add phone number for recovery</h3>
-                  <p className="text-xs text-zinc-400 mt-0.5">Supports 250+ countries. We'll send a 6-digit verification code to confirm.</p>
+                  <h3 className="text-base font-semibold text-white">Add phone number (Optional)</h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">Supports 250+ countries. Used for account recovery. You can add your number or create your account right away.</p>
                 </div>
 
                 <div>
@@ -713,57 +672,18 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-zinc-300 mb-1">Phone Number</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+1 (555) 000-0000"
-                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#FF6A00]"
-                    />
-                    {!otpSent && (
-                      <button
-                        type="button"
-                        disabled={isLoading || !phone.trim()}
-                        onClick={handleSendOtp}
-                        className="px-4 py-2 rounded-xl bg-[#FF6A00] hover:bg-[#FF8C42] text-white text-xs font-semibold shadow-md disabled:opacity-50"
-                      >
-                        Send Code
-                      </button>
-                    )}
-                  </div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Phone Number (Optional)</label>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+1 (555) 000-0000"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#FF6A00]"
+                  />
+                  <p className="text-[11px] text-zinc-400 mt-1">No verification code required. Your account is secured with your permanent password.</p>
                 </div>
 
-                {otpSent && (
-                  <div className="p-3.5 bg-[#FF6A00]/10 border border-[#FF6A00]/30 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-[#FF8C42]">Enter 6-Digit SMS Verification Code</span>
-                      <button
-                        type="button"
-                        onClick={handleSendOtp}
-                        className="text-zinc-400 hover:text-white underline text-[11px]"
-                      >
-                        Resend
-                      </button>
-                    </div>
-                    <input
-                      type="text"
-                      maxLength={6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value)}
-                      placeholder="847291"
-                      className="w-full bg-black/40 border border-[#FF6A00]/40 rounded-lg px-3 py-2 text-sm text-white font-mono text-center tracking-widest focus:outline-none"
-                    />
-                    {mockOtpHint && (
-                      <p className="text-[11px] text-zinc-400 text-center">
-                        Simulated SMS code: <strong className="text-white">{mockOtpHint}</strong>
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex gap-2 pt-1">
+                <div className="flex gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => setStep(4)}
@@ -773,11 +693,21 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={isLoading || (!otpSent && !phone.trim())}
-                    onClick={otpSent ? handleVerifyOtp : handleSendOtp}
-                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-xs shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    disabled={isLoading}
+                    onClick={handleCompleteRegistration}
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white font-semibold text-xs shadow-md shadow-[#FF6A00]/25 flex items-center justify-center gap-1.5 disabled:opacity-50 transition-all"
                   >
-                    {isLoading ? 'Verifying...' : otpSent ? 'Verify & Create Account' : 'Send Verification Code'}
+                    {isLoading ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Creating permanent inbox...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Create GoldMailer Account</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
