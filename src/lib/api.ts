@@ -1,4 +1,78 @@
 import { TempEmail, EmailMessage, UserProfile, NowPaymentsInvoice, MailFolder } from '../types';
+import { getSupabaseClient } from './supabase';
+
+// Helper: Normalize and map email objects from DB/API so html, text, body_html, body_text, to_email, from_email are 100% reliable
+export function normalizeEmail(raw: any): EmailMessage {
+  if (!raw) {
+    return {
+      id: 'empty_' + Date.now(),
+      recipient: '',
+      to_email: '',
+      sender: '',
+      from_email: '',
+      subject: '(No Subject)',
+      body_html: '',
+      body_text: '',
+      html: '',
+      text: '',
+      received_at: new Date().toISOString()
+    };
+  }
+
+  const html =
+    raw.html ||
+    raw.body_html ||
+    raw['body-html'] ||
+    (typeof raw.body === 'string' && raw.body.includes('<') ? raw.body : '');
+
+  const text =
+    raw.text ||
+    raw.body_text ||
+    raw['body-plain'] ||
+    (typeof raw.body === 'string' && !raw.body.includes('<') ? raw.body : '');
+
+  const recipient =
+    raw.to_email ||
+    raw.recipient ||
+    raw.to ||
+    (Array.isArray(raw.to) ? raw.to[0] : '') ||
+    '';
+
+  const sender =
+    raw.from_email ||
+    raw.sender ||
+    raw.from ||
+    (Array.isArray(raw.from) ? raw.from[0] : '') ||
+    'unknown@domain.com';
+
+  const received_at =
+    raw.received_at || raw.created_at || new Date().toISOString();
+
+  return {
+    id: String(raw.id || 'msg_' + Math.random().toString(36).substring(2, 9)),
+    temp_email_id: raw.temp_email_id,
+    recipient: typeof recipient === 'object' ? (recipient.email || recipient.address || String(recipient)) : String(recipient),
+    to_email: typeof recipient === 'object' ? (recipient.email || recipient.address || String(recipient)) : String(recipient),
+    sender: typeof sender === 'object' ? (sender.email || sender.address || sender.name || String(sender)) : String(sender),
+    from_email: typeof sender === 'object' ? (sender.email || sender.address || sender.name || String(sender)) : String(sender),
+    sender_name: raw.sender_name || (typeof sender === 'string' ? sender.split('@')[0] : 'Sender'),
+    subject: raw.subject || '(No Subject)',
+    body_html: html,
+    html: html,
+    body_text: text,
+    text: text,
+    body: html || text || '',
+    raw: raw.raw || raw,
+    received_at,
+    created_at: received_at,
+    is_read: Boolean(raw.is_read),
+    is_starred: Boolean(raw.is_starred),
+    folder: raw.folder || 'primary',
+    category: raw.category || 'primary',
+    scheduled_for: raw.scheduled_for,
+    avatar_color: raw.avatar_color
+  };
+}
 
 // Persistent Client ID for isolating unauthenticated browser sessions
 export function getClientId(): string {
@@ -234,15 +308,75 @@ export async function deleteTempEmail(idOrEmail: string): Promise<boolean> {
 
 // ================= EMAIL INBOX & MESSAGING =================
 
-export async function fetchEmails(recipientEmail: string, folder: MailFolder | 'all' = 'all'): Promise<EmailMessage[]> {
+export async function fetchEmails(
+  recipientEmail: string,
+  folder: MailFolder | 'all' = 'all',
+  signal?: AbortSignal
+): Promise<EmailMessage[]> {
   if (!recipientEmail) return [];
+  const cleanEmail = recipientEmail.trim().toLowerCase();
+
+  // 1. Try querying Supabase client directly if configured in settings or environment
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      let query = supabase.from('emails').select('*');
+
+      // Filter correctly for inbox vs sent:
+      // select * from emails where to_email = activeEmail or from_email = activeEmail
+      if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
+        query = query.or(`from_email.eq.${cleanEmail},sender.eq.${cleanEmail}`);
+      } else if (folder === 'all' || folder === 'all_mail') {
+        query = query.or(`to_email.eq.${cleanEmail},from_email.eq.${cleanEmail},recipient.eq.${cleanEmail},sender.eq.${cleanEmail}`);
+      } else {
+        // Inbox / Primary / Folder
+        query = query.or(`to_email.eq.${cleanEmail},recipient.eq.${cleanEmail}`);
+        if (folder === 'starred') {
+          query = query.eq('is_starred', true);
+        } else if (folder === 'trash' || folder === 'spam') {
+          query = query.eq('folder', folder);
+        }
+      }
+
+      if (signal) {
+        query = (query as any).abortSignal ? (query as any).abortSignal(signal) : query;
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const normalized = data.map(normalizeEmail);
+        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length}`);
+        return normalized;
+      }
+    } catch (supaErr: any) {
+      if (supaErr.name === 'AbortError') throw supaErr;
+      console.warn('Supabase client fetch note (will fallback to API):', supaErr);
+    }
+  }
+
+  // 2. Query API route with AbortSignal support
   try {
-    const res = await fetch(`/api/emails/${encodeURIComponent(recipientEmail)}?folder=${encodeURIComponent(folder)}`, {
-      headers: getHeaders()
-    });
-    if (!res.ok) return [];
-    return await safeJsonParse(res, 'Failed to fetch emails');
-  } catch (err) {
+    const res = await fetch(
+      `/api/emails/${encodeURIComponent(cleanEmail)}?folder=${encodeURIComponent(folder)}`,
+      {
+        headers: getHeaders(),
+        signal
+      }
+    );
+    if (!res.ok) {
+      console.log(`[API Fetch Notice] Server returned ${res.status} for ${cleanEmail}`);
+      return [];
+    }
+    const rawData = await safeJsonParse(res, 'Failed to fetch emails');
+    const normalized = Array.isArray(rawData) ? rawData.map(normalizeEmail) : [];
+    console.log(`[Email Fetch Result] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length}`);
+    return normalized;
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      // Propagation of AbortError
+      throw err;
+    }
     console.warn('Fetch emails failed:', err);
     return [];
   }

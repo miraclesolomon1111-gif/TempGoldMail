@@ -111,12 +111,19 @@ export interface EmailRecord {
   id: string;
   temp_email_id?: string;
   recipient: string;
+  to_email?: string;
   sender: string;
+  from_email?: string;
   sender_name?: string;
   subject: string;
   body_html: string;
   body_text: string;
+  html?: string;
+  text?: string;
+  body?: string;
+  raw?: any;
   received_at: string;
+  created_at?: string;
   is_read?: boolean;
   is_starred?: boolean;
   folder?: string; // 'primary' | 'promotions' | 'social' | 'updates' | 'starred' | 'snoozed' | 'important' | 'sent' | 'scheduled' | 'outbox' | 'drafts' | 'all_mail' | 'spam' | 'trash'
@@ -687,28 +694,95 @@ app.delete('/api/temp-emails/:id', (req: Request, res: Response) => {
 // ================= EMAIL MESSAGES & INBOX =================
 
 // GET emails for a specific recipient or folder
-app.get('/api/emails/:emailAddress', (req: Request, res: Response) => {
+app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
   try {
     const emailAddress = req.params.emailAddress.toLowerCase().trim();
     const folder = (req.query.folder as string) || 'all';
 
-    let list = localEmails.filter(e => {
+    // 1. Supabase database query if connected
+    let dbEmails: EmailRecord[] = [];
+    if (supabase) {
+      try {
+        let query = supabase.from('emails').select('*');
+
+        // Filter correctly for inbox vs sent:
+        // select * from emails where to_email = activeEmail or from_email = activeEmail
+        if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
+          query = query.or(`from_email.eq.${emailAddress},sender.eq.${emailAddress}`);
+        } else if (folder === 'all' || folder === 'all_mail') {
+          query = query.or(`to_email.eq.${emailAddress},from_email.eq.${emailAddress},recipient.eq.${emailAddress},sender.eq.${emailAddress}`);
+        } else {
+          query = query.or(`to_email.eq.${emailAddress},recipient.eq.${emailAddress}`);
+          if (folder === 'starred') {
+            query = query.eq('is_starred', true);
+          } else if (folder === 'trash' || folder === 'spam') {
+            query = query.eq('folder', folder);
+          }
+        }
+
+        const { data, error } = await query.order('created_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          dbEmails = data.map((d: any) => ({
+            id: String(d.id || 'db_' + Math.random().toString(36).substring(2, 9)),
+            recipient: d.to_email || d.recipient || emailAddress,
+            to_email: d.to_email || d.recipient || emailAddress,
+            sender: d.from_email || d.sender || 'unknown@domain.com',
+            from_email: d.from_email || d.sender || 'unknown@domain.com',
+            sender_name: d.sender_name || (d.from_email ? d.from_email.split('@')[0] : 'Sender'),
+            subject: d.subject || '(No Subject)',
+            body_html: d.body_html || d.html || d.body || '',
+            html: d.body_html || d.html || d.body || '',
+            body_text: d.body_text || d.text || '',
+            text: d.body_text || d.text || '',
+            body: d.body_html || d.html || d.body_text || d.text || '',
+            received_at: d.received_at || d.created_at || new Date().toISOString(),
+            created_at: d.created_at || d.received_at || new Date().toISOString(),
+            is_read: Boolean(d.is_read),
+            is_starred: Boolean(d.is_starred),
+            folder: d.folder || 'primary',
+            category: d.category || 'primary'
+          }));
+        }
+      } catch (err) {
+        console.warn('Supabase query error in GET /api/emails:', err);
+      }
+    }
+
+    // 2. Query persistent store
+    let localFiltered = localEmails.filter(e => {
+      const to = (e.to_email || e.recipient || '').toLowerCase();
+      const from = (e.from_email || e.sender || '').toLowerCase();
+
       // For sent and scheduled folders, the sender was this address
       if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-        return e.sender.toLowerCase().includes(emailAddress);
+        return from.includes(emailAddress);
       }
-      return e.recipient.toLowerCase() === emailAddress;
+      if (folder === 'all' || folder === 'all_mail') {
+        return to === emailAddress || from.includes(emailAddress);
+      }
+      return to === emailAddress;
     });
 
-    if (folder !== 'all' && folder !== 'all_mail') {
-      list = list.filter(e => {
+    if (folder !== 'all' && folder !== 'all_mail' && folder !== 'sent' && folder !== 'scheduled' && folder !== 'outbox') {
+      localFiltered = localFiltered.filter(e => {
         if (folder === 'starred') return e.is_starred;
         if (folder === 'important') return e.category === 'primary' || e.is_starred;
         return (e.folder || 'primary') === folder;
       });
     }
 
-    list.sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime());
+    // Merge de-duplicated by id
+    const combinedMap = new Map<string, EmailRecord>();
+    for (const item of dbEmails) combinedMap.set(item.id, item);
+    for (const item of localFiltered) combinedMap.set(item.id, item);
+    const list = Array.from(combinedMap.values());
+
+    list.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
+
+    // Debugging log for verification
+    console.log(`[API /api/emails] activeEmail: ${emailAddress}, folder: ${folder}, fetched count: ${list.length}`);
+
     return res.json(list);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -735,12 +809,18 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     const newEmail: EmailRecord = {
       id: 'sent_' + crypto.randomBytes(6).toString('hex'),
       recipient: cleanTo,
+      to_email: cleanTo,
       sender: cleanFrom,
+      from_email: cleanFrom,
       sender_name: cleanFrom.split('@')[0],
       subject: emailSubject,
       body_html: emailHtml,
+      html: emailHtml,
       body_text: emailText,
+      text: emailText,
+      body: emailHtml || emailText,
       received_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
       is_read: true,
       folder,
       category: 'primary',
@@ -749,6 +829,31 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     };
 
     localEmails.unshift(newEmail);
+
+    if (supabase) {
+      try {
+        await supabase.from('emails').insert([{
+          to_email: cleanTo,
+          recipient: cleanTo,
+          from_email: cleanFrom,
+          sender: cleanFrom,
+          sender_name: cleanFrom.split('@')[0],
+          subject: emailSubject,
+          body_html: emailHtml,
+          html: emailHtml,
+          body_text: emailText,
+          text: emailText,
+          body: emailHtml || emailText,
+          received_at: newEmail.received_at,
+          created_at: newEmail.created_at,
+          is_read: true,
+          folder,
+          category: 'primary'
+        }]);
+      } catch (supaErr) {
+        console.warn('Supabase insert sent email note:', supaErr);
+      }
+    }
 
     // If live sending via Resend is requested and not scheduled
     let sentLive = false;
@@ -842,19 +947,87 @@ const handleInboundEmail = async (req: Request, res: Response) => {
     const body = req.body || {};
     const payload = body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
 
-    const rawTo = payload.to || payload.recipient || payload['envelope-to'] || payload.envelopeTo || payload.destination;
-    const rawFrom = payload.from || payload.sender || payload['envelope-from'] || payload.envelopeFrom;
+    const rawTo = payload.to || payload.recipient || payload['envelope-to'] || payload.envelopeTo || payload.destination || body.to || body.recipient;
+    const rawFrom = payload.from || payload.sender || payload['envelope-from'] || payload.envelopeFrom || body.from || body.sender;
 
     let recipient = extractCleanEmail(rawTo);
     let sender = extractCleanSender(rawFrom);
-    let subject = payload.subject || '(No Subject)';
-    let body_html = payload.html || payload.body_html || payload['body-html'] || '';
-    let body_text = payload.text || payload.body_text || payload['body-plain'] || '';
-    let received_at = payload.received_at || payload.created_at || new Date().toISOString();
+    let subject = payload.subject || body.subject || '(No Subject)';
+
+    // Extract html and text from various potential inbound webhook formats
+    let body_html =
+      payload.html ||
+      payload.body_html ||
+      payload['body-html'] ||
+      (typeof payload.body === 'string' && payload.body.includes('<') ? payload.body : '') ||
+      (body.html || body.body_html || '');
+
+    let body_text =
+      payload.text ||
+      payload.body_text ||
+      payload['body-plain'] ||
+      (typeof payload.body === 'string' && !payload.body.includes('<') ? payload.body : '') ||
+      (body.text || body.body_text || '');
+
+    const emailId =
+      payload.email_id ||
+      payload.id ||
+      (payload.data && (payload.data.email_id || payload.data.id)) ||
+      body.email_id ||
+      body.id;
+
+    // Resend inbound webhook resolution:
+    // Resend email.received webhook sends metadata with email_id while body must be fetched
+    if (emailId && (!body_html || !body_text) && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        let fetchedData: any = null;
+
+        if (client.emails && (client.emails as any).receiving && typeof (client.emails as any).receiving.get === 'function') {
+          try {
+            const recRes = await (client.emails as any).receiving.get(emailId);
+            if (recRes && recRes.data) fetchedData = recRes.data;
+          } catch (e) {
+            console.warn('Resend receiving.get note:', e);
+          }
+        }
+
+        if (!fetchedData && client.emails && typeof client.emails.get === 'function') {
+          try {
+            const getRes = await client.emails.get(emailId);
+            if (getRes && getRes.data) fetchedData = getRes.data;
+          } catch (e) {
+            console.warn('Resend emails.get note:', e);
+          }
+        }
+
+        if (fetchedData) {
+          if (!body_html) body_html = fetchedData.html || fetchedData.body_html || fetchedData.body || '';
+          if (!body_text) body_text = fetchedData.text || fetchedData.body_text || '';
+          if (!subject || subject === '(No Subject)') subject = fetchedData.subject || subject;
+          if (!recipient) recipient = extractCleanEmail(fetchedData.to);
+          if (!sender || sender === 'sender@external.com') sender = extractCleanSender(fetchedData.from);
+        }
+      } catch (resendErr) {
+        console.warn('Could not fetch email body from Resend API:', resendErr);
+      }
+    }
 
     if (!recipient) {
       return res.status(400).json({ error: 'Recipient address required' });
     }
+
+    // Ensure neither html nor text is null or blank
+    if (body_html && !body_text) {
+      body_text = body_html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    } else if (body_text && !body_html) {
+      body_html = `<pre style="font-family:inherit;white-space:pre-wrap;font-size:14px;color:#e3e3e3;">${body_text}</pre>`;
+    } else if (!body_html && !body_text) {
+      body_text = 'No message content.';
+      body_html = '<p>No message content.</p>';
+    }
+
+    let received_at = payload.received_at || payload.created_at || new Date().toISOString();
 
     // Auto-categorize: Primary, Promotions, Social, Updates
     let category = 'primary';
@@ -886,19 +1059,52 @@ const handleInboundEmail = async (req: Request, res: Response) => {
       id: 'msg_' + crypto.randomBytes(6).toString('hex'),
       temp_email_id: localAddr.id,
       recipient,
+      to_email: recipient,
       sender,
+      from_email: sender,
       sender_name: payload.sender_name || sender.split('@')[0],
       subject,
-      body_html: body_html || `<div style="font-family:sans-serif;padding:12px;">${body_text.replace(/\n/g, '<br/>')}</div>`,
-      body_text: body_text || (body_html ? body_html.replace(/<[^>]+>/g, ' ').trim() : ''),
+      body_html,
+      html: body_html,
+      body_text,
+      text: body_text,
+      body: body_html || body_text,
       received_at,
+      created_at: received_at,
       is_read: false,
       folder: 'primary',
-      category
+      category,
+      raw: payload
     };
 
     localEmails.unshift(newEmail);
     saveData();
+
+    // If Supabase is connected, insert into emails table
+    if (supabase) {
+      try {
+        await supabase.from('emails').insert([{
+          to_email: recipient,
+          recipient: recipient,
+          from_email: sender,
+          sender: sender,
+          sender_name: newEmail.sender_name,
+          subject: subject,
+          body_html: body_html,
+          html: body_html,
+          body_text: body_text,
+          text: body_text,
+          body: body_html || body_text,
+          received_at: received_at,
+          created_at: received_at,
+          is_read: false,
+          folder: 'primary',
+          category: category
+        }]);
+      } catch (supaErr) {
+        console.warn('Supabase inbound insert note:', supaErr);
+      }
+    }
 
     emailAuditLogs.unshift({
       id: 'log_' + crypto.randomBytes(4).toString('hex'),

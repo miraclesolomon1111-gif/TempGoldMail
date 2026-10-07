@@ -132,46 +132,103 @@ export default function App() {
     loadAddresses();
   }, [loadAddresses]);
 
-  // Load emails for the active email address
-  const loadEmails = useCallback(
-    async (isBackground = false) => {
-      if (!activeEmail) {
-        setEmails([]);
-        return;
-      }
-      if (!isBackground) setIsLoadingEmails(true);
+  // AbortController ref to cancel in-flight email fetch on fast switching
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-      try {
-        const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-        const data = await fetchEmails(activeEmail, folderParam);
-        setEmails(data || []);
-      } catch (err) {
-        console.warn('Failed to fetch emails:', err);
-      } finally {
-        if (!isBackground) setIsLoadingEmails(false);
-        setIsRefreshing(false);
-      }
-    },
-    [activeEmail, currentFolder]
-  );
-
+  // Load emails for the active email address with race-condition cancellation
   useEffect(() => {
-    loadEmails();
-  }, [loadEmails]);
+    if (!activeEmail) {
+      setEmails([]);
+      setIsLoadingEmails(false);
+      return;
+    }
+
+    // Cancel previous fetch when switching email with AbortController
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // Add loading state: isLoadingEmails = true when switching. Show skeleton loader
+    setIsLoadingEmails(true);
+
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+
+    fetchEmails(activeEmail, folderParam, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          console.log(`[App Email Fetch] activeEmail: ${activeEmail}, folder: ${folderParam}, fetched count: ${data?.length || 0}`);
+          setEmails(data || []);
+          setIsLoadingEmails(false);
+          setIsRefreshing(false);
+        }
+      })
+      .catch((err) => {
+        if (err.name === 'AbortError' || controller.signal.aborted) {
+          return;
+        }
+        console.warn('Failed to fetch emails:', err);
+        if (!controller.signal.aborted) {
+          setIsLoadingEmails(false);
+          setIsRefreshing(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeEmail, currentFolder]);
 
   // Real-time polling every 4 seconds to ingest incoming webhooks immediately
   useEffect(() => {
     if (!activeEmail) return;
+    const targetEmail = activeEmail;
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+
     const interval = setInterval(() => {
-      loadEmails(true);
+      fetchEmails(targetEmail, folderParam)
+        .then((data) => {
+          if (activeEmail.toLowerCase() === targetEmail.toLowerCase()) {
+            setEmails(data || []);
+          }
+        })
+        .catch(() => {});
     }, 4000);
+
     return () => clearInterval(interval);
-  }, [activeEmail, loadEmails]);
+  }, [activeEmail, currentFolder]);
 
   // Manual refresh trigger
   const handleManualRefresh = () => {
+    if (!activeEmail) return;
     setIsRefreshing(true);
-    loadEmails(false);
+    setIsLoadingEmails(true);
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+    fetchEmails(activeEmail, folderParam, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          console.log(`[Manual Refresh] activeEmail: ${activeEmail}, count: ${data?.length || 0}`);
+          setEmails(data || []);
+        }
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') console.warn(err);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoadingEmails(false);
+          setIsRefreshing(false);
+        }
+      });
+
     loadAddresses();
   };
 
@@ -203,20 +260,31 @@ export default function App() {
     }
   };
 
-  // Switch to another email address with password check
+  // Switch to another email address with password check & clean loading transition
   const handleSelectEmail = async (emailAddr: string) => {
+    const cleanAddr = emailAddr.trim().toLowerCase();
+    if (cleanAddr === activeEmail.toLowerCase()) return;
+
     const target = createdEmails.find(
-      (e) => e.email_address.toLowerCase() === emailAddr.toLowerCase()
+      (e) => e.email_address.toLowerCase() === cleanAddr
     );
 
     if (target?.is_password_protected) {
-      setUnlockTargetEmail(emailAddr);
+      setUnlockTargetEmail(cleanAddr);
       setIsUnlockModalOpen(true);
       return;
     }
 
-    setActiveEmail(emailAddr);
-    setStoredActiveEmail(emailAddr);
+    // Cancel in-flight fetch immediately
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    // Set loading state true when switching to avoid glitching
+    setIsLoadingEmails(true);
+    setEmails([]); // Don't show old emails while switching
+
+    setActiveEmail(cleanAddr);
+    setStoredActiveEmail(cleanAddr);
   };
 
   // Unlock password-protected mailbox
@@ -272,7 +340,11 @@ export default function App() {
       text: data.text,
       scheduledFor: data.scheduledFor
     });
-    await loadEmails();
+    if (activeEmail) {
+      const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+      const refreshed = await fetchEmails(activeEmail, folderParam);
+      setEmails(refreshed);
+    }
   };
 
   // Star / Unstar
@@ -322,7 +394,11 @@ export default function App() {
   const handleCleanStorage = async () => {
     const res = await cleanUpSpace();
     alert(res.message);
-    loadEmails();
+    if (activeEmail) {
+      const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+      const refreshed = await fetchEmails(activeEmail, folderParam);
+      setEmails(refreshed);
+    }
   };
 
   // Profile Avatar update

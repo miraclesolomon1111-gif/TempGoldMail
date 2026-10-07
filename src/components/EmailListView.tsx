@@ -192,9 +192,26 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
             </div>
           </div>
         ) : isLoading ? (
-          <div className="flex flex-col items-center justify-center py-24 space-y-3">
-            <RefreshCw className="w-7 h-7 text-[#8ab4f8] animate-spin" />
-            <p className="text-xs text-[#9aa0a6]">Loading messages...</p>
+          /* Gmail-style Skeleton Loader */
+          <div className="divide-y divide-[#1e1f20]/60 animate-pulse">
+            {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+              <div key={n} className="flex items-start gap-3.5 px-4 py-3.5 bg-[#121212]">
+                <div className="pt-0.5 flex-shrink-0">
+                  <div className="w-10 h-10 rounded-full bg-[#242528] flex-shrink-0" />
+                </div>
+                <div className="flex-1 min-w-0 pr-1 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="h-3.5 w-28 sm:w-36 bg-[#2a2b2e] rounded" />
+                    <div className="h-3 w-12 bg-[#202124] rounded" />
+                  </div>
+                  <div className="h-3.5 w-3/4 sm:w-1/2 bg-[#2a2b2e] rounded" />
+                  <div className="h-3 w-5/6 sm:w-2/3 bg-[#1e1f20] rounded" />
+                </div>
+                <div className="pt-1 flex-shrink-0">
+                  <div className="w-4 h-4 rounded bg-[#1e1f20]" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : emails.length === 0 ? (
           /* Empty Folder View */

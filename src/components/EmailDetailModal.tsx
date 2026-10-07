@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import DOMPurify from 'dompurify';
 import {
   ArrowLeft,
   Archive,
@@ -11,7 +12,8 @@ import {
   ChevronDown,
   Copy,
   Check,
-  ShieldCheck
+  ShieldCheck,
+  Code
 } from 'lucide-react';
 import { EmailMessage } from '../types';
 
@@ -36,12 +38,29 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
   onReply,
   onForward
 }) => {
-  const [showDetails, setShowDetails] = React.useState(false);
-  const [isCopied, setIsCopied] = React.useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+  const [activeTab, setActiveTab] = useState<'html' | 'text'>('html');
 
   if (!email) return null;
 
   const senderInitial = (email.sender_name || email.sender || 'S').charAt(0).toUpperCase();
+
+  // Extract both html and text bodies across all potential DB column names
+  const htmlContent =
+    email.html ||
+    email.body_html ||
+    (typeof email.body === 'string' && email.body.includes('<') ? email.body : '');
+
+  const textContent =
+    email.text ||
+    email.body_text ||
+    (typeof email.body === 'string' && !email.body.includes('<') ? email.body : '');
+
+  const hasHtml = Boolean(htmlContent && htmlContent.trim().length > 0);
+  const hasText = Boolean(textContent && textContent.trim().length > 0);
+  const isBodyEmpty = !hasHtml && !hasText;
 
   const handleCopySender = () => {
     navigator.clipboard.writeText(email.sender);
@@ -49,17 +68,20 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
     setTimeout(() => setIsCopied(false), 2000);
   };
 
-  // Sanitize body HTML and make links open in new tab securely
+  // Sanitize body HTML securely and enhance hyperlinks
   const formatBodyHtml = (rawHtml: string) => {
     if (!rawHtml) return '';
-    // Ensure all <a> tags have target="_blank" rel="noopener noreferrer" and nice blue link styling
-    return rawHtml
+    const formatted = rawHtml
       .replace(/<a\s+(?!.*?target=)/gi, '<a target="_blank" rel="noopener noreferrer" class="text-[#8ab4f8] underline hover:text-[#c2e7ff]" ')
-      .replace(/target="_self"/gi, 'target="_blank" rel="noopener noreferrer"')
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      .replace(/target="_self"/gi, 'target="_blank" rel="noopener noreferrer"');
+
+    return DOMPurify.sanitize(formatted, {
+      ADD_ATTR: ['target', 'rel', 'class'],
+      FORBID_TAGS: ['script', 'iframe']
+    });
   };
 
-  const formattedDate = new Date(email.received_at).toLocaleString([], {
+  const formattedDate = new Date(email.received_at || email.created_at || Date.now()).toLocaleString([], {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
@@ -130,10 +152,10 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-white text-[15px] truncate">
-                  {email.sender_name || email.sender.split('@')[0]}
+                  {email.sender_name || (typeof email.sender === 'string' ? email.sender.split('@')[0] : 'Sender')}
                 </span>
                 <span className="text-xs text-[#8e918f] font-mono truncate">
-                  &lt;{email.sender}&gt;
+                  &lt;{email.from_email || email.sender}&gt;
                 </span>
               </div>
 
@@ -151,11 +173,11 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
                 <div className="mt-2.5 p-3 rounded-xl bg-[#1e1f20] border border-[#303134] text-xs space-y-1.5 text-[#c4c7c5] font-mono">
                   <div className="flex">
                     <span className="w-16 text-[#8e918f]">From:</span>
-                    <span className="text-white select-all">{email.sender}</span>
+                    <span className="text-white select-all">{email.from_email || email.sender}</span>
                   </div>
                   <div className="flex">
                     <span className="w-16 text-[#8e918f]">To:</span>
-                    <span className="text-white select-all">{email.recipient}</span>
+                    <span className="text-white select-all">{email.to_email || email.recipient}</span>
                   </div>
                   <div className="flex">
                     <span className="w-16 text-[#8e918f]">Date:</span>
@@ -175,36 +197,110 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
           </div>
         </div>
 
+        {/* View Mode Switcher if both HTML and Text exist */}
+        {hasHtml && hasText && (
+          <div className="flex items-center justify-between border-b border-[#303134] pb-2 text-xs">
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setActiveTab('html')}
+                className={`px-3 py-1 rounded-md font-medium transition-colors ${
+                  activeTab === 'html'
+                    ? 'bg-[#0b57d0] text-white'
+                    : 'text-[#9aa0a6] hover:text-white hover:bg-white/5'
+                }`}
+              >
+                HTML View
+              </button>
+              <button
+                onClick={() => setActiveTab('text')}
+                className={`px-3 py-1 rounded-md font-medium transition-colors ${
+                  activeTab === 'text'
+                    ? 'bg-[#0b57d0] text-white'
+                    : 'text-[#9aa0a6] hover:text-white hover:bg-white/5'
+                }`}
+              >
+                Plain Text
+              </button>
+            </div>
+            <button
+              onClick={() => setShowRaw(!showRaw)}
+              className="text-[#8ab4f8] hover:underline flex items-center gap-1"
+            >
+              <Code className="w-3 h-3" />
+              <span>{showRaw ? 'Hide Raw' : 'View Raw'}</span>
+            </button>
+          </div>
+        )}
+
         {/* Email Content Box */}
-        <div className="pt-4 border-t border-[#303134]/60">
-          {email.body_html ? (
+        <div className="pt-2 border-t border-[#303134]/60">
+          {isBodyEmpty ? (
+            /* Fallback: if body is empty, show "No content / view raw" button */
+            <div className="py-10 px-6 text-center border border-dashed border-[#3c4043] rounded-2xl bg-[#1e1f20]/40 space-y-3">
+              <p className="text-sm text-[#9aa0a6]">No message content in email body.</p>
+              <button
+                type="button"
+                onClick={() => setShowRaw(!showRaw)}
+                className="px-4 py-2 rounded-full bg-[#2d2f31] hover:bg-[#3c4043] text-xs font-mono text-[#8ab4f8] transition-colors inline-flex items-center gap-2 border border-white/5"
+              >
+                <Code className="w-3.5 h-3.5" />
+                <span>{showRaw ? 'Hide Raw Details' : 'No content / view raw'}</span>
+              </button>
+              {showRaw && (
+                <div className="text-left mt-3 p-3.5 bg-black/70 rounded-xl border border-zinc-800 text-[11px] font-mono text-zinc-300 overflow-x-auto max-h-72">
+                  <pre>{JSON.stringify(email, null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          ) : hasHtml && (activeTab === 'html' || !hasText) ? (
+            /* HTML View sanitized via DOMPurify */
             <div
               className="prose prose-invert max-w-none text-sm text-[#e3e3e3] leading-relaxed break-words overflow-x-auto bg-[#1e1f20]/40 p-4 rounded-2xl border border-white/5"
-              dangerouslySetInnerHTML={{ __html: formatBodyHtml(email.body_html) }}
+              dangerouslySetInnerHTML={{ __html: formatBodyHtml(htmlContent) }}
             />
           ) : (
-            <div className="whitespace-pre-wrap font-sans text-sm text-[#e3e3e3] leading-relaxed bg-[#1e1f20]/40 p-4 rounded-2xl border border-white/5">
-              {email.body_text || 'No message content.'}
+            /* Plain Text View in <pre> */
+            <pre className="whitespace-pre-wrap font-sans text-sm text-[#e3e3e3] leading-relaxed break-words bg-[#1e1f20]/40 p-4 rounded-2xl border border-white/5 overflow-x-auto">
+              {textContent}
+            </pre>
+          )}
+
+          {/* Optional raw payload expander when body is present */}
+          {!isBodyEmpty && showRaw && (
+            <div className="mt-4 p-3.5 bg-black/70 rounded-xl border border-zinc-800 text-[11px] font-mono text-zinc-300 overflow-x-auto max-h-72">
+              <div className="text-xs text-zinc-400 font-semibold mb-2">Raw Email Object / Inbound Payload:</div>
+              <pre>{JSON.stringify(email, null, 2)}</pre>
             </div>
           )}
         </div>
 
         {/* Action Buttons (Reply / Forward) */}
-        <div className="pt-6 flex items-center gap-3 border-t border-[#303134]">
-          <button
-            onClick={() => onReply(email.sender, `Re: ${email.subject}`)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#5f6368] hover:border-[#8ab4f8] text-sm text-[#8ab4f8] hover:bg-white/5 transition-colors font-medium"
-          >
-            <CornerUpLeft className="w-4 h-4" />
-            <span>Reply</span>
-          </button>
-          <button
-            onClick={() => onForward(email)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#5f6368] hover:border-white text-sm text-[#c4c7c5] hover:bg-white/5 transition-colors font-medium"
-          >
-            <CornerUpRight className="w-4 h-4" />
-            <span>Forward</span>
-          </button>
+        <div className="pt-6 flex items-center justify-between border-t border-[#303134]">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => onReply(email.from_email || email.sender, `Re: ${email.subject}`)}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#5f6368] hover:border-[#8ab4f8] text-sm text-[#8ab4f8] hover:bg-white/5 transition-colors font-medium"
+            >
+              <CornerUpLeft className="w-4 h-4" />
+              <span>Reply</span>
+            </button>
+            <button
+              onClick={() => onForward(email)}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#5f6368] hover:border-white text-sm text-[#c4c7c5] hover:bg-white/5 transition-colors font-medium"
+            >
+              <CornerUpRight className="w-4 h-4" />
+              <span>Forward</span>
+            </button>
+          </div>
+
+          {!isBodyEmpty && !hasHtml && (
+            <button
+              onClick={() => setShowRaw(!showRaw)}
+              className="text-xs text-[#8e918f] hover:text-[#8ab4f8] transition-colors"
+            >
+              {showRaw ? 'Hide Raw' : 'View raw'}
+            </button>
+          )}
         </div>
       </div>
     </div>
