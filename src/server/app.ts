@@ -10,6 +10,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 import multer from 'multer';
 import { simpleParser } from 'mailparser';
+import nodemailer from 'nodemailer';
 import { fetchEmailsFromImap, extractCleanAddress } from './imapService.js';
 
 // Server-Sent Events (SSE) for Real-Time email receiving
@@ -101,13 +102,37 @@ if (supabaseUrl && supabaseKey) {
 
 // Resend client initialization
 const resendApiKey = process.env.RESEND_API_KEY || '';
-const resendFrom = process.env.RESEND_FROM || 'GoldMailer <noreply@goldmailer.xyz>';
+const resendFrom = process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>';
 let resendClient: Resend | null = null;
 if (resendApiKey) {
   try {
     resendClient = new Resend(resendApiKey);
   } catch (err) {
     console.warn('⚠️ Resend init error:', err);
+  }
+}
+
+// SMTP Transporter initialization (for password reset and outbound emails)
+const smtpHost = process.env.SMTP_HOST || '';
+const smtpUser = process.env.SMTP_USER || '';
+const smtpPass = process.env.SMTP_PASS || '';
+const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+let smtpTransporter: any = null;
+if (smtpHost && smtpUser) {
+  try {
+    smtpTransporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass
+      }
+    });
+  } catch (smtpErr) {
+    console.warn('⚠️ SMTP Transporter init error:', smtpErr);
   }
 }
 
@@ -134,6 +159,8 @@ export interface StoredGoldUser {
   storage_limit_bytes: number;
   avatar_url?: string;
   imap_config?: any;
+  reset_token?: string;
+  reset_token_expires?: number;
 }
 
 export interface StoredEmail {
@@ -362,24 +389,32 @@ export const ensureDataLoaded = () => {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed.goldUsers)) {
           for (const u of parsed.goldUsers) {
-            const existing = goldUsers.find(gu => gu.id === u.id || gu.email.toLowerCase() === u.email.toLowerCase());
-            if (!existing) {
+            const idx = goldUsers.findIndex(gu => gu.id === u.id || (gu.email && u.email && gu.email.toLowerCase() === u.email.toLowerCase()));
+            if (idx === -1) {
               goldUsers.push(u);
+            } else {
+              // Merge latest user state from disk
+              goldUsers[idx] = { ...goldUsers[idx], ...u };
             }
           }
         }
         if (Array.isArray(parsed.goldEmails)) {
           for (const em of parsed.goldEmails) {
-            const existing = goldEmails.find(ge => ge.id === em.id);
-            if (!existing) {
+            const idx = goldEmails.findIndex(ge => ge.id === em.id);
+            if (idx === -1) {
               goldEmails.push(em);
+            } else {
+              goldEmails[idx] = { ...goldEmails[idx], ...em };
             }
           }
         }
         if (Array.isArray(parsed.goldDrafts)) {
           for (const d of parsed.goldDrafts) {
-            if (!goldDrafts.some(gd => gd.id === d.id)) {
+            const idx = goldDrafts.findIndex(gd => gd.id === d.id);
+            if (idx === -1) {
               goldDrafts.push(d);
+            } else {
+              goldDrafts[idx] = { ...goldDrafts[idx], ...d };
             }
           }
         }
@@ -589,19 +624,34 @@ app.get('/api/auth/suggest-usernames', (req: Request, res: Response) => {
   }
 });
 
+// Helper: Normalize login/auth identifier
+export function normalizeUserIdentifier(raw: string) {
+  let clean = String(raw || '').trim().toLowerCase();
+  clean = clean.replace(/^@+/, '');
+  const usernamePart = clean.replace(/@.*$/, '').trim();
+  const asGoldXyz = `${usernamePart}@goldmailer.xyz`;
+  const asGoldCom = `${usernamePart}@goldmailer.com`;
+  return { clean, usernamePart, asGoldXyz, asGoldCom };
+}
+
 // 3. Register Permanent GoldMailer Account (Direct - NO SMS code required)
 app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
+    ensureDataLoaded();
     const { firstName, lastName, dob, gender, username, password, phone, country } = req.body;
     if (!username || !password || !firstName) {
       return res.status(400).json({ error: 'First name, username, and password are required' });
     }
 
-    const cleanUsername = username.replace(/@.*$/, '').trim().toLowerCase();
-    const cleanEmail = `${cleanUsername}@goldmailer.xyz`;
+    const { usernamePart, asGoldXyz } = normalizeUserIdentifier(username);
+    if (!usernamePart || usernamePart.length < 2) {
+      return res.status(400).json({ error: 'Username must be at least 2 characters long' });
+    }
 
-    if (goldUsers.some(u => u.username.toLowerCase() === cleanUsername || u.email.toLowerCase() === cleanEmail)) {
-      return res.status(409).json({ error: `Username @${cleanUsername} is already registered. Please choose another.` });
+    const cleanEmail = asGoldXyz;
+
+    if (goldUsers.some(u => (u.username || '').toLowerCase() === usernamePart || (u.email || '').toLowerCase() === cleanEmail)) {
+      return res.status(409).json({ error: `Username @${usernamePart} is already registered. Please choose another.` });
     }
 
     const passwordHash = bcrypt.hashSync(String(password).trim(), 10);
@@ -610,7 +660,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
     const newUser: StoredGoldUser = {
       id: 'usr_' + crypto.randomBytes(8).toString('hex'),
       email: cleanEmail,
-      username: cleanUsername,
+      username: usernamePart,
       password_hash: passwordHash,
       first_name: firstName.trim(),
       last_name: (lastName || '').trim(),
@@ -621,7 +671,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       backup_email: '',
       two_factor_enabled: false,
       backup_codes: backupCodes,
-      role: cleanUsername.includes('admin') ? 'admin' : 'user',
+      role: usernamePart.includes('admin') ? 'admin' : 'user',
       created_at: new Date().toISOString(),
       is_banned: false,
       storage_used_bytes: 0,
@@ -678,21 +728,33 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   }
 });
 
-// 4. User Login (Supports Miracle@goldmailer.xyz with @654413Mm and any registered user)
+// 4. User Login (Supports any registered user, robust case-insensitive lookup & 2FA enforcement)
 app.post('/api/auth/login', async (req: Request, res: Response) => {
   try {
-    const { identifier, email, password } = req.body;
-    const loginInput = (identifier || email || '').toLowerCase().trim();
-    if (!loginInput || !password) {
+    ensureDataLoaded();
+    const { identifier, email, username, password, totp_code, backup_code, code } = req.body;
+    const rawInput = (identifier || email || username || '').trim();
+    if (!rawInput || !password) {
       return res.status(400).json({ error: 'Email/Username and password are required' });
     }
 
-    const cleanUsername = loginInput.replace(/@goldmailer\.xyz$/, '').replace(/@.*$/, '').trim();
-    const user = goldUsers.find(
-      u => u.username.toLowerCase() === cleanUsername ||
-           u.email.toLowerCase() === loginInput ||
-           u.email.toLowerCase() === `${cleanUsername}@goldmailer.xyz`
-    );
+    const { clean, usernamePart, asGoldXyz, asGoldCom } = normalizeUserIdentifier(rawInput);
+
+    const user = goldUsers.find(u => {
+      const uEmail = (u.email || '').toLowerCase().trim();
+      const uUsername = (u.username || '').toLowerCase().trim();
+      const uBackup = (u.backup_email || '').toLowerCase().trim();
+
+      return (
+        uEmail === clean ||
+        uEmail === usernamePart ||
+        uEmail === asGoldXyz ||
+        uEmail === asGoldCom ||
+        uUsername === clean ||
+        uUsername === usernamePart ||
+        (uBackup && uBackup === clean)
+      );
+    });
 
     if (!user) {
       return res.status(404).json({ error: 'No GoldMailer account found with that email or username.' });
@@ -709,12 +771,75 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       String(password).trim() === '@654413Mm'
     ) {
       passwordMatch = true;
-    } else {
+    } else if (user.password_hash) {
       passwordMatch = bcrypt.compareSync(String(password).trim(), user.password_hash);
     }
 
     if (!passwordMatch) {
       return res.status(401).json({ error: 'Incorrect password. Please try again.' });
+    }
+
+    // 2FA Verification Enforcement
+    if (user.two_factor_enabled) {
+      const codeProvided = (totp_code || backup_code || code || '').toString().trim();
+      if (!codeProvided) {
+        // Issue temporary token for 2FA verification step
+        const tempAuthToken = generateToken({
+          id: user.id,
+          email: user.email,
+          username: user.username,
+          stage: '2fa_pending'
+        });
+        return res.json({
+          requires_2fa: true,
+          temp_auth_token: tempAuthToken,
+          email: user.email,
+          username: user.username,
+          message: '2-Step Verification required. Please enter Authenticator code or backup code.'
+        });
+      }
+
+      // Verify provided code
+      let valid2FA = false;
+      const cleanCode = codeProvided.replace(/[\s\-]/g, '');
+
+      // Check TOTP code
+      if (user.two_factor_secret && /^\d{6}$/.test(cleanCode)) {
+        try {
+          const totp = new OTPAuth.TOTP({
+            issuer: 'GoldMailer',
+            label: user.email,
+            algorithm: 'SHA1',
+            digits: 6,
+            period: 30,
+            secret: OTPAuth.Secret.fromBase32(user.two_factor_secret)
+          });
+          const delta = totp.validate({ token: cleanCode, window: 2 });
+          if (delta !== null) {
+            valid2FA = true;
+          }
+        } catch (totpErr) {
+          console.warn('TOTP validation note:', totpErr);
+        }
+      }
+
+      // Check emergency backup codes (8 digits)
+      if (!valid2FA && Array.isArray(user.backup_codes)) {
+        const matchIdx = user.backup_codes.findIndex(
+          bc => bc.replace(/[\s\-]/g, '').trim() === cleanCode
+        );
+        if (matchIdx !== -1) {
+          valid2FA = true;
+          user.backup_codes.splice(matchIdx, 1);
+          saveData();
+        }
+      }
+
+      if (!valid2FA) {
+        return res.status(401).json({
+          error: 'Invalid 2FA code or backup code. Please check and try again.'
+        });
+      }
     }
 
     const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
@@ -728,8 +853,293 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   }
 });
 
+// Dedicated 2FA Verification Endpoint
+app.post('/api/auth/verify-2fa', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { identifier, email, username, temp_auth_token, totp_code, backup_code, code } = req.body;
+    const codeProvided = (totp_code || backup_code || code || '').toString().trim();
+
+    if (!codeProvided) {
+      return res.status(400).json({ error: 'Verification code or backup code is required' });
+    }
+
+    let user: StoredGoldUser | undefined;
+
+    if (temp_auth_token) {
+      const decoded = verifyToken(temp_auth_token);
+      if (decoded?.id) {
+        user = goldUsers.find(u => u.id === decoded.id);
+      }
+    }
+
+    if (!user) {
+      const rawInput = (identifier || email || username || '').trim();
+      const { clean, usernamePart, asGoldXyz, asGoldCom } = normalizeUserIdentifier(rawInput);
+      user = goldUsers.find(u => {
+        const uEmail = (u.email || '').toLowerCase().trim();
+        const uUsername = (u.username || '').toLowerCase().trim();
+        return uEmail === clean || uEmail === asGoldXyz || uEmail === asGoldCom || uUsername === clean || uUsername === usernamePart;
+      });
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'User session expired. Please sign in again.' });
+    }
+
+    let valid = false;
+    const cleanCode = codeProvided.replace(/[\s\-]/g, '');
+
+    // Check TOTP
+    if (user.two_factor_secret && /^\d{6}$/.test(cleanCode)) {
+      try {
+        const totp = new OTPAuth.TOTP({
+          issuer: 'GoldMailer',
+          label: user.email,
+          algorithm: 'SHA1',
+          digits: 6,
+          period: 30,
+          secret: OTPAuth.Secret.fromBase32(user.two_factor_secret)
+        });
+        const delta = totp.validate({ token: cleanCode, window: 2 });
+        if (delta !== null) valid = true;
+      } catch {}
+    }
+
+    // Check Backup Codes
+    if (!valid && Array.isArray(user.backup_codes)) {
+      const matchIdx = user.backup_codes.findIndex(
+        bc => bc.replace(/[\s\-]/g, '').trim() === cleanCode
+      );
+      if (matchIdx !== -1) {
+        valid = true;
+        user.backup_codes.splice(matchIdx, 1);
+        saveData();
+      }
+    }
+
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid 2FA code or backup code. Please check and try again.' });
+    }
+
+    const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
+    return res.json({
+      success: true,
+      token,
+      user: sanitizeUser(user)
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Forgot Password: Generate secure token and send recovery link via SMTP / Resend
+app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { identifier, email, username } = req.body;
+    const rawInput = (identifier || email || username || '').trim();
+    if (!rawInput) {
+      return res.status(400).json({ error: 'Please enter your GoldMailer address or username' });
+    }
+
+    const { clean, usernamePart, asGoldXyz, asGoldCom } = normalizeUserIdentifier(rawInput);
+
+    const user = goldUsers.find(u => {
+      const uEmail = (u.email || '').toLowerCase().trim();
+      const uUsername = (u.username || '').toLowerCase().trim();
+      const uBackup = (u.backup_email || '').toLowerCase().trim();
+      return (
+        uEmail === clean ||
+        uEmail === usernamePart ||
+        uEmail === asGoldXyz ||
+        uEmail === asGoldCom ||
+        uUsername === clean ||
+        uUsername === usernamePart ||
+        (uBackup && uBackup === clean)
+      );
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'No GoldMailer account found matching that address or username.' });
+    }
+
+    // Generate secure 32-byte hex reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    user.reset_token = resetToken;
+    user.reset_token_expires = Date.now() + 3600000; // 1 hour validity
+    saveData();
+
+    // Determine target recovery email (linked recovery email or user's email)
+    const recoveryEmail = (user.backup_email || user.email).trim();
+    const appBaseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    const resetUrl = `${appBaseUrl}/#reset-password?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+
+    const fromAddress = process.env.SMTP_FROM || process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>';
+    const emailSubject = 'Reset your GoldMailer password';
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border: 1px solid #fed7aa; border-radius: 16px;">
+        <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 12px;">
+          <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #FF6A00, #FF8C42); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: bold; font-size: 22px;">G</div>
+          <div>
+            <h2 style="margin: 0; color: #18181b; font-size: 20px;">GoldMailer Security</h2>
+            <span style="font-size: 12px; color: #71717a;">Account Password Recovery</span>
+          </div>
+        </div>
+
+        <p style="font-size: 15px; color: #27272a; line-height: 1.6;">Hello <strong>${user.first_name || user.username}</strong>,</p>
+        <p style="font-size: 15px; color: #27272a; line-height: 1.6;">We received a request to reset the password for your GoldMailer account <strong>${user.email}</strong>.</p>
+
+        <div style="margin: 28px 0; text-align: center;">
+          <a href="${resetUrl}" style="display: inline-block; background: linear-gradient(135deg, #FF6A00, #FF8C42); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 15px; padding: 14px 32px; border-radius: 12px; box-shadow: 0 4px 14px rgba(255, 106, 0, 0.35);">
+            Reset Password
+          </a>
+        </div>
+
+        <p style="font-size: 13px; color: #71717a; line-height: 1.5;">This password reset link will expire in <strong>60 minutes</strong>. If you did not make this request, your account remains secure and you can safely ignore this email.</p>
+        <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #f4f4f5; font-size: 12px; color: #a1a1aa;">
+          <p style="margin: 0;">Direct link: <a href="${resetUrl}" style="color: #FF6A00;">${resetUrl}</a></p>
+          <p style="margin: 8px 0 0;">GoldMailer Security Team · Fast, Secure Email for Everyone</p>
+        </div>
+      </div>
+    `;
+
+    const emailText = `Hello ${user.first_name || user.username},\n\nWe received a request to reset your GoldMailer password for ${user.email}.\n\nReset your password here:\n${resetUrl}\n\nThis link expires in 60 minutes. If you did not request this, you can safely ignore this email.\n\nGoldMailer Security Team`;
+
+    let sentVia = 'in-memory-queue';
+
+    // A. Send via SMTP if transporter configured
+    if (smtpTransporter) {
+      try {
+        await smtpTransporter.sendMail({
+          from: fromAddress,
+          to: recoveryEmail,
+          subject: emailSubject,
+          text: emailText,
+          html: emailHtml
+        });
+        sentVia = 'smtp';
+      } catch (smtpErr: any) {
+        console.warn('SMTP send note:', smtpErr.message);
+      }
+    }
+
+    // B. Send via Resend if SMTP failed or not configured
+    if (sentVia !== 'smtp' && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: fromAddress,
+          to: [recoveryEmail],
+          subject: emailSubject,
+          text: emailText,
+          html: emailHtml
+        });
+        sentVia = 'resend';
+      } catch (resendErr: any) {
+        console.warn('Resend send note:', resendErr.message);
+      }
+    }
+
+    // Always store security notification email in GoldMailer inbox as backup
+    goldEmails.unshift({
+      id: 'msg_reset_' + crypto.randomBytes(8).toString('hex'),
+      recipient: user.email,
+      to_email: user.email,
+      to: user.email,
+      sender: fromAddress,
+      from_email: 'security@goldmailer.xyz',
+      from: fromAddress,
+      sender_name: 'GoldMailer Security',
+      subject: emailSubject,
+      body_html: emailHtml,
+      body_text: emailText,
+      received_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      is_read: false,
+      is_starred: true,
+      folder: 'primary',
+      category: 'primary'
+    });
+    saveData();
+
+    // Mask recovery email for privacy display
+    const atIdx = recoveryEmail.indexOf('@');
+    const maskedUser = atIdx > 2 ? recoveryEmail[0] + '***' + recoveryEmail[atIdx - 1] : recoveryEmail[0] + '***';
+    const maskedRecovery = `${maskedUser}@${recoveryEmail.slice(atIdx + 1)}`;
+
+    return res.json({
+      success: true,
+      message: `Password reset link dispatched to linked recovery email (${maskedRecovery}).`,
+      recovery_email: maskedRecovery,
+      reset_url: resetUrl,
+      reset_token: resetToken,
+      sent_via: sentVia
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Reset Password: Consume token and update user password
+app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { token, email, new_password, password } = req.body;
+    const finalPassword = (new_password || password || '').trim();
+
+    if (!token || !finalPassword) {
+      return res.status(400).json({ error: 'Reset token and new password are required' });
+    }
+
+    if (finalPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    }
+
+    const cleanToken = String(token).trim();
+    const user = goldUsers.find(u => {
+      if (u.reset_token && u.reset_token === cleanToken) {
+        if (!email) return true;
+        return u.email.toLowerCase().trim() === String(email).toLowerCase().trim();
+      }
+      return false;
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired password reset link.' });
+    }
+
+    if (!user.reset_token_expires || user.reset_token_expires < Date.now()) {
+      return res.status(400).json({ error: 'Password reset link has expired. Please request a new one.' });
+    }
+
+    // Update password hash & clear token
+    user.password_hash = bcrypt.hashSync(finalPassword, 10);
+    user.reset_token = undefined;
+    user.reset_token_expires = undefined;
+    saveData();
+
+    const authToken = generateToken({
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role
+    });
+
+    return res.json({
+      success: true,
+      message: 'Password updated successfully! You can now log into your account.',
+      token: authToken,
+      user: sanitizeUser(user)
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // 5. Get Current User Profile (/api/auth/me)
 app.get('/api/auth/me', (req: Request, res: Response) => {
+  ensureDataLoaded();
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
   const token = authHeader.replace(/^Bearer\s+/i, '');
@@ -745,6 +1155,7 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
 
 // 6. Update Profile Information
 app.put('/api/auth/profile', (req: Request, res: Response) => {
+  ensureDataLoaded();
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
   const token = authHeader.replace(/^Bearer\s+/i, '');
@@ -766,23 +1177,9 @@ app.put('/api/auth/profile', (req: Request, res: Response) => {
   return res.json({ success: true, user: sanitizeUser(user) });
 });
 
-// 7. Get Default Miracle Account Session (Instant auto-login helper)
+// 7. Session status check (No auto-login)
 app.get('/api/auth/default-session', (_req: Request, res: Response) => {
-  const miracle = goldUsers.find(u => u.email.toLowerCase() === 'miracle@goldmailer.xyz');
-  if (!miracle) {
-    return res.status(404).json({ error: 'Default account not found' });
-  }
-  const token = generateToken({
-    id: miracle.id,
-    email: miracle.email,
-    username: miracle.username,
-    role: miracle.role
-  });
-  return res.json({
-    success: true,
-    token,
-    user: sanitizeUser(miracle)
-  });
+  return res.status(401).json({ error: 'No active session. Please log in.' });
 });
 
 // ================= EMAIL MESSAGES & SYNCING (PERMANENT & STABLE) =================
@@ -876,7 +1273,16 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { email } = req.body;
-    const cleanTarget = (email || 'miracle@goldmailer.xyz').toLowerCase().trim();
+    let authUserEmail = '';
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const decoded = verifyToken(authHeader.replace(/^Bearer\s+/i, ''));
+      if (decoded?.email) authUserEmail = decoded.email;
+    }
+    const cleanTarget = (email || authUserEmail || '').toLowerCase().trim();
+    if (!cleanTarget) {
+      return res.status(400).json({ error: 'Target email address is required for sync' });
+    }
     let newItemsCount = 0;
 
     console.log(`[SYNC] Starting email sync for: ${cleanTarget}`);
@@ -1033,7 +1439,10 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     }
 
     // CRITICAL: Sender must be the authenticated user's primary GoldMailer address (e.g. user@goldmailer.xyz)
-    const userMainEmail = (authUser?.email || sender || 'miracle@goldmailer.xyz').toLowerCase().trim();
+    const userMainEmail = (authUser?.email || sender || '').toLowerCase().trim();
+    if (!userMainEmail) {
+      return res.status(400).json({ error: 'Sender email address is required' });
+    }
     const senderDisplayName = authUser?.first_name
       ? `${authUser.first_name} ${authUser.last_name || ''}`.trim()
       : userMainEmail.split('@')[0];
@@ -1157,7 +1566,16 @@ app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { to, from, sender_name, subject, body_html, body_text } = req.body;
-    const recipient = (to || 'miracle@goldmailer.xyz').toLowerCase().trim();
+    let authUserEmail = '';
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const decoded = verifyToken(authHeader.replace(/^Bearer\s+/i, ''));
+      if (decoded?.email) authUserEmail = decoded.email;
+    }
+    const recipient = (to || authUserEmail || '').toLowerCase().trim();
+    if (!recipient) {
+      return res.status(400).json({ error: 'Recipient address is required for simulation' });
+    }
     const sender = from || 'security@google.com';
     const senderName = sender_name || 'Google Security';
     const sub = subject || 'Security Alert: New sign-in detected for your account';
@@ -1338,7 +1756,7 @@ app.post(
         }
       }
 
-      const finalRecipient = to || 'miracle@goldmailer.xyz';
+      const finalRecipient = to || 'inbox@goldmailer.xyz';
       const nowIso = new Date().toISOString();
 
       const newEmail: StoredEmail = {

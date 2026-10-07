@@ -27,7 +27,10 @@ import {
   sendPhoneOtp,
   verifyPhoneOtp,
   registerGoldUser,
-  loginGoldUser
+  loginGoldUser,
+  verify2FALogin,
+  requestPasswordReset,
+  confirmPasswordReset
 } from '../lib/api';
 import { UserProfile } from '../types';
 
@@ -35,7 +38,9 @@ interface AuthWizardModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (user: UserProfile) => void;
-  initialMode?: 'login' | 'register';
+  initialMode?: 'login' | 'register' | 'forgot' | 'reset';
+  initialResetToken?: string;
+  initialResetEmail?: string;
   onSuspiciousLoginDetected?: (data: any) => void;
 }
 
@@ -44,9 +49,11 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   onClose,
   onSuccess,
   initialMode = 'login',
+  initialResetToken = '',
+  initialResetEmail = '',
   onSuspiciousLoginDetected
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'register' | '2fa' | 'forgot' | 'reset'>(initialMode);
   const [step, setStep] = useState<number>(1); // 1 to 6
 
   // Step 1: Names
@@ -86,20 +93,40 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   // Login form state
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [loginTotp, setLoginTotp] = useState('');
-  const [needs2FA, setNeeds2FA] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+
+  // 2FA state
+  const [tempAuthToken, setTempAuthToken] = useState('');
+  const [twoFaTargetEmail, setTwoFaTargetEmail] = useState('');
+  const [twoFaCode, setTwoFaCode] = useState('');
+  const [useBackupCode, setUseBackupCode] = useState(false);
+
+  // Forgot Password state
+  const [forgotIdentifier, setForgotIdentifier] = useState('');
+  const [forgotSentSuccess, setForgotSentSuccess] = useState(false);
+  const [recoveryEmailHint, setRecoveryEmailHint] = useState('');
+  const [resetDirectLink, setResetDirectLink] = useState('');
+
+  // Reset Password state
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [resetTokenVal, setResetTokenVal] = useState(initialResetToken);
+  const [resetEmailVal, setResetEmailVal] = useState(initialResetEmail);
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setMode(initialMode);
+    if (initialResetToken) setResetTokenVal(initialResetToken);
+    if (initialResetEmail) setResetEmailVal(initialResetEmail);
     if (!isOpen) {
       setStep(1);
       setError(null);
+      setForgotSentSuccess(false);
+      setTwoFaCode('');
     }
-  }, [initialMode, isOpen]);
+  }, [initialMode, initialResetToken, initialResetEmail, isOpen]);
 
   // Live availability check on username typing (debounced)
   useEffect(() => {
@@ -179,8 +206,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
     try {
       const res = await loginGoldUser({
         identifier: loginIdentifier.trim(),
-        password: loginPassword.trim(),
-        totp_code: loginTotp.trim() || undefined
+        password: loginPassword.trim()
       });
 
       // Suspicious device detected!
@@ -192,10 +218,12 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
         }
       }
 
-      // 2FA required
+      // If 2FA is required: redirect to dedicated 2FA verification page!
       if (res.requires_2fa) {
-        setNeeds2FA(true);
-        setError('2-Step Verification required. Please enter 6-digit Authenticator code or backup code.');
+        setTempAuthToken(res.temp_auth_token || '');
+        setTwoFaTargetEmail(res.email || loginIdentifier);
+        setMode('2fa');
+        setError(null);
         return;
       }
 
@@ -203,6 +231,90 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       onClose();
     } catch (err: any) {
       setError(err.message || 'Invalid credentials');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 2FA Verification handler
+  const handle2FASubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!twoFaCode.trim()) {
+      setError('Please enter your 6-digit Authenticator code or 8-digit backup code');
+      return;
+    }
+    setError(null);
+    setIsLoading(true);
+    try {
+      const res = await verify2FALogin({
+        identifier: loginIdentifier.trim(),
+        temp_auth_token: tempAuthToken,
+        code: twoFaCode.trim()
+      });
+      onSuccess(res.user);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Invalid 2FA code or backup code');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot Password handler
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forgotIdentifier.trim()) {
+      setError('Please enter your GoldMailer address or username');
+      return;
+    }
+    setError(null);
+    setIsLoading(true);
+    try {
+      const res = await requestPasswordReset(forgotIdentifier.trim());
+      setForgotSentSuccess(true);
+      setRecoveryEmailHint(res.recovery_email || '');
+      if (res.reset_token) {
+        setResetTokenVal(res.reset_token);
+      }
+      if (res.reset_url) {
+        setResetDirectLink(res.reset_url);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to dispatch password recovery email');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Reset Password handler
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      setError('Password must be at least 6 characters long');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    if (!resetTokenVal.trim()) {
+      setError('Reset token is missing. Please request a new recovery link.');
+      return;
+    }
+    setError(null);
+    setIsLoading(true);
+    try {
+      const res = await confirmPasswordReset({
+        token: resetTokenVal.trim(),
+        new_password: newPassword,
+        email: resetEmailVal || undefined
+      });
+      if (res.user) {
+        onSuccess(res.user);
+      }
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to reset password');
     } finally {
       setIsLoading(false);
     }
@@ -249,7 +361,11 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                 </span>
               </h2>
               <p className="text-xs text-zinc-400">
-                {mode === 'register' ? `Create Account · Step ${step} of 6` : 'Sign in to your GoldMailer account'}
+                {mode === 'register' && `Create Account · Step ${step} of 6`}
+                {mode === 'login' && 'Sign in to your GoldMailer account'}
+                {mode === '2fa' && '2-Step Verification'}
+                {mode === 'forgot' && 'Account Password Recovery'}
+                {mode === 'reset' && 'Create New Password'}
               </p>
             </div>
           </div>
@@ -268,35 +384,276 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
           </div>
         )}
 
-        {/* Mode Switcher Tabs */}
-        <div className="mt-4 grid grid-cols-2 p-1 bg-white/5 rounded-xl border border-white/10 text-xs font-semibold">
-          <button
-            onClick={() => {
-              setMode('login');
-              setError(null);
-            }}
-            className={`py-2 rounded-lg transition-all ${
-              mode === 'login'
-                ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            onClick={() => {
-              setMode('register');
-              setError(null);
-            }}
-            className={`py-2 rounded-lg transition-all ${
-              mode === 'register'
-                ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            Create Account
-          </button>
-        </div>
+        {/* Mode Switcher Tabs (For Login / Register) */}
+        {(mode === 'login' || mode === 'register') && (
+          <div className="mt-4 grid grid-cols-2 p-1 bg-white/5 rounded-xl border border-white/10 text-xs font-semibold">
+            <button
+              onClick={() => {
+                setMode('login');
+                setError(null);
+              }}
+              className={`py-2 rounded-lg transition-all ${
+                mode === 'login'
+                  ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              onClick={() => {
+                setMode('register');
+                setError(null);
+              }}
+              className={`py-2 rounded-lg transition-all ${
+                mode === 'register'
+                  ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+        )}
+
+        {/* Back navigation for sub-modes */}
+        {(mode === '2fa' || mode === 'forgot' || mode === 'reset') && (
+          <div className="mt-3 flex items-center justify-between text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                setMode('login');
+                setError(null);
+              }}
+              className="text-[#FF8C42] hover:underline flex items-center gap-1 font-medium cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back to Sign In</span>
+            </button>
+            <span className="text-zinc-500 text-[11px]">GoldMailer Security</span>
+          </div>
+        )}
+
+        {/* ================= 2FA VERIFICATION PAGE ================= */}
+        {mode === '2fa' && (
+          <form onSubmit={handle2FASubmit} className="mt-5 space-y-4 animate-in fade-in">
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-[#FF6A00]/15 to-transparent border border-[#FF6A00]/30 space-y-2">
+              <div className="flex items-center gap-2.5 text-[#FF8C42]">
+                <KeyRound className="w-5 h-5" />
+                <h3 className="font-bold text-sm text-white">2-Step Verification</h3>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                Enter the verification code for <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong> to complete your sign-in.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                {useBackupCode ? '8-Digit Backup Code' : '6-Digit Authenticator App Code'}
+              </label>
+              <input
+                type="text"
+                required
+                autoFocus
+                value={twoFaCode}
+                onChange={(e) => setTwoFaCode(e.target.value)}
+                placeholder={useBackupCode ? '1234-5678' : '123456'}
+                className="w-full bg-black/40 border border-[#FF6A00]/40 rounded-xl px-4 py-3 text-base text-white font-mono text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-[#FF6A00]/50"
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-xs pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setUseBackupCode(!useBackupCode);
+                  setTwoFaCode('');
+                  setError(null);
+                }}
+                className="text-xs text-[#FF8C42] hover:underline cursor-pointer"
+              >
+                {useBackupCode
+                  ? 'Use 6-digit Authenticator App code'
+                  : 'Lost device? Use an 8-digit backup code'}
+              </button>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Verifying code...</span>
+                </>
+              ) : (
+                <>
+                  <span>Verify Code & Sign In</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </form>
+        )}
+
+        {/* ================= FORGOT PASSWORD PAGE ================= */}
+        {mode === 'forgot' && (
+          <div className="mt-5 space-y-4 animate-in fade-in">
+            {forgotSentSuccess ? (
+              <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl space-y-3 text-center">
+                <div className="w-12 h-12 mx-auto rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <h3 className="text-base font-bold text-white">Recovery Link Dispatched</h3>
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  We have sent a secure password reset link to your linked recovery email
+                  {recoveryEmailHint ? <strong className="text-white block mt-1 font-mono">{recoveryEmailHint}</strong> : ''}.
+                  Please check your inbox (and spam folder). The link expires in 60 minutes.
+                </p>
+
+                {resetDirectLink && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setMode('reset')}
+                      className="w-full py-2.5 rounded-xl bg-[#FF6A00]/20 hover:bg-[#FF6A00]/30 border border-[#FF6A00]/40 text-[#FF8C42] font-semibold text-xs transition-all cursor-pointer"
+                    >
+                      Set New Password Now (Direct)
+                    </button>
+                  </div>
+                )}
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('login');
+                      setForgotSentSuccess(false);
+                      setError(null);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-semibold text-xs transition-all cursor-pointer"
+                  >
+                    Return to Sign In
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotSubmit} className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold text-white">Reset your password</h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    Enter your GoldMailer address or username. We'll send a secure password reset link to your linked recovery email.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                    GoldMailer Address or Username
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      required
+                      autoFocus
+                      value={forgotIdentifier}
+                      onChange={(e) => setForgotIdentifier(e.target.value)}
+                      placeholder="username@goldmailer.xyz"
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00] focus:ring-1 focus:ring-[#FF6A00]"
+                    />
+                    <Mail className="absolute right-3.5 top-3 w-4 h-4 text-zinc-500" />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Sending recovery link...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Send Recovery Link</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* ================= RESET PASSWORD PAGE ================= */}
+        {mode === 'reset' && (
+          <form onSubmit={handleResetSubmit} className="mt-5 space-y-4 animate-in fade-in">
+            <div>
+              <h3 className="text-base font-semibold text-white">Create a new password</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Set a strong password for your permanent GoldMailer account.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">New Password</label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="At least 6 characters"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3.5 top-3 text-zinc-500 hover:text-white"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">Confirm New Password</label>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+                placeholder="Repeat new password"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00]"
+              />
+            </div>
+
+            {newPassword && confirmNewPassword && newPassword !== confirmNewPassword && (
+              <p className="text-xs text-red-400">Passwords do not match.</p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLoading || newPassword.length < 6 || newPassword !== confirmNewPassword}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Updating password...</span>
+                </>
+              ) : (
+                <>
+                  <span>Save Password & Sign In</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </form>
+        )}
 
         {/* ================= LOGIN FORM ================= */}
         {mode === 'login' && (
@@ -323,8 +680,12 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                 <label className="text-xs font-medium text-zinc-300">Password</label>
                 <button
                   type="button"
-                  onClick={() => alert('Password reset link has been dispatched to recovery contact.')}
-                  className="text-xs text-[#FF8C42] hover:underline"
+                  onClick={() => {
+                    setForgotIdentifier(loginIdentifier);
+                    setMode('forgot');
+                    setError(null);
+                  }}
+                  className="text-xs text-[#FF8C42] hover:underline cursor-pointer"
                 >
                   Forgot password?
                 </button>
@@ -348,21 +709,6 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
               </div>
             </div>
 
-            {needs2FA && (
-              <div className="p-3.5 bg-[#FF6A00]/10 border border-[#FF6A00]/30 rounded-xl space-y-2">
-                <label className="block text-xs font-semibold text-[#FF8C42]">
-                  Enter 6-Digit Authenticator Code or Backup Code
-                </label>
-                <input
-                  type="text"
-                  value={loginTotp}
-                  onChange={(e) => setLoginTotp(e.target.value)}
-                  placeholder="123456 or 8-digit backup code"
-                  className="w-full bg-black/40 border border-[#FF6A00]/40 rounded-lg px-3 py-2 text-sm text-white font-mono text-center tracking-widest focus:outline-none"
-                />
-              </div>
-            )}
-
             <div className="flex items-center justify-between text-xs text-zinc-400 pt-1">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -378,10 +724,19 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full mt-2 py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full mt-2 py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
             >
-              {isLoading ? 'Signing in...' : 'Sign In to GoldMailer'}
-              <ArrowRight className="w-4 h-4" />
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Signing in...</span>
+                </>
+              ) : (
+                <>
+                  <span>Sign In to GoldMailer</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
         )}
@@ -527,7 +882,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
-                      placeholder="miracle"
+                      placeholder="yourname"
                       className="flex-1 bg-transparent text-sm text-white outline-none font-medium"
                     />
                     <span className="text-xs font-mono text-[#FF8C42] px-2 py-0.5 rounded bg-[#FF6A00]/15">

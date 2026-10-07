@@ -171,7 +171,7 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
           </button>
 
           {/* Admin link if user is admin */}
-          {(user?.role === 'admin' || user?.email?.includes('admin') || user?.email === 'miracle@goldmailer.xyz') && (
+          {(user?.role === 'admin' || user?.email?.toLowerCase().includes('admin')) && (
             <button
               onClick={() => {
                 if (onOpenAdmin) onOpenAdmin();

@@ -97,7 +97,7 @@ export function setCachedEmails(email: string, emails: EmailMessage[]): void {
 export function getStoredActiveEmail(): string {
   const user = getStoredUser();
   if (user?.email) return user.email;
-  return localStorage.getItem('goldmail_active_email') || 'miracle@goldmailer.xyz';
+  return localStorage.getItem('goldmail_active_email') || '';
 }
 
 export function setStoredActiveEmail(email: string): void {
@@ -144,17 +144,7 @@ export function getStoredAccounts(): StoredAccount[] {
     return [defaultAcc];
   }
 
-  // Initial seed account for Miracle Solomon
-  const initialMiracle: StoredAccount = {
-    id: 'usr_miracle_01',
-    email: 'miracle@goldmailer.xyz',
-    username: 'miracle',
-    name: 'Miracle Solomon',
-    token: token || '',
-    role: 'admin'
-  };
-  saveStoredAccounts([initialMiracle]);
-  return [initialMiracle];
+  return [];
 }
 
 export function saveStoredAccounts(accounts: StoredAccount[]): void {
@@ -203,31 +193,12 @@ export function switchActiveAccount(email: string): StoredAccount | null {
   return null;
 }
 
-// Auto-initialize session if none exists
+// Auto-initialize session only if token exists
 export async function initDefaultSession(): Promise<UserProfile | null> {
   try {
     const token = getAuthToken();
     if (token) {
-      const me = await fetchCurrentUser();
-      if (me) return me;
-    }
-    const res = await fetch('/api/auth/default-session');
-    if (!res.ok) return null;
-    const data = await safeJsonParse(res);
-    if (data.token && data.user) {
-      setAuthToken(data.token);
-      setStoredUser(data.user);
-      setStoredActiveEmail(data.user.email);
-      addStoredAccount({
-        id: data.user.id,
-        email: data.user.email,
-        username: data.user.username,
-        name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
-        token: data.token,
-        avatar_url: data.user.avatar_url,
-        role: data.user.role
-      });
-      return data.user;
+      return await fetchCurrentUser();
     }
     return null;
   } catch {
@@ -428,6 +399,76 @@ export async function loginGoldUser(credentials: {
 
 export async function loginUser(emailOrIdentifier: string, password: string): Promise<any> {
   return loginGoldUser({ identifier: emailOrIdentifier, password });
+}
+
+// 2FA Verification API
+export async function verify2FALogin(params: {
+  identifier?: string;
+  email?: string;
+  temp_auth_token?: string;
+  code: string;
+}): Promise<any> {
+  const res = await fetch('/api/auth/verify-2fa', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Verification failed');
+  }
+  if (data.token && data.user) {
+    setAuthToken(data.token);
+    setStoredUser(data.user);
+    setStoredActiveEmail(data.user.email);
+    addStoredAccount({
+      id: data.user.id,
+      email: data.user.email,
+      username: data.user.username,
+      name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+      token: data.token,
+      avatar_url: data.user.avatar_url,
+      role: data.user.role
+    });
+  }
+  return data;
+}
+
+// Forgot Password API
+export async function requestPasswordReset(identifier: string): Promise<{ success: boolean; message: string; recovery_email?: string; reset_url?: string; reset_token?: string }> {
+  const res = await fetch('/api/auth/forgot-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Password reset request failed');
+  }
+  return data;
+}
+
+// Reset Password API
+export async function confirmPasswordReset(params: {
+  token: string;
+  new_password: string;
+  email?: string;
+}): Promise<{ success: boolean; message: string; user?: UserProfile; token?: string }> {
+  const res = await fetch('/api/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Password reset failed');
+  }
+  if (data.token && data.user) {
+    setAuthToken(data.token);
+    setStoredUser(data.user);
+    setStoredActiveEmail(data.user.email);
+  }
+  return data;
 }
 
 // Poll Login Attempt Status (for suspicious device screen)

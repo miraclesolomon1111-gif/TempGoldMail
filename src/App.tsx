@@ -57,20 +57,21 @@ export default function App() {
   const [user, setUser] = useState<UserProfile | null>(() => getStoredUser());
   const [activeEmail, setActiveEmail] = useState<string>(() => {
     const stored = getStoredActiveEmail();
-    if (stored) return stored;
-    return 'miracle@goldmailer.xyz';
+    return stored || '';
   });
 
-  // View Mode: 'app' (Webmail) vs 'hero' (Landing Page)
-  const [viewMode, setViewMode] = useState<'app' | 'hero'>('app');
+  // View Mode: 'app' (Webmail) for authenticated users vs 'hero' (Landing Page) for visitors
+  const [viewMode, setViewMode] = useState<'app' | 'hero'>(() => {
+    return getStoredUser() ? 'app' : 'hero';
+  });
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
 
   // Mailbox State: initialize with cached emails so emails never flash or disappear on load
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
   const [searchQuery, setSearchQuery] = useState('');
   const [allEmails, setAllEmails] = useState<EmailMessage[]>(() => {
-    const initialEmail = getStoredActiveEmail() || 'miracle@goldmailer.xyz';
-    return getCachedEmails(initialEmail);
+    const initialEmail = getStoredActiveEmail();
+    return initialEmail ? getCachedEmails(initialEmail) : [];
   });
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
@@ -88,7 +89,9 @@ export default function App() {
   const [composeInitialBody, setComposeInitialBody] = useState('');
 
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot' | 'reset'>('login');
+  const [resetToken, setResetToken] = useState<string>('');
+  const [resetEmail, setResetEmail] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isOAuthDevOpen, setIsOAuthDevOpen] = useState(false);
@@ -135,6 +138,16 @@ export default function App() {
         setHeroInitialSection('privacy');
       }
 
+      // Reset Password route from email link
+      if (hash.startsWith('#reset-password') || path === '/reset-password') {
+        const rawToken = url.searchParams.get('token') || '';
+        const rawEmail = url.searchParams.get('email') || '';
+        setResetToken(rawToken);
+        setResetEmail(rawEmail);
+        setAuthMode('reset');
+        setIsAuthOpen(true);
+      }
+
       // OAuth Consent query
       if (url.searchParams.get('oauth_consent') === 'true' || path === '/oauth/authorize' || path === '/api/oauth/authorize') {
         const cId = url.searchParams.get('client_id') || '';
@@ -153,7 +166,7 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleRouteCheck);
   }, []);
 
-  // Fetch current user or initialize default Miracle session on mount
+  // Restore authenticated session on mount if valid token exists
   useEffect(() => {
     initDefaultSession().then((u) => {
       if (u) {
@@ -162,6 +175,7 @@ export default function App() {
         setStoredActiveEmail(u.email);
         const cached = getCachedEmails(u.email);
         if (cached.length > 0) setAllEmails(cached);
+        setViewMode('app');
       }
     }).catch(() => {});
   }, []);
@@ -169,6 +183,10 @@ export default function App() {
   // Load emails and drafts for active email (fetches all_mail and drafts)
   const loadMailData = useCallback(async (targetEmail?: string, silent = false) => {
     const emailToFetch = targetEmail || activeEmail;
+    if (!emailToFetch) {
+      if (!silent) setIsLoadingEmails(false);
+      return;
+    }
     if (!silent) setIsLoadingEmails(true);
     try {
       const emailPromise = fetchEmails(emailToFetch, 'all_mail');
@@ -419,8 +437,9 @@ export default function App() {
   const handleLogout = () => {
     clearAuthToken();
     setUser(null);
-    setActiveEmail('miracle@goldmailer.xyz');
-    setStoredActiveEmail('miracle@goldmailer.xyz');
+    setActiveEmail('');
+    setStoredActiveEmail('');
+    setAllEmails([]);
     setViewMode('hero');
   };
 
@@ -429,8 +448,9 @@ export default function App() {
     localStorage.removeItem('goldmailer_multi_accounts');
     clearAuthToken();
     setUser(null);
-    setActiveEmail('miracle@goldmailer.xyz');
-    setStoredActiveEmail('miracle@goldmailer.xyz');
+    setActiveEmail('');
+    setStoredActiveEmail('');
+    setAllEmails([]);
     setViewMode('hero');
   };
 
@@ -654,6 +674,8 @@ export default function App() {
         onClose={() => setIsAuthOpen(false)}
         onSuccess={handleAuthSuccess}
         initialMode={authMode}
+        initialResetToken={resetToken}
+        initialResetEmail={resetEmail}
         onSuspiciousLoginDetected={handleSuspiciousLoginDetected}
       />
 

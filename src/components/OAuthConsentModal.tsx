@@ -107,7 +107,7 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
                 {user?.first_name ? `${user.first_name} ${user.last_name || ''}` : user?.username}
               </p>
               <p className="text-[11px] font-mono text-[#FF8C42] truncate">
-                {user?.email || 'miracle@goldmailer.xyz'}
+                {user?.email || ''}
               </p>
             </div>
           </div>

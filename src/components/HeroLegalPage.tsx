@@ -104,17 +104,17 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             <button
               type="button"
               onClick={onOpenLogin}
-              className="px-4 py-2 rounded-xl border border-[#FF6A00]/30 hover:border-[#FF6A00] text-xs font-bold transition-all text-[#FF8C42] hover:bg-[#FF6A00]/10"
+              className="px-3.5 py-2 rounded-xl border border-[#FF6A00]/30 hover:border-[#FF6A00] text-xs font-bold transition-all text-[#FF8C42] hover:bg-[#FF6A00]/10 cursor-pointer"
             >
-              Login
+              Log into your GoldMailer Account
             </button>
 
             <button
               type="button"
               onClick={onOpenRegister}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center gap-1.5"
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center gap-1.5 cursor-pointer"
             >
-              <span>Get Started</span>
+              <span>Create Account</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -143,30 +143,22 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             </p>
 
             {/* Orange Glass Call to Action Buttons */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
               <button
                 type="button"
                 onClick={onOpenRegister}
-                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-base shadow-xl shadow-[#FF6A00]/35 hover:shadow-[#FF6A00]/50 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5"
+                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-base shadow-xl shadow-[#FF6A00]/35 hover:shadow-[#FF6A00]/50 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5 cursor-pointer"
               >
-                <span>Get Started - Create GoldMailer Account</span>
+                <span>Create a GoldMailer Account</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
               <button
                 type="button"
                 onClick={onOpenLogin}
-                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-white/10 hover:bg-white/15 border border-[#FF6A00]/40 text-white font-bold text-base backdrop-blur-xl transition-all flex items-center justify-center gap-2"
+                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-white/10 hover:bg-white/15 border border-[#FF6A00]/50 text-white font-bold text-base backdrop-blur-xl transition-all flex items-center justify-center gap-2 cursor-pointer hover:border-[#FF6A00]"
               >
-                <span>Login</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={onBackToApp}
-                className="w-full sm:w-auto px-6 py-4 rounded-2xl border border-white/10 hover:bg-white/5 text-zinc-300 font-semibold text-sm transition-all"
-              >
-                <span>Open Mailbox</span>
+                <span>Log into your GoldMailer Account</span>
               </button>
             </div>
           </section>
