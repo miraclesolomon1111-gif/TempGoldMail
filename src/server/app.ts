@@ -14,8 +14,27 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Middleware
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Enable CORS for all domains, webhooks and preflights
+app.use((req: Request, res: Response, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Normalize URLs if routed from /api or Vercel serverless functions
+app.use((req: Request, _res: Response, next) => {
+  if (!req.url.startsWith('/api')) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
 
 // Helper: Secure password hashing
 const hashPassword = (pwd: string): string => {
@@ -147,7 +166,8 @@ export interface AuditLog {
   details?: any;
 }
 
-const DATA_FILE = process.env.VERCEL
+const isServerless = Boolean(process.env.VERCEL || process.env.NOW_REGION || process.env.VERCEL_ENV);
+const DATA_FILE = isServerless
   ? path.join('/tmp', '.goldmail_data.json')
   : path.join(__dirname, '.goldmail_data.json');
 
@@ -198,6 +218,10 @@ seedAdmin();
 
 const saveData = () => {
   try {
+    const dir = path.dirname(DATA_FILE);
+    if (!fs.existsSync(dir)) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    }
     fs.writeFileSync(
       DATA_FILE,
       JSON.stringify(
@@ -213,26 +237,45 @@ const saveData = () => {
       )
     );
   } catch (e) {
-    console.error('Failed to save data to disk', e);
+    // In-memory state remains completely active
+    console.warn('Save data note (memory store active):', e);
   }
 };
 
-// Helper: Extract clean email
+// Helper: Extract clean email (handles arrays, comma-separated lists, name headers)
 function extractCleanEmail(input: any): string {
   if (!input) return '';
   let str = '';
   if (Array.isArray(input)) {
-    str = String(input[0] || '');
+    for (const item of input) {
+      const email = extractCleanEmail(item);
+      if (email.endsWith('@goldmailer.xyz')) return email;
+    }
+    str = String(input[0]?.email || input[0]?.address || input[0] || '');
   } else if (typeof input === 'object') {
     str = String(input.email || input.address || input.value || input.to || '');
   } else {
     str = String(input);
   }
+
+  // Check if comma-separated
+  if (str.includes(',')) {
+    const parts = str.split(',');
+    for (const part of parts) {
+      const cleaned = extractCleanEmail(part.trim());
+      if (cleaned.endsWith('@goldmailer.xyz')) return cleaned;
+    }
+  }
+
   const match = str.match(/<([^>]+)>/);
   if (match && match[1]) {
-    return match[1].trim().toLowerCase();
+    str = match[1];
   }
-  return str.trim().toLowerCase();
+  str = str.trim().toLowerCase();
+  if (str && !str.includes('@')) {
+    str = `${str}@goldmailer.xyz`;
+  }
+  return str;
 }
 
 function extractCleanSender(input: any): string {
@@ -883,8 +926,20 @@ const handleInboundEmail = async (req: Request, res: Response) => {
   }
 };
 
-app.post(['/api/inbound', '/api/receive-email', '/api/webhook/resend'], handleInboundEmail);
-app.get(['/api/inbound', '/api/receive-email'], (_req: Request, res: Response) => {
+app.post([
+  '/api/inbound',
+  '/inbound',
+  '/api/receive-email',
+  '/receive-email',
+  '/api/webhook/resend',
+  '/webhook/resend',
+  '/api/webhook/cloudflare',
+  '/webhook/cloudflare',
+  '/api/catch-all',
+  '/catch-all'
+], handleInboundEmail);
+
+app.get(['/api/inbound', '/inbound', '/api/receive-email', '/receive-email'], (_req: Request, res: Response) => {
   res.json({
     status: 'connected',
     service: 'GoldMail Catch-All Inbound Webhook',
