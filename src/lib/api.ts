@@ -75,6 +75,24 @@ export function normalizeEmail(raw: any): EmailMessage {
   };
 }
 
+// Email local cache helpers to eliminate flicker and guarantee permanent offline/client persistence
+export function getCachedEmails(email: string): EmailMessage[] {
+  try {
+    const raw = localStorage.getItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizeEmail);
+    }
+  } catch {}
+  return [];
+}
+
+export function setCachedEmails(email: string, emails: EmailMessage[]): void {
+  try {
+    localStorage.setItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`, JSON.stringify(emails.slice(0, 300)));
+  } catch {}
+}
+
 // Active email address management
 export function getStoredActiveEmail(): string {
   const user = getStoredUser();
@@ -112,20 +130,31 @@ export function getStoredAccounts(): StoredAccount[] {
   
   const curUser = getStoredUser();
   const token = getAuthToken();
-  if (curUser && token) {
+  if (curUser) {
     const defaultAcc: StoredAccount = {
       id: curUser.id,
       email: curUser.email,
       username: curUser.username,
-      name: curUser.first_name ? `${curUser.first_name} ${curUser.last_name || ''}`.trim() : curUser.username,
-      token,
+      name: curUser.first_name ? `${curUser.first_name} ${curUser.last_name || ''}`.trim() : (curUser.name || curUser.username),
+      token: token || '',
       avatar_url: curUser.avatar_url,
       role: curUser.role
     };
     saveStoredAccounts([defaultAcc]);
     return [defaultAcc];
   }
-  return [];
+
+  // Initial seed account for Miracle Solomon
+  const initialMiracle: StoredAccount = {
+    id: 'usr_miracle_01',
+    email: 'miracle@goldmailer.xyz',
+    username: 'miracle',
+    name: 'Miracle Solomon',
+    token: token || '',
+    role: 'admin'
+  };
+  saveStoredAccounts([initialMiracle]);
+  return [initialMiracle];
 }
 
 export function saveStoredAccounts(accounts: StoredAccount[]): void {
@@ -172,6 +201,38 @@ export function switchActiveAccount(email: string): StoredAccount | null {
     return found;
   }
   return null;
+}
+
+// Auto-initialize session if none exists
+export async function initDefaultSession(): Promise<UserProfile | null> {
+  try {
+    const token = getAuthToken();
+    if (token) {
+      const me = await fetchCurrentUser();
+      if (me) return me;
+    }
+    const res = await fetch('/api/auth/default-session');
+    if (!res.ok) return null;
+    const data = await safeJsonParse(res);
+    if (data.token && data.user) {
+      setAuthToken(data.token);
+      setStoredUser(data.user);
+      setStoredActiveEmail(data.user.email);
+      addStoredAccount({
+        id: data.user.id,
+        email: data.user.email,
+        username: data.user.username,
+        name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+        token: data.token,
+        avatar_url: data.user.avatar_url,
+        role: data.user.role
+      });
+      return data.user;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // Auth token helpers
@@ -525,12 +586,32 @@ export async function fetchEmails(emailAddress: string, folder: string = 'all'):
     const res = await fetch(`/api/emails/${encodeURIComponent(emailAddress)}?folder=${encodeURIComponent(folder)}`);
     const list = await safeJsonParse(res);
     if (Array.isArray(list)) {
-      return list.map(normalizeEmail);
+      const normalized = list.map(normalizeEmail);
+      if (folder === 'all' || folder === 'all_mail' || folder === 'all_inboxes') {
+        setCachedEmails(emailAddress, normalized);
+      }
+      return normalized;
     }
-    return [];
+    return getCachedEmails(emailAddress);
   } catch {
-    return [];
+    return getCachedEmails(emailAddress);
   }
+}
+
+export async function simulateInboundEmail(payload?: {
+  to?: string;
+  from?: string;
+  sender_name?: string;
+  subject?: string;
+  body_html?: string;
+  body_text?: string;
+}): Promise<any> {
+  const res = await fetch('/api/emails/simulate-inbound', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload || { to: getStoredActiveEmail() })
+  });
+  return await safeJsonParse(res);
 }
 
 export async function syncEmails(email?: string): Promise<{ success: boolean; new_emails_synced: number; total_emails: number; synced_at: string }> {

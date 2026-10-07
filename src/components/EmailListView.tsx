@@ -17,6 +17,7 @@ import {
   Info
 } from 'lucide-react';
 import { EmailMessage, MailFolder, Draft } from '../types';
+import { simulateInboundEmail } from '../lib/api';
 
 interface EmailListViewProps {
   currentFolder: MailFolder | 'all_inboxes';
@@ -92,6 +93,17 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   };
 
   const isDraftFolder = currentFolder === 'drafts';
+  const [isSimulating, setIsSimulating] = React.useState(false);
+
+  const handleTestInbound = async () => {
+    setIsSimulating(true);
+    try {
+      await simulateInboundEmail({ to: activeEmail });
+      onRefresh();
+    } finally {
+      setIsSimulating(false);
+    }
+  };
 
   return (
     <div className={`flex-1 flex flex-col min-h-0 relative ${darkMode ? 'bg-[#121214]' : 'bg-[#fbf9f7]'}`}>
@@ -108,6 +120,16 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
 
         {/* Quick Email Pill and Refresh button */}
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleTestInbound}
+            disabled={isSimulating}
+            title="Receive a live test email directly into this inbox"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-semibold text-emerald-400 transition-colors disabled:opacity-50"
+          >
+            <Mail className="w-3 h-3" />
+            <span>{isSimulating ? 'Receiving...' : 'Receive Test Mail'}</span>
+          </button>
+
           <button
             onClick={onCopyEmail}
             title="Copy your permanent address"

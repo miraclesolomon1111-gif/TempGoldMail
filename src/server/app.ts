@@ -8,6 +8,20 @@ import bcrypt from 'bcryptjs';
 import * as OTPAuth from 'otpauth';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
+import { fetchEmailsFromImap, extractCleanAddress } from './imapService.js';
+
+// Server-Sent Events (SSE) for Real-Time email receiving
+const sseClients: Response[] = [];
+export function broadcastNewEmail(email: StoredEmail) {
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    const client = sseClients[i];
+    try {
+      client.write(`data: ${JSON.stringify({ type: 'new_email', email })}\n\n`);
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -210,11 +224,11 @@ export interface StoredOAuthToken {
   expires_at: number;
 }
 
-// Persistent Storage file
+// Persistent Storage file (stored in workspace root to prevent triggering Vite module reloads in src/)
 const isServerless = Boolean(process.env.VERCEL || process.env.NOW_REGION || process.env.VERCEL_ENV);
 const DATA_FILE = isServerless
   ? path.join('/tmp', '.goldmailer_data.json')
-  : path.join(__dirname, '.goldmailer_data.json');
+  : path.join(process.cwd(), '.goldmailer_data.json');
 
 let goldUsers: StoredGoldUser[] = [];
 let goldEmails: StoredEmail[] = [];
@@ -379,39 +393,63 @@ const saveData = () => {
   }
 };
 
-// Robust helper: extract clean email address from string, array, or object
-function extractCleanEmail(input: any): string {
-  if (!input) return '';
-  let str = '';
+// Robust helpers for email addresses extraction and target matching
+export function getAllEmailAddresses(input: any): string[] {
+  if (!input) return [];
+  const list: string[] = [];
   if (Array.isArray(input)) {
     for (const item of input) {
-      const email = extractCleanEmail(item);
-      if (email.endsWith('@goldmailer.xyz')) return email;
+      list.push(...getAllEmailAddresses(item));
     }
-    str = String(input[0]?.email || input[0]?.address || input[0] || '');
-  } else if (typeof input === 'object') {
-    str = String(input.email || input.address || input.value || input.to || '');
-  } else {
-    str = String(input);
+    return list;
   }
-
-  if (str.includes(',')) {
-    const parts = str.split(',');
-    for (const part of parts) {
-      const cleaned = extractCleanEmail(part.trim());
-      if (cleaned.endsWith('@goldmailer.xyz')) return cleaned;
+  if (typeof input === 'object') {
+    const val = input.email || input.address || input.value || input.to || input.from || '';
+    if (val) list.push(...getAllEmailAddresses(val));
+    return list;
+  }
+  const str = String(input);
+  const parts = str.split(/[,;]+/);
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>/) || part.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    if (match && match[1]) {
+      list.push(match[1].trim().toLowerCase());
+    } else {
+      const trimmed = part.trim().toLowerCase();
+      if (trimmed.includes('@')) {
+        list.push(trimmed);
+      } else if (trimmed) {
+        list.push(`${trimmed}@goldmailer.xyz`);
+      }
     }
   }
+  return list;
+}
 
-  const match = str.match(/<([^>]+)>/);
-  if (match && match[1]) {
-    str = match[1];
+export function extractCleanEmail(input: any): string {
+  const addrs = getAllEmailAddresses(input);
+  if (addrs.length === 0) return '';
+  const goldAddr = addrs.find(a => a.endsWith('@goldmailer.xyz'));
+  return goldAddr || addrs[0];
+}
+
+export function emailMatchesTarget(fieldVal: any, targetEmail: string): boolean {
+  if (!targetEmail) return false;
+  const cleanTarget = targetEmail.trim().toLowerCase();
+  const targetPrefix = cleanTarget.replace(/@.*$/, '');
+  const addresses = getAllEmailAddresses(fieldVal);
+  for (const addr of addresses) {
+    const cleanAddr = addr.trim().toLowerCase();
+    if (
+      cleanAddr === cleanTarget ||
+      cleanAddr === targetPrefix ||
+      cleanAddr === `${targetPrefix}@goldmailer.xyz` ||
+      (cleanTarget.endsWith('@goldmailer.xyz') && cleanAddr.replace(/@.*$/, '') === targetPrefix)
+    ) {
+      return true;
+    }
   }
-  str = str.trim().toLowerCase();
-  if (str && !str.includes('@')) {
-    str = `${str}@goldmailer.xyz`;
-  }
-  return str;
+  return false;
 }
 
 function extractCleanSender(input: any): string {
@@ -682,56 +720,81 @@ app.put('/api/auth/profile', (req: Request, res: Response) => {
   return res.json({ success: true, user: sanitizeUser(user) });
 });
 
-// ================= EMAIL MESSAGES & SYNCING (NO GLITCH, 100% RELIABLE) =================
+// 7. Get Default Miracle Account Session (Instant auto-login helper)
+app.get('/api/auth/default-session', (_req: Request, res: Response) => {
+  const miracle = goldUsers.find(u => u.email.toLowerCase() === 'miracle@goldmailer.xyz');
+  if (!miracle) {
+    return res.status(404).json({ error: 'Default account not found' });
+  }
+  const token = generateToken({
+    id: miracle.id,
+    email: miracle.email,
+    username: miracle.username,
+    role: miracle.role
+  });
+  return res.json({
+    success: true,
+    token,
+    user: sanitizeUser(miracle)
+  });
+});
+
+// ================= EMAIL MESSAGES & SYNCING (PERMANENT & STABLE) =================
 
 // 1. GET emails for user or recipient
 app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
   try {
     const rawTarget = req.params.emailAddress || '';
-    const cleanTarget = extractCleanEmail(rawTarget);
-    const target = cleanTarget.toLowerCase().trim();
-    const targetPrefix = target.split('@')[0];
+    const cleanTarget = rawTarget.toLowerCase().trim();
     const folder = ((req.query.folder as string) || 'all').toLowerCase().trim();
 
     const matches = goldEmails.filter(e => {
-      const to = extractCleanEmail(e.recipient || e.to_email || e.to || '');
-      const from = extractCleanEmail(e.from_email || e.sender || e.from || '');
+      const isToMe =
+        emailMatchesTarget(e.recipient, cleanTarget) ||
+        emailMatchesTarget(e.to_email, cleanTarget) ||
+        emailMatchesTarget(e.to, cleanTarget) ||
+        emailMatchesTarget(e.cc, cleanTarget) ||
+        emailMatchesTarget(e.bcc, cleanTarget);
 
-      const isToMe = to === target || to.includes(target) || to.startsWith(targetPrefix + '@');
-      const isFromMe = from === target || from.includes(target) || from.startsWith(targetPrefix + '@');
+      const isFromMe =
+        emailMatchesTarget(e.from_email, cleanTarget) ||
+        emailMatchesTarget(e.sender, cleanTarget) ||
+        emailMatchesTarget(e.from, cleanTarget);
 
-      // Starred
+      // Starred folder
       if (folder === 'starred') {
         return (isToMe || isFromMe) && e.is_starred && e.folder !== 'trash';
       }
 
-      // Sent / Outbox / Scheduled
+      // Sent / Outbox / Scheduled folder
       if (folder === 'sent' || folder === 'outbox' || folder === 'scheduled') {
         return isFromMe && (e.folder === folder || e.folder === 'sent');
       }
 
-      // Trash
+      // Trash folder
       if (folder === 'trash') {
         return (isToMe || isFromMe) && e.folder === 'trash';
       }
 
-      // Spam
+      // Spam folder
       if (folder === 'spam') {
         return isToMe && e.folder === 'spam';
       }
 
-      // All Mail
+      // All Mail / All Inboxes / All: Return all emails for this account (including sent, trash, and spam)
+      // so the client maintains complete local state and emails never flicker or vanish when switching views!
       if (folder === 'all_mail' || folder === 'all' || folder === 'all_inboxes') {
-        return (isToMe || isFromMe) && e.folder !== 'trash';
+        return isToMe || isFromMe;
       }
 
-      // Primary, promotions, social, updates
-      // Must be incoming to this address and NOT in trash/spam/sent!
+      // Primary / Inbox folder
+      if (folder === 'primary' || folder === 'inbox') {
+        return isToMe && (e.folder === 'primary' || !e.folder || e.folder === 'inbox') && e.folder !== 'trash' && e.folder !== 'spam';
+      }
+
+      // Specific category or folder
       if (isToMe && e.folder !== 'trash' && e.folder !== 'spam' && e.folder !== 'sent') {
-        if (folder === 'primary' || folder === 'inbox') {
-          return e.folder === 'primary' || !e.folder || e.folder === 'inbox';
-        }
-        return e.folder === folder;
+        return e.folder === folder || e.category === folder;
       }
 
       return false;
@@ -744,14 +807,45 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
   }
 });
 
-// 2. Comprehensive Email Sync (Old & New emails from Resend & Webhook buffer)
+// 2. Real-time Server-Sent Events (SSE) Stream
+app.get('/api/emails/stream', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  res.write(`data: ${JSON.stringify({ type: 'connected', time: new Date().toISOString() })}\n\n`);
+  sseClients.push(res);
+
+  req.on('close', () => {
+    const idx = sseClients.indexOf(res);
+    if (idx !== -1) sseClients.splice(idx, 1);
+  });
+});
+
+// 3. Comprehensive Email Sync (IMAP + Resend + Historical & Live)
 app.post('/api/emails/sync', async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
-    const cleanTarget = extractCleanEmail(email || 'miracle@goldmailer.xyz');
+    const cleanTarget = (email || 'miracle@goldmailer.xyz').toLowerCase().trim();
     let newItemsCount = 0;
 
-    // Resend historical / inbound sync if configured
+    // A. Fetch via IMAP if configured (IMAP_HOST, IMAP_USER, IMAP_PASS)
+    try {
+      const imapMessages = await fetchEmailsFromImap(cleanTarget);
+      for (const im of imapMessages) {
+        const already = goldEmails.some(e => e.id === im.id || (im.messageId && e.raw?.messageId === im.messageId));
+        if (!already) {
+          goldEmails.unshift(im);
+          newItemsCount++;
+          broadcastNewEmail(im);
+        }
+      }
+    } catch (imapErr) {
+      console.warn('IMAP sync note:', imapErr);
+    }
+
+    // B. Fetch via Resend receiving API if configured
     if (resendApiKey) {
       try {
         const client = resendClient || new Resend(resendApiKey);
@@ -759,9 +853,9 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
           const recRes = await (client.emails as any).receiving.list({ limit: 100 });
           if (recRes && Array.isArray(recRes.data)) {
             for (const item of recRes.data) {
-              const itemTo = extractCleanEmail(item.to);
-              if (!cleanTarget || itemTo.includes(cleanTarget)) {
-                const already = goldEmails.some(e => e.id === item.id || e.id === `msg_${item.id}`);
+              const itemTo = extractCleanAddress(item.to);
+              if (!cleanTarget || itemTo.includes(cleanTarget) || cleanTarget.includes(itemTo)) {
+                const already = goldEmails.some(e => e.id === String(item.id) || e.id === `msg_${item.id}`);
                 if (!already) {
                   let fullItem = item;
                   try {
@@ -773,15 +867,15 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
                   const text = fullItem.text || fullItem.body_text || '';
                   const finalHtml = html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`;
 
-                  goldEmails.unshift({
+                  const syncedEmail: StoredEmail = {
                     id: String(item.id),
                     recipient: itemTo || cleanTarget,
                     to_email: itemTo || cleanTarget,
                     to: itemTo || cleanTarget,
-                    sender: extractCleanSender(fullItem.from),
-                    from_email: extractCleanSender(fullItem.from),
-                    from: extractCleanSender(fullItem.from),
-                    sender_name: extractCleanSender(fullItem.from).split('@')[0],
+                    sender: extractCleanAddress(fullItem.from),
+                    from_email: extractCleanAddress(fullItem.from),
+                    from: extractCleanAddress(fullItem.from),
+                    sender_name: extractCleanAddress(fullItem.from).split('@')[0],
                     subject: fullItem.subject || '(No Subject)',
                     body_html: finalHtml,
                     body_text: text || '',
@@ -794,8 +888,10 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
                     is_starred: false,
                     folder: 'primary',
                     category: 'primary'
-                  });
+                  };
+                  goldEmails.unshift(syncedEmail);
                   newItemsCount++;
+                  broadcastNewEmail(syncedEmail);
                 }
               }
             }
@@ -821,7 +917,7 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
   }
 });
 
-// 3. Send Email (Supports external via Resend + Instant internal delivery between accounts)
+// 4. Send Email (CRITICAL FIX: Sends from Authenticated User's main GoldMailer address, NOT noreply@goldmailer.xyz)
 app.post('/api/emails/send', async (req: Request, res: Response) => {
   try {
     const { to, cc, bcc, subject, body, sender, scheduled_for, draft_id } = req.body;
@@ -829,8 +925,26 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recipient email is required' });
     }
 
-    const cleanSender = extractCleanEmail(sender || 'miracle@goldmailer.xyz');
-    const cleanTo = extractCleanEmail(to);
+    // Determine authenticated sender
+    const authHeader = req.headers.authorization;
+    let authUser: StoredGoldUser | null = null;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      const decoded = verifyToken(token);
+      if (decoded) {
+        authUser = goldUsers.find(u => u.id === decoded.id || u.email.toLowerCase() === decoded.email?.toLowerCase()) || null;
+      }
+    }
+
+    // CRITICAL: Sender must be the authenticated user's primary GoldMailer address (e.g. user@goldmailer.xyz)
+    const userMainEmail = (authUser?.email || sender || 'miracle@goldmailer.xyz').toLowerCase().trim();
+    const senderDisplayName = authUser?.first_name
+      ? `${authUser.first_name} ${authUser.last_name || ''}`.trim()
+      : userMainEmail.split('@')[0];
+    const fromHeader = `${senderDisplayName} <${userMainEmail}>`;
+
+    const cleanToAddresses = getAllEmailAddresses(to);
+    const toFormatted = cleanToAddresses.join(', ') || String(to).trim();
     const isScheduled = Boolean(scheduled_for && new Date(scheduled_for).getTime() > Date.now());
 
     let liveSent = false;
@@ -840,10 +954,11 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
       try {
         const client = resendClient || new Resend(resendApiKey);
         const sendRes = await client.emails.send({
-          from: resendFrom,
-          to: [cleanTo],
-          cc: cc ? [extractCleanEmail(cc)] : undefined,
-          bcc: bcc ? [extractCleanEmail(bcc)] : undefined,
+          from: fromHeader, // CRITICAL FIX: authenticated user's address, NOT noreply@goldmailer.xyz
+          to: cleanToAddresses.length > 0 ? cleanToAddresses : [toFormatted],
+          replyTo: userMainEmail,
+          cc: cc ? getAllEmailAddresses(cc) : undefined,
+          bcc: bcc ? getAllEmailAddresses(bcc) : undefined,
           subject: subject || '(No Subject)',
           html: body || '<p></p>'
         });
@@ -860,18 +975,19 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     const textBody = (body || '').replace(/<[^>]+>/g, ' ').trim();
     const nowIso = new Date().toISOString();
 
-    // 1. Sent email record for sender
+    // 1. Sent email record for sender (Stored permanently in 'sent' folder)
     const sentEmail: StoredEmail = {
       id: 'msg_sent_' + crypto.randomBytes(8).toString('hex'),
-      recipient: cleanTo,
-      to_email: cleanTo,
-      to: cleanTo,
+      user_id: authUser?.id,
+      recipient: toFormatted,
+      to_email: toFormatted,
+      to: toFormatted,
       cc,
       bcc,
-      sender: cleanSender,
-      from_email: cleanSender,
-      from: cleanSender,
-      sender_name: cleanSender.split('@')[0],
+      sender: fromHeader,
+      from_email: userMainEmail,
+      from: userMainEmail,
+      sender_name: senderDisplayName,
       subject: subject || '(No Subject)',
       body_html: body || '',
       body_text: textBody,
@@ -888,34 +1004,38 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     };
 
     goldEmails.unshift(sentEmail);
+    broadcastNewEmail(sentEmail);
 
-    // 2. Direct internal delivery if sent to any GoldMailer user
-    if (cleanTo.endsWith('@goldmailer.xyz')) {
-      const recvEmail: StoredEmail = {
-        id: 'msg_recv_' + crypto.randomBytes(8).toString('hex'),
-        recipient: cleanTo,
-        to_email: cleanTo,
-        to: cleanTo,
-        cc,
-        bcc,
-        sender: cleanSender,
-        from_email: cleanSender,
-        from: cleanSender,
-        sender_name: cleanSender.split('@')[0],
-        subject: subject || '(No Subject)',
-        body_html: body || '',
-        body_text: textBody,
-        html: body || '',
-        text: textBody,
-        body: body || textBody,
-        received_at: nowIso,
-        created_at: nowIso,
-        is_read: false,
-        is_starred: false,
-        folder: 'primary',
-        category: 'primary'
-      };
-      goldEmails.unshift(recvEmail);
+    // 2. Direct internal delivery if sent to any GoldMailer user (including self)
+    for (const recipientAddr of cleanToAddresses) {
+      if (recipientAddr.endsWith('@goldmailer.xyz')) {
+        const recvEmail: StoredEmail = {
+          id: 'msg_recv_' + crypto.randomBytes(8).toString('hex'),
+          recipient: recipientAddr,
+          to_email: recipientAddr,
+          to: recipientAddr,
+          cc,
+          bcc,
+          sender: fromHeader,
+          from_email: userMainEmail,
+          from: userMainEmail,
+          sender_name: senderDisplayName,
+          subject: subject || '(No Subject)',
+          body_html: body || '',
+          body_text: textBody,
+          html: body || '',
+          text: textBody,
+          body: body || textBody,
+          received_at: nowIso,
+          created_at: nowIso,
+          is_read: false,
+          is_starred: false,
+          folder: 'primary',
+          category: 'primary'
+        };
+        goldEmails.unshift(recvEmail);
+        broadcastNewEmail(recvEmail);
+      }
     }
 
     // Delete draft if sent from draft
@@ -931,6 +1051,56 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
       live_sent: liveSent,
       live_error: liveError
     });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Simulate Inbound Email (QA & Testing helper for real-time inbound mail verification)
+app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
+  try {
+    const { to, from, sender_name, subject, body_html, body_text } = req.body;
+    const recipient = (to || 'miracle@goldmailer.xyz').toLowerCase().trim();
+    const sender = from || 'security@google.com';
+    const senderName = sender_name || 'Google Security';
+    const sub = subject || 'Security Alert: New sign-in detected for your account';
+    const nowIso = new Date().toISOString();
+
+    const incoming: StoredEmail = {
+      id: 'msg_inbound_' + crypto.randomBytes(8).toString('hex'),
+      recipient,
+      to_email: recipient,
+      to: recipient,
+      sender: `${senderName} <${sender}>`,
+      from_email: sender,
+      from: sender,
+      sender_name: senderName,
+      subject: sub,
+      body_html: body_html || `
+        <div style="font-family: -apple-system, Roboto, sans-serif; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+          <h2 style="color: #FF6A00; margin-top: 0;">Inbound Test Email</h2>
+          <p>Hello,</p>
+          <p>This is a live incoming email delivered to <strong>${recipient}</strong>.</p>
+          <p style="color: #666; font-size: 13px;">Received at ${new Date().toLocaleTimeString()}</p>
+        </div>
+      `,
+      body_text: body_text || `Hello,\nThis is a live incoming email delivered to ${recipient}.\nReceived at ${new Date().toLocaleTimeString()}`,
+      html: body_html || '',
+      text: body_text || '',
+      body: body_html || body_text || 'Test incoming email',
+      received_at: nowIso,
+      created_at: nowIso,
+      is_read: false,
+      is_starred: false,
+      folder: 'primary',
+      category: 'primary'
+    };
+
+    goldEmails.unshift(incoming);
+    saveData();
+    broadcastNewEmail(incoming);
+
+    return res.json({ success: true, email: incoming });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -1029,6 +1199,7 @@ app.post(['/api/inbound', '/api/receive-email', '/api/emails/inbound', '/api/ema
 
     goldEmails.unshift(newEmail);
     saveData();
+    broadcastNewEmail(newEmail);
     return res.json({ success: true, id: newEmail.id });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

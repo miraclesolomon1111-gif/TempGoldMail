@@ -7,6 +7,10 @@ import {
   setStoredUser,
   clearAuthToken,
   fetchCurrentUser,
+  initDefaultSession,
+  getCachedEmails,
+  setCachedEmails,
+  switchActiveAccount,
   fetchEmails,
   syncEmails,
   fetchDrafts,
@@ -61,10 +65,13 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'app' | 'hero'>('app');
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
 
-  // Mailbox State
+  // Mailbox State: initialize with cached emails so emails never flash or disappear on load
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
   const [searchQuery, setSearchQuery] = useState('');
-  const [allEmails, setAllEmails] = useState<EmailMessage[]>([]);
+  const [allEmails, setAllEmails] = useState<EmailMessage[]>(() => {
+    const initialEmail = getStoredActiveEmail() || 'miracle@goldmailer.xyz';
+    return getCachedEmails(initialEmail);
+  });
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -146,26 +153,30 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleRouteCheck);
   }, []);
 
-  // Fetch current user on mount
+  // Fetch current user or initialize default Miracle session on mount
   useEffect(() => {
-    fetchCurrentUser().then((u) => {
+    initDefaultSession().then((u) => {
       if (u) {
         setUser(u);
         setActiveEmail(u.email);
         setStoredActiveEmail(u.email);
+        const cached = getCachedEmails(u.email);
+        if (cached.length > 0) setAllEmails(cached);
       }
     }).catch(() => {});
   }, []);
 
   // Load emails and drafts for active email (fetches all_mail and drafts)
-  const loadMailData = useCallback(async (silent = false) => {
+  const loadMailData = useCallback(async (targetEmail?: string, silent = false) => {
+    const emailToFetch = targetEmail || activeEmail;
     if (!silent) setIsLoadingEmails(true);
     try {
-      const emailPromise = fetchEmails(activeEmail, 'all_mail');
+      const emailPromise = fetchEmails(emailToFetch, 'all_mail');
       const draftPromise = fetchDrafts().catch(() => []);
       const [emailList, draftList] = await Promise.all([emailPromise, draftPromise]);
       if (Array.isArray(emailList)) {
         setAllEmails(emailList);
+        setCachedEmails(emailToFetch, emailList);
       }
       if (Array.isArray(draftList)) {
         setDrafts(draftList);
@@ -178,23 +189,62 @@ export default function App() {
   }, [activeEmail]);
 
   useEffect(() => {
-    loadMailData();
-  }, [loadMailData]);
+    loadMailData(activeEmail);
+  }, [loadMailData, activeEmail]);
 
-  // Periodic automatic sync every 8 seconds
+  // Real-time Server-Sent Events (SSE) listener for instantaneous inbound email delivery
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource('/api/emails/stream');
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'new_email' && data.email) {
+            const incoming: EmailMessage = data.email;
+            const myTarget = activeEmail.toLowerCase().trim();
+            const myPrefix = myTarget.replace(/@.*$/, '');
+            const rawTo = String(incoming.recipient || incoming.to_email || incoming.to || '').toLowerCase();
+            const rawFrom = String(incoming.from_email || incoming.sender || incoming.from || '').toLowerCase();
+
+            const isForMe =
+              rawTo.includes(myTarget) ||
+              rawTo.includes(myPrefix) ||
+              rawFrom.includes(myTarget) ||
+              rawFrom.includes(myPrefix);
+
+            if (isForMe) {
+              setAllEmails((prev) => {
+                if (prev.some((e) => e.id === incoming.id)) return prev;
+                const updated = [incoming, ...prev];
+                setCachedEmails(activeEmail, updated);
+                return updated;
+              });
+            }
+          }
+        } catch {}
+      };
+    } catch {}
+
+    return () => {
+      if (eventSource) eventSource.close();
+    };
+  }, [activeEmail]);
+
+  // Periodic automatic sync every 8 seconds as secondary guarantee
   useEffect(() => {
     const timer = setInterval(() => {
-      loadMailData(true);
+      loadMailData(activeEmail, true);
     }, 8000);
     return () => clearInterval(timer);
-  }, [loadMailData]);
+  }, [loadMailData, activeEmail]);
 
   // Sync Emails action (inbound + historical)
   const handleSyncEmails = async () => {
     setIsSyncing(true);
     try {
       await syncEmails(activeEmail);
-      await loadMailData(false);
+      await loadMailData(activeEmail, false);
     } catch (e: any) {
       console.warn('Sync note:', e);
     } finally {
@@ -212,9 +262,11 @@ export default function App() {
   // Star toggle
   const handleToggleStar = async (emailId: string, currentStarred: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
-    setAllEmails((prev) =>
-      prev.map((m) => (m.id === emailId ? { ...m, is_starred: !currentStarred } : m))
-    );
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (m.id === emailId ? { ...m, is_starred: !currentStarred } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
     try {
       await updateEmailStatus(emailId, { is_starred: !currentStarred });
     } catch {}
@@ -267,11 +319,13 @@ export default function App() {
     setIsComposeOpen(true);
   };
 
-  // Email Move to trash
+  // Email Move to trash (instant optimistic update + permanent cache)
   const handleMoveToTrash = async (id: string) => {
-    setAllEmails((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder } : m))
-    );
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
     setSelectedEmail(null);
     try {
       await updateEmailStatus(id, { folder: 'trash' });
@@ -280,9 +334,11 @@ export default function App() {
 
   // Email Move to spam
   const handleMoveToSpam = async (id: string) => {
-    setAllEmails((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
-    );
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
     setSelectedEmail(null);
     try {
       await updateEmailStatus(id, { folder: 'spam' });
@@ -291,11 +347,27 @@ export default function App() {
 
   // Delete email permanently
   const handleDeleteEmail = async (id: string) => {
-    setAllEmails((prev) => prev.filter((m) => m.id !== id));
+    setAllEmails((prev) => {
+      const updated = prev.filter((m) => m.id !== id);
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
     setSelectedEmail(null);
     try {
       await deleteEmail(id, true);
     } catch {}
+  };
+
+  // Email sent callback: optimistic insert so sent email never disappears!
+  const handleEmailSent = (sentEmail?: any) => {
+    if (sentEmail) {
+      setAllEmails((prev) => {
+        const updated = [sentEmail, ...prev.filter((e) => e.id !== sentEmail.id)];
+        setCachedEmails(activeEmail, updated);
+        return updated;
+      });
+    }
+    loadMailData(activeEmail, true);
   };
 
   // Auth Success
@@ -305,7 +377,9 @@ export default function App() {
     setStoredActiveEmail(authenticatedUser.email);
     setStoredUser(authenticatedUser);
     setViewMode('app');
-    loadMailData();
+    const cached = getCachedEmails(authenticatedUser.email);
+    setAllEmails(cached);
+    loadMailData(authenticatedUser.email, false);
   };
 
   // Suspicious login detected during sign-in
@@ -314,28 +388,31 @@ export default function App() {
     setIsSuspiciousModalOpen(true);
   };
 
-  // Multi-account switch handler
+  // Multi-account switch handler (Seamless, instant cache switch with no flickering)
   const handleSwitchAccount = (email: string) => {
-    const list = JSON.parse(localStorage.getItem('goldmailer_multi_accounts') || '[]');
-    const target = list.find((a: any) => a.email.toLowerCase() === email.toLowerCase());
-    if (target) {
-      localStorage.setItem('goldmail_token', target.token);
-      localStorage.setItem('goldmail_active_email', target.email);
+    const switched = switchActiveAccount(email);
+    const targetEmail = switched ? switched.email : email;
+    if (switched) {
       const newUser: UserProfile = {
-        id: target.id,
-        email: target.email,
-        username: target.username,
-        first_name: target.name,
-        role: target.role || 'user'
+        id: switched.id,
+        email: switched.email,
+        username: switched.username,
+        first_name: switched.name,
+        role: (switched.role as any) || 'user'
       };
-      localStorage.setItem('goldmail_user', JSON.stringify(newUser));
       setUser(newUser);
-      setActiveEmail(target.email);
+      setActiveEmail(switched.email);
+      setStoredActiveEmail(switched.email);
+      setStoredUser(newUser);
     } else {
       setActiveEmail(email);
       setStoredActiveEmail(email);
     }
-    loadMailData(false);
+    // Instant cache switch
+    const cached = getCachedEmails(targetEmail);
+    setAllEmails(cached);
+    // Fetch fresh emails for target account
+    loadMailData(targetEmail, false);
   };
 
   // Logout active account
@@ -357,43 +434,66 @@ export default function App() {
     setViewMode('hero');
   };
 
-  // Filter emails for the currently selected folder
+  // Filter emails for the currently selected folder (Consistent & Permanent)
   const emailsForFolder = React.useMemo(() => {
     return allEmails.filter((e) => {
       const folder = currentFolder;
-      if (folder === 'all_inboxes' || folder === 'all_mail') {
-        return e.folder !== 'trash';
-      }
-      if (folder === 'primary') {
-        return (
-          (e.folder === 'primary' || !e.folder || (e.folder as string) === 'inbox') &&
-          (!e.category || e.category === 'primary')
-        );
-      }
-      if (folder === 'promotions') {
-        return e.folder === 'promotions' || e.category === 'promotions';
-      }
-      if (folder === 'social') {
-        return e.folder === 'social' || e.category === 'social';
-      }
-      if (folder === 'updates') {
-        return e.folder === 'updates' || e.category === 'updates';
-      }
-      if (folder === 'starred') {
-        return Boolean(e.is_starred) && e.folder !== 'trash';
-      }
-      if (folder === 'sent') {
-        return e.folder === 'sent';
-      }
-      if (folder === 'scheduled' || folder === 'outbox') {
-        return e.folder === folder;
-      }
-      if (folder === 'spam') {
-        return e.folder === 'spam';
-      }
+
+      // Trash: ONLY show emails marked as trash
       if (folder === 'trash') {
         return e.folder === 'trash';
       }
+
+      // Exclude trash from all other folders!
+      if (e.folder === 'trash') {
+        return false;
+      }
+
+      // All Inboxes / All Mail: show all non-trash emails
+      if (folder === 'all_inboxes' || folder === 'all_mail') {
+        return true;
+      }
+
+      // Sent folder: show all sent emails
+      if (folder === 'sent') {
+        return e.folder === 'sent' || e.folder === 'outbox';
+      }
+
+      // Scheduled folder
+      if (folder === 'scheduled') {
+        return e.folder === 'scheduled';
+      }
+
+      // Starred folder
+      if (folder === 'starred') {
+        return Boolean(e.is_starred);
+      }
+
+      // Spam folder
+      if (folder === 'spam') {
+        return e.folder === 'spam';
+      }
+
+      // Primary folder
+      if (folder === 'primary') {
+        return (
+          (e.folder === 'primary' || !e.folder || (e.folder as string) === 'inbox') &&
+          (!e.category || e.category === 'primary') &&
+          e.folder !== 'sent'
+        );
+      }
+
+      // Promotions, Social, Updates
+      if (folder === 'promotions') {
+        return (e.folder === 'promotions' || e.category === 'promotions') && e.folder !== 'sent';
+      }
+      if (folder === 'social') {
+        return (e.folder === 'social' || e.category === 'social') && e.folder !== 'sent';
+      }
+      if (folder === 'updates') {
+        return (e.folder === 'updates' || e.category === 'updates') && e.folder !== 'sent';
+      }
+
       return true;
     });
   }, [allEmails, currentFolder]);
@@ -524,12 +624,9 @@ export default function App() {
       {/* Compose Email Modal (with auto-save draft every 3s) */}
       <ComposeModal
         isOpen={isComposeOpen}
-        onClose={() => {
-          setIsComposeOpen(false);
-          loadMailData(true);
-        }}
+        onClose={() => setIsComposeOpen(false)}
         activeEmail={activeEmail}
-        onEmailSent={() => loadMailData(false)}
+        onEmailSent={handleEmailSent}
         initialDraft={activeDraft}
         initialTo={composeInitialTo}
         initialSubject={composeInitialSubject}

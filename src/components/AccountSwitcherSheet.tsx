@@ -218,18 +218,32 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
             </div>
           </div>
 
-          {/* Add Another Account Button */}
-          <button
-            type="button"
-            onClick={() => {
-              onOpenAuth('login');
-              onClose();
-            }}
-            className="w-full flex items-center justify-center gap-2 p-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-dashed border-white/15 hover:border-[#FF6A00]/40 text-xs font-semibold text-zinc-200 hover:text-white transition-all"
-          >
-            <UserPlus className="w-4 h-4 text-[#FF6A00]" />
-            <span>Add another GoldMailer account</span>
-          </button>
+          {/* Add Another Account Buttons */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                onOpenAuth('login');
+                onClose();
+              }}
+              className="flex items-center justify-center gap-1.5 p-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-dashed border-white/15 hover:border-[#FF6A00]/40 text-xs font-semibold text-zinc-200 hover:text-white transition-all"
+            >
+              <UserPlus className="w-3.5 h-3.5 text-[#FF6A00]" />
+              <span>Sign In Other</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                onOpenAuth('register');
+                onClose();
+              }}
+              className="flex items-center justify-center gap-1.5 p-3 rounded-2xl bg-[#FF6A00]/10 hover:bg-[#FF6A00]/20 border border-[#FF6A00]/30 text-xs font-semibold text-[#FF8C42] hover:text-white transition-all"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#FF8C42]" />
+              <span>Create Account</span>
+            </button>
+          </div>
 
           {/* Quick Management Shortcuts */}
           <div className="pt-2 border-t border-white/10 space-y-1 text-xs">

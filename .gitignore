@@ -8,5 +8,6 @@ coverage/
 !.env.example
 src/server/.goldmail_data.json
 src/server/.goldmailer_data.json
+.goldmailer_data.json
 node-compile-cache/
 *.hm

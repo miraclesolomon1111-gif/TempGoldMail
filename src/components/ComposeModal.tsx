@@ -19,7 +19,7 @@ interface ComposeModalProps {
   isOpen: boolean;
   onClose: () => void;
   activeEmail: string;
-  onEmailSent?: () => void;
+  onEmailSent?: (email?: any) => void;
   initialDraft?: Draft | null;
   initialTo?: string;
   initialSubject?: string;
@@ -154,7 +154,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
     setError(null);
     setIsSending(true);
     try {
-      await sendEmail({
+      const sendRes = await sendEmail({
         to: to.trim(),
         cc: cc.trim() || undefined,
         bcc: bcc.trim() || undefined,
@@ -164,7 +164,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
         scheduled_for: scheduleIso || (scheduledFor ? new Date(scheduledFor).toISOString() : undefined),
         draft_id: draftId
       });
-      if (onEmailSent) onEmailSent();
+      if (onEmailSent) onEmailSent(sendRes?.email);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to dispatch email');

@@ -24,6 +24,7 @@ export interface EmailMessage {
   bcc?: string;
   sender: string;
   from_email?: string;
+  from?: string;
   sender_name?: string;
   subject: string;
   body_html: string;
