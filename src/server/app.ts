@@ -159,6 +159,7 @@ export interface PaymentRecord {
   payment_status: string;
   email_to_reserve?: string;
   created_at: string;
+  invoice_url?: string;
 }
 
 export interface AuditLog {
@@ -487,16 +488,41 @@ app.get('/api/temp-emails', (req: Request, res: Response) => {
   try {
     const userId = req.query.userId as string | undefined;
     const clientId = req.query.clientId as string | undefined;
+    const knownEmailsRaw = req.query.knownEmails as string | undefined;
+    const knownList = knownEmailsRaw
+      ? knownEmailsRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      : [];
 
-    if (!userId && !clientId) {
+    if (!userId && !clientId && knownList.length === 0) {
       // Do not return any emails to an unidentified browser!
       return res.json([]);
+    }
+
+    // Ensure any known emails from browser session are maintained in server store
+    for (const em of knownList) {
+      const already = localTempEmails.some(t => t.email_address.toLowerCase() === em);
+      if (!already) {
+        localTempEmails.push({
+          id: 'addr_' + crypto.randomBytes(6).toString('hex'),
+          user_id: userId || null,
+          client_id: clientId || undefined,
+          email_address: em,
+          created_at: new Date().toISOString(),
+          is_custom: true,
+          is_password_protected: false,
+          avatar_url: '',
+          domain: 'goldmailer.xyz',
+          is_reserved: false,
+          expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString()
+        });
+      }
     }
 
     const filtered = localTempEmails
       .filter(item => {
         if (userId && item.user_id === userId) return true;
         if (clientId && item.client_id === clientId) return true;
+        if (knownList.includes(item.email_address.toLowerCase())) return true;
         return false;
       })
       .map(item => {
@@ -727,13 +753,31 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
           result = await query.limit(1000);
         }
 
-        if (!result.error && Array.isArray(result.data)) {
-          dbEmails = result.data.map((d: any) => ({
+        let rows = result?.data;
+        if (!rows || rows.length === 0 || result?.error) {
+          const broad = await supabase.from('emails').select('*').limit(1000);
+          if (broad?.data && Array.isArray(broad.data)) {
+            rows = broad.data.filter((d: any) => {
+              const to = String(d.to_email || d.recipient || d.to || '').toLowerCase();
+              const from = String(d.from_email || d.sender || d.from || '').toLowerCase();
+              if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
+                return from.includes(emailAddress);
+              } else if (folder === 'all' || folder === 'all_mail') {
+                return to.includes(emailAddress) || from.includes(emailAddress);
+              } else {
+                return to.includes(emailAddress);
+              }
+            });
+          }
+        }
+
+        if (Array.isArray(rows)) {
+          dbEmails = rows.map((d: any) => ({
             id: String(d.id || 'db_' + Math.random().toString(36).substring(2, 9)),
-            recipient: d.to_email || d.recipient || emailAddress,
-            to_email: d.to_email || d.recipient || emailAddress,
-            sender: d.from_email || d.sender || 'unknown@domain.com',
-            from_email: d.from_email || d.sender || 'unknown@domain.com',
+            recipient: d.to_email || d.recipient || d.to || emailAddress,
+            to_email: d.to_email || d.recipient || d.to || emailAddress,
+            sender: d.from_email || d.sender || d.from || 'unknown@domain.com',
+            from_email: d.from_email || d.sender || d.from || 'unknown@domain.com',
             sender_name: d.sender_name || (d.from_email ? d.from_email.split('@')[0] : 'Sender'),
             subject: d.subject || '(No Subject)',
             body_html: d.body_html || d.html || d.body || '',
@@ -1217,7 +1261,39 @@ app.get(['/api/inbound', '/inbound', '/api/receive-email', '/receive-email'], (_
   });
 });
 
-// ================= NOWPAYMENTS GATEWAY ($1.11 / Year Reserve Email) =================
+// Helper: Reserve email address permanently
+function reserveEmailAddress(emailToReserve: string, userId?: string | null, password?: string) {
+  if (!emailToReserve) return null;
+  const targetEmail = emailToReserve.toLowerCase().trim();
+  let existing = localTempEmails.find(t => t.email_address.toLowerCase() === targetEmail);
+  if (!existing) {
+    existing = {
+      id: 'addr_' + crypto.randomBytes(6).toString('hex'),
+      user_id: userId || null,
+      email_address: targetEmail,
+      created_at: new Date().toISOString(),
+      is_custom: true,
+      is_reserved: true,
+      is_password_protected: Boolean(password),
+      password_hash: password ? hashPassword(password) : undefined,
+      domain: 'goldmailer.xyz',
+      expires_at: null
+    };
+    localTempEmails.unshift(existing);
+  } else {
+    existing.is_reserved = true;
+    existing.expires_at = null;
+    if (userId && !existing.user_id) existing.user_id = userId;
+    if (password) {
+      existing.is_password_protected = true;
+      existing.password_hash = hashPassword(password);
+    }
+  }
+  saveData();
+  return existing;
+}
+
+// ================= NOWPAYMENTS REAL PAYMENT GATEWAY ($1.11 / Year Reserve Email) =================
 
 app.post('/api/payments/nowpayments/create-invoice', async (req: Request, res: Response) => {
   try {
@@ -1226,100 +1302,120 @@ app.post('/api/payments/nowpayments/create-invoice', async (req: Request, res: R
       price_currency = 'usd',
       pay_currency = 'usdttrc20',
       user_id = null,
-      email_to_reserve = ''
+      email_to_reserve = '',
+      api_key = ''
     } = req.body;
 
-    const apiKey = process.env.NOWPAYMENTS_API_KEY;
-    const currencyClean = String(pay_currency).toLowerCase();
-    const paymentId = 'nowpay_' + Math.floor(100000000 + Math.random() * 900000000);
-
-    const demoRates: Record<string, { address: string; rate: number }> = {
-      usdttrc20: { address: 'TXG7qJp6bVwP8hN23mK94RtsE67kLpM41A', rate: 1.0 },
-      usdterc20: { address: '0x71C065F656c1B8C11756556e4B3a89073D447b94', rate: 1.0 },
-      btc: { address: 'bc1qm3s9vr7l8h02u2z3dkg5v86n7rwwm8e9v904qj', rate: 64200.0 },
-      eth: { address: '0x71C065F656c1B8C11756556e4B3a89073D447b94', rate: 2650.0 },
-      sol: { address: '9B5X4L7XN2r1V8q5tP6u7wM2vY5n4z1cK8j7m3x4v9b2', rate: 154.0 },
-      ltc: { address: 'LQT4G9x4k8B2m1n7q8V3r5p6w2y9z4c1m8', rate: 68.0 }
-    };
-
-    const targetInfo = demoRates[currencyClean] || demoRates['usdttrc20'];
-    const calculatedCryptoAmount = parseFloat((price_amount / targetInfo.rate).toFixed(6));
-
-    if (apiKey) {
-      try {
-        const liveRes = await fetch('https://api.nowpayments.io/v1/payment', {
-          method: 'POST',
-          headers: {
-            'x-api-key': apiKey,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            price_amount,
-            price_currency,
-            pay_currency: currencyClean,
-            ipn_callback_url: `${process.env.APP_URL || 'https://goldmailer.xyz'}/api/payments/nowpayments/ipn`,
-            order_id: 'GM_RES_' + Date.now(),
-            order_description: `GoldMail Reserve Email (${email_to_reserve || 'custom'}@goldmailer.xyz) - 1 Year`
-          })
-        });
-
-        if (liveRes.ok) {
-          const liveData = await liveRes.json();
-          const rec: PaymentRecord = {
-            payment_id: String(liveData.payment_id),
-            user_id,
-            pay_address: liveData.pay_address,
-            pay_amount: liveData.pay_amount,
-            pay_currency: liveData.pay_currency,
-            price_amount: liveData.price_amount,
-            price_currency: liveData.price_currency,
-            payment_status: liveData.payment_status || 'waiting',
-            email_to_reserve,
-            created_at: new Date().toISOString()
-          };
-          localPayments.unshift(rec);
-          saveData();
-          return res.json({ success: true, payment: rec, is_live: true });
-        }
-      } catch (e) {
-        console.warn('NOWPayments API call fell back to instant sandbox invoice:', e);
-      }
+    const apiKey = (process.env.NOWPAYMENTS_API_KEY || (req.headers['x-nowpayments-key'] as string) || api_key || '').trim();
+    if (!apiKey) {
+      return res.status(400).json({
+        error: 'NOWPayments API key is required. Please set NOWPAYMENTS_API_KEY in server environment variables or provide your API key.'
+      });
     }
 
-    // Instant Sandbox invoice for immediate verification
-    const newPayment: PaymentRecord = {
-      payment_id: paymentId,
+    const currencyClean = String(pay_currency).toLowerCase();
+
+    // Call real NOWPayments API
+    const liveRes = await fetch('https://api.nowpayments.io/v1/payment', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        price_amount: Number(price_amount) || 1.11,
+        price_currency: String(price_currency).toLowerCase(),
+        pay_currency: currencyClean,
+        ipn_callback_url: `${process.env.APP_URL || 'https://goldmailer.xyz'}/api/payments/nowpayments/ipn`,
+        order_id: 'GM_RES_' + Date.now(),
+        order_description: `GoldMail Reserve Email (${email_to_reserve || 'custom'}@goldmailer.xyz) - 1 Year`
+      })
+    });
+
+    const liveData = await liveRes.json();
+    if (!liveRes.ok) {
+      return res.status(liveRes.status).json({
+        error: liveData.message || liveData.error || 'Failed to create payment invoice with NOWPayments gateway.'
+      });
+    }
+
+    const rec: PaymentRecord = {
+      payment_id: String(liveData.payment_id),
       user_id,
-      pay_address: targetInfo.address,
-      pay_amount: calculatedCryptoAmount,
-      pay_currency: currencyClean.toUpperCase(),
-      price_amount,
-      price_currency: 'USD',
-      payment_status: 'waiting',
+      pay_address: liveData.pay_address,
+      pay_amount: liveData.pay_amount,
+      pay_currency: liveData.pay_currency,
+      price_amount: liveData.price_amount,
+      price_currency: liveData.price_currency,
+      payment_status: liveData.payment_status || 'waiting',
       email_to_reserve,
       created_at: new Date().toISOString()
     };
-
-    localPayments.unshift(newPayment);
+    localPayments.unshift(rec);
     saveData();
 
-    return res.json({
-      success: true,
-      payment: newPayment,
-      is_live: false,
-      nowpayments_notice: apiKey ? 'Connected' : 'NOWPayments Sandbox Mode ($1.11 / Year)'
-    });
+    return res.json({ success: true, payment: rec, is_live: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message || 'Payment gateway connection error' });
   }
 });
 
-// Check payment status & confirm
-app.get('/api/payments/nowpayments/status/:paymentId', (req: Request, res: Response) => {
+// Check real payment status on blockchain via NOWPayments
+app.get('/api/payments/nowpayments/status/:paymentId', async (req: Request, res: Response) => {
   try {
     const { paymentId } = req.params;
-    const payment = localPayments.find(p => p.payment_id === paymentId);
-    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    const apiKey = (process.env.NOWPAYMENTS_API_KEY || (req.headers['x-nowpayments-key'] as string) || (req.query.api_key as string) || '').trim();
+
+    let payment = localPayments.find(p => p.payment_id === paymentId);
+
+    // If API key is provided, query real NOWPayments API status
+    if (apiKey) {
+      try {
+        const liveStatusRes = await fetch(`https://api.nowpayments.io/v1/payment/${paymentId}`, {
+          headers: {
+            'x-api-key': apiKey
+          }
+        });
+        if (liveStatusRes.ok) {
+          const liveStatusData = await liveStatusRes.json();
+          if (payment) {
+            payment.payment_status = liveStatusData.payment_status || payment.payment_status;
+            if (liveStatusData.pay_amount) payment.pay_amount = liveStatusData.pay_amount;
+            if (liveStatusData.pay_address) payment.pay_address = liveStatusData.pay_address;
+            if (liveStatusData.pay_currency) payment.pay_currency = liveStatusData.pay_currency;
+          } else {
+            payment = {
+              payment_id: String(paymentId),
+              user_id: null,
+              pay_address: liveStatusData.pay_address || '',
+              pay_amount: liveStatusData.pay_amount || 0,
+              pay_currency: liveStatusData.pay_currency || '',
+              price_amount: liveStatusData.price_amount || 1.11,
+              price_currency: liveStatusData.price_currency || 'usd',
+              payment_status: liveStatusData.payment_status || 'waiting',
+              email_to_reserve: '',
+              created_at: new Date().toISOString()
+            };
+            localPayments.unshift(payment);
+          }
+
+          if (liveStatusData.payment_status === 'finished' || liveStatusData.payment_status === 'confirmed') {
+            if (payment.email_to_reserve) {
+              reserveEmailAddress(payment.email_to_reserve, payment.user_id);
+            }
+            if (payment.user_id) {
+              const u = localUsers.find(user => user.id === payment?.user_id);
+              if (u) u.isPremium = true;
+            }
+          }
+          saveData();
+        }
+      } catch (err) {
+        console.warn('Real NOWPayments status check note:', err);
+      }
+    }
+
+    if (!payment) return res.status(404).json({ error: 'Payment record not found' });
 
     const isConfirmed = payment.payment_status === 'finished' || payment.payment_status === 'confirmed';
     return res.json({
@@ -1335,56 +1431,25 @@ app.get('/api/payments/nowpayments/status/:paymentId', (req: Request, res: Respo
   }
 });
 
-// Confirm payment / activate reserved email
-app.post('/api/payments/nowpayments/simulate-success', (req: Request, res: Response) => {
+// Real NOWPayments IPN Webhook callback
+app.post('/api/payments/nowpayments/ipn', (req: Request, res: Response) => {
   try {
-    const { payment_id, password } = req.body;
-    const payment = localPayments.find(p => p.payment_id === payment_id) || localPayments[0];
-
+    const { payment_id, payment_status } = req.body;
+    const payment = localPayments.find(p => p.payment_id === String(payment_id));
     if (payment) {
-      payment.payment_status = 'finished';
-
-      // Reserve target email forever!
-      if (payment.email_to_reserve) {
-        const targetEmail = payment.email_to_reserve.toLowerCase().trim();
-        let existing = localTempEmails.find(t => t.email_address.toLowerCase() === targetEmail);
-        if (!existing) {
-          existing = {
-            id: 'addr_' + crypto.randomBytes(6).toString('hex'),
-            user_id: payment.user_id || null,
-            email_address: targetEmail,
-            created_at: new Date().toISOString(),
-            is_custom: true,
-            is_reserved: true,
-            is_password_protected: Boolean(password),
-            password_hash: password ? hashPassword(password) : undefined,
-            domain: 'goldmailer.xyz'
-          };
-          localTempEmails.unshift(existing);
-        } else {
-          existing.is_reserved = true;
-          existing.expires_at = null;
-          if (password) {
-            existing.is_password_protected = true;
-            existing.password_hash = hashPassword(password);
-          }
+      payment.payment_status = payment_status;
+      if (payment_status === 'finished' || payment_status === 'confirmed') {
+        if (payment.email_to_reserve) {
+          reserveEmailAddress(payment.email_to_reserve, payment.user_id);
+        }
+        if (payment.user_id) {
+          const u = localUsers.find(user => user.id === payment.user_id);
+          if (u) u.isPremium = true;
         }
       }
-
-      // Upgrade user if user_id present
-      if (payment.user_id) {
-        const u = localUsers.find(user => user.id === payment.user_id);
-        if (u) u.isPremium = true;
-      }
-
       saveData();
     }
-
-    return res.json({
-      success: true,
-      message: 'Payment confirmed! Email reserved permanently with password protection.',
-      payment_status: 'finished'
-    });
+    return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

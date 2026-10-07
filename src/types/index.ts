@@ -82,4 +82,5 @@ export interface NowPaymentsInvoice {
   payment_status: string;
   email_to_reserve?: string;
   created_at?: string;
+  invoice_url?: string;
 }

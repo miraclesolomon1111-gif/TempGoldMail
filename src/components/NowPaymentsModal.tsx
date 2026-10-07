@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Sparkles,
@@ -6,17 +6,17 @@ import {
   Check,
   Copy,
   RefreshCw,
-  QrCode,
   Lock,
-  ArrowRight,
-  ExternalLink,
-  Coins
+  Coins,
+  Key,
+  AlertCircle
 } from 'lucide-react';
 import { NowPaymentsInvoice } from '../types';
 import {
   createNowPaymentsInvoice,
   checkNowPaymentsStatus,
-  simulateNowPaymentsSuccess
+  getNowPaymentsApiKey,
+  setNowPaymentsApiKey
 } from '../lib/api';
 
 interface NowPaymentsModalProps {
@@ -42,14 +42,50 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [customApiKey, setCustomApiKey] = useState(() => getNowPaymentsApiKey());
+  const [paymentStatusText, setPaymentStatusText] = useState('waiting');
+
+  const pollIntervalRef = useRef<any>(null);
 
   useEffect(() => {
     if (isOpen) {
       setInvoice(null);
       setIsSuccess(false);
       setError(null);
+      setPaymentStatusText('waiting');
+    } else {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     }
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
   }, [isOpen]);
+
+  // Automatic real blockchain polling while invoice is active
+  useEffect(() => {
+    if (invoice && !isSuccess) {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const statusData = await checkNowPaymentsStatus(invoice.payment_id);
+          setPaymentStatusText(statusData.payment_status);
+          if (statusData.is_confirmed) {
+            setIsSuccess(true);
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            setTimeout(() => {
+              onSuccess();
+              onClose();
+            }, 1800);
+          }
+        } catch {
+          // Keep polling silently
+        }
+      }, 7000);
+    }
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [invoice, isSuccess, onSuccess, onClose]);
 
   if (!isOpen) return null;
 
@@ -57,10 +93,19 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
     setIsLoading(true);
     setError(null);
     try {
-      const inv = await createNowPaymentsInvoice(targetEmail, currency, userId);
+      if (customApiKey.trim()) {
+        setNowPaymentsApiKey(customApiKey.trim());
+      }
+      const inv = await createNowPaymentsInvoice(
+        targetEmail,
+        currency,
+        userId,
+        customApiKey.trim() || undefined
+      );
       setInvoice(inv);
+      setPaymentStatusText(inv.payment_status || 'waiting');
     } catch (err: any) {
-      setError(err.message || 'Failed to create crypto invoice');
+      setError(err.message || 'Failed to create real NOWPayments invoice');
     } finally {
       setIsLoading(false);
     }
@@ -69,38 +114,21 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
   const handleCheckStatus = async () => {
     if (!invoice) return;
     setIsChecking(true);
+    setError(null);
     try {
       const statusData = await checkNowPaymentsStatus(invoice.payment_id);
+      setPaymentStatusText(statusData.payment_status);
       if (statusData.is_confirmed) {
         setIsSuccess(true);
         setTimeout(() => {
           onSuccess();
           onClose();
         }, 1500);
-      } else {
-        alert(`Payment Status: ${statusData.payment_status}. Waiting for blockchain confirmations.`);
       }
     } catch (err: any) {
       setError(err.message || 'Status check failed');
     } finally {
       setIsChecking(false);
-    }
-  };
-
-  const handleSimulatePayment = async () => {
-    if (!invoice) return;
-    setIsLoading(true);
-    try {
-      await simulateNowPaymentsSuccess(invoice.payment_id, password.trim() || undefined);
-      setIsSuccess(true);
-      setTimeout(() => {
-        onSuccess();
-        onClose();
-      }, 1500);
-    } catch (err: any) {
-      setError(err.message || 'Simulation failed');
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -147,8 +175,9 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
             </div>
 
             {error && (
-              <div className="p-2.5 bg-red-500/15 border border-red-500/30 rounded-xl text-xs text-red-300">
-                {error}
+              <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-xs text-red-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span className="flex-1">{error}</span>
               </div>
             )}
 
@@ -157,7 +186,7 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
                 {/* Password input */}
                 <div>
                   <label className="block text-xs font-medium text-[#8e918f] mb-1">
-                    Set Secret Access Password
+                    Set Secret Access Password (Optional)
                   </label>
                   <div className="flex items-center rounded-xl bg-[#121212] border border-[#303134] px-3 py-2.5">
                     <Lock className="w-4 h-4 text-[#8e918f] mr-2" />
@@ -174,7 +203,7 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
                 {/* Cryptocurrency selection */}
                 <div>
                   <label className="block text-xs font-medium text-[#8e918f] mb-1">
-                    Select Payment Cryptocurrency (NOWPayments)
+                    Select Payment Cryptocurrency (NOWPayments Gateway)
                   </label>
                   <select
                     value={currency}
@@ -190,13 +219,33 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
                   </select>
                 </div>
 
+                {/* Optional Custom NOWPayments API Key */}
+                <div>
+                  <label className="block text-[11px] font-medium text-[#8e918f] mb-1">
+                    NOWPayments API Key (Optional override if not in server env)
+                  </label>
+                  <div className="flex items-center rounded-xl bg-[#121212] border border-[#303134] px-3 py-2">
+                    <Key className="w-3.5 h-3.5 text-[#8e918f] mr-2" />
+                    <input
+                      type="text"
+                      value={customApiKey}
+                      onChange={(e) => {
+                        setCustomApiKey(e.target.value);
+                        setNowPaymentsApiKey(e.target.value);
+                      }}
+                      placeholder="e.g. 5V6P... (leave blank to use server key)"
+                      className="w-full bg-transparent text-white text-xs outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
                 <button
                   onClick={handleCreateInvoice}
                   disabled={isLoading}
                   className="w-full py-3 rounded-2xl bg-[#0b57d0] hover:bg-[#1a73e8] text-white font-medium text-xs flex items-center justify-center gap-2 shadow-lg transition-colors disabled:opacity-50"
                 >
                   <Coins className="w-4 h-4" />
-                  <span>{isLoading ? 'Generating Invoice...' : 'Generate Crypto Invoice ($1.11)'}</span>
+                  <span>{isLoading ? 'Connecting to NOWPayments...' : 'Generate Real Crypto Invoice ($1.11)'}</span>
                 </button>
               </div>
             ) : (
@@ -222,6 +271,14 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  <div className="flex items-center justify-between text-xs pt-1 border-t border-white/5">
+                    <span className="text-[#8e918f]">Status:</span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 capitalize">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                      {paymentStatusText}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Actions */}
@@ -229,20 +286,14 @@ export const NowPaymentsModal: React.FC<NowPaymentsModalProps> = ({
                   <button
                     onClick={handleCheckStatus}
                     disabled={isChecking}
-                    className="w-full py-2.5 rounded-xl bg-[#2d2f31] hover:bg-[#3c4043] text-white text-xs font-medium flex items-center justify-center gap-2 transition-colors"
+                    className="w-full py-2.5 rounded-xl bg-[#2d2f31] hover:bg-[#3c4043] text-white text-xs font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isChecking ? 'animate-spin' : ''}`} />
-                    <span>Check Blockchain Status</span>
+                    <span>{isChecking ? 'Checking Blockchain...' : 'Check Payment Status'}</span>
                   </button>
-
-                  <button
-                    onClick={handleSimulatePayment}
-                    disabled={isLoading}
-                    className="w-full py-2.5 rounded-xl bg-[#fbbc04] hover:bg-[#e0a800] text-zinc-900 text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-md"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Simulate Instant Confirmation (Sandbox)</span>
-                  </button>
+                  <p className="text-center text-[11px] text-[#8e918f]">
+                    Status auto-refreshes every few seconds once your blockchain transfer is detected.
+                  </p>
                 </div>
               </div>
             )}

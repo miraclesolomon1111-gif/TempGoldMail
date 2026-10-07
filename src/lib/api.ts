@@ -153,8 +153,21 @@ async function safeJsonParse(res: Response, defaultError = 'Unexpected server re
   }
 }
 
-// Local storage fallback helpers
-function getLocalAddresses(): TempEmail[] {
+// NOWPayments API Key storage helper
+export function getNowPaymentsApiKey(): string {
+  return localStorage.getItem('goldmailer_nowpayments_key') || '';
+}
+
+export function setNowPaymentsApiKey(key: string): void {
+  if (key) {
+    localStorage.setItem('goldmailer_nowpayments_key', key.trim());
+  } else {
+    localStorage.removeItem('goldmailer_nowpayments_key');
+  }
+}
+
+// Local storage multi-account persistence helpers
+export function getLocalAddresses(): TempEmail[] {
   try {
     const raw = localStorage.getItem('goldmail_local_addrs');
     return raw ? JSON.parse(raw) : [];
@@ -163,21 +176,26 @@ function getLocalAddresses(): TempEmail[] {
   }
 }
 
-function saveLocalAddresses(addrs: TempEmail[]) {
+export function saveLocalAddresses(addrs: TempEmail[]) {
   try {
     localStorage.setItem('goldmail_local_addrs', JSON.stringify(addrs));
   } catch {}
 }
 
-function addLocalAddress(addr: TempEmail) {
+export function addLocalAddress(addr: TempEmail) {
   const current = getLocalAddresses();
-  if (!current.some(a => a.email_address.toLowerCase() === addr.email_address.toLowerCase())) {
+  const existingIdx = current.findIndex(
+    a => a.email_address.toLowerCase() === addr.email_address.toLowerCase()
+  );
+  if (existingIdx !== -1) {
+    current[existingIdx] = { ...current[existingIdx], ...addr };
+  } else {
     current.unshift(addr);
-    saveLocalAddresses(current);
   }
+  saveLocalAddresses(current);
 }
 
-function removeLocalAddress(idOrEmail: string) {
+export function removeLocalAddress(idOrEmail: string) {
   const current = getLocalAddresses();
   const filtered = current.filter(
     a => a.id !== idOrEmail && a.email_address.toLowerCase() !== idOrEmail.toLowerCase()
@@ -189,25 +207,44 @@ function removeLocalAddress(idOrEmail: string) {
 
 export async function fetchTempEmails(userId?: string): Promise<TempEmail[]> {
   const clientId = getClientId();
+  const localList = getLocalAddresses();
   const params = new URLSearchParams();
   if (userId) params.set('userId', userId);
   params.set('clientId', clientId);
+  if (localList.length > 0) {
+    params.set('knownEmails', localList.map(a => a.email_address.toLowerCase()).join(','));
+  }
 
   try {
     const res = await fetch(`/api/temp-emails?${params.toString()}`, {
       headers: getHeaders()
     });
     if (res.ok) {
-      const data = await safeJsonParse(res, 'Failed to fetch email addresses');
-      if (Array.isArray(data)) {
-        saveLocalAddresses(data);
-        return data;
+      const serverData = await safeJsonParse(res, 'Failed to fetch email addresses');
+      if (Array.isArray(serverData)) {
+        // MERGE server addresses with local addresses so no old custom email is EVER lost!
+        const mergedMap = new Map<string, TempEmail>();
+        // Add existing local addresses first
+        for (const item of localList) {
+          mergedMap.set(item.email_address.toLowerCase(), item);
+        }
+        // Add or update with server addresses
+        for (const item of serverData) {
+          const key = item.email_address.toLowerCase();
+          mergedMap.set(key, {
+            ...(mergedMap.get(key) || {}),
+            ...item
+          });
+        }
+        const mergedList = Array.from(mergedMap.values());
+        saveLocalAddresses(mergedList);
+        return mergedList;
       }
     }
   } catch (e) {
     console.warn('API fetchTempEmails fallback to local:', e);
   }
-  return getLocalAddresses();
+  return localList;
 }
 
 export async function createTempEmail(options: {
@@ -242,6 +279,7 @@ export async function createTempEmail(options: {
       error.requires_upgrade = data.requires_upgrade;
       throw error;
     }
+    // Save to local addresses so old ones remain and new one is added
     addLocalAddress(data);
     return data;
   } catch (err: any) {
@@ -249,7 +287,7 @@ export async function createTempEmail(options: {
       throw err;
     }
     console.warn('createTempEmail network fallback:', err);
-    // Graceful offline fallback so the UI never breaks
+    // Graceful offline fallback preserving all addresses
     const fallback: TempEmail = {
       id: 'addr_' + Math.random().toString(36).substring(2, 9),
       email_address: options.emailAddress,
@@ -352,8 +390,27 @@ export async function fetchEmails(
         result = await query.limit(1000);
       }
 
-      if (!result.error && Array.isArray(result.data) && result.data.length > 0) {
-        const normalized = result.data.map(normalizeEmail);
+      let dataRows = result?.data;
+      if (!dataRows || dataRows.length === 0 || result?.error) {
+        // Broad fallback: query emails and filter client-side to catch very old and new emails across column variations
+        const broad = await supabase.from('emails').select('*').limit(1000);
+        if (broad?.data && Array.isArray(broad.data)) {
+          dataRows = broad.data.filter((d: any) => {
+            const to = String(d.to_email || d.recipient || d.to || '').toLowerCase();
+            const from = String(d.from_email || d.sender || d.from || '').toLowerCase();
+            if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
+              return from.includes(cleanEmail);
+            } else if (folder === 'all' || folder === 'all_mail') {
+              return to.includes(cleanEmail) || from.includes(cleanEmail);
+            } else {
+              return to.includes(cleanEmail);
+            }
+          });
+        }
+      }
+
+      if (Array.isArray(dataRows) && dataRows.length > 0) {
+        const normalized = dataRows.map(normalizeEmail);
         // Ensure accurate chronological order: newest to oldest
         normalized.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
         console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length} (old and new)`);
@@ -582,17 +639,22 @@ export async function updateUserProfile(updates: Partial<UserProfile>): Promise<
 export async function createNowPaymentsInvoice(
   emailToReserve: string,
   payCurrency = 'usdttrc20',
-  userId?: string
+  userId?: string,
+  apiKeyOverride?: string
 ): Promise<NowPaymentsInvoice> {
+  const customKey = apiKeyOverride || getNowPaymentsApiKey();
   const res = await fetch('/api/payments/nowpayments/create-invoice', {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getHeaders({
+      ...(customKey ? { 'x-nowpayments-key': customKey } : {})
+    }),
     body: JSON.stringify({
       price_amount: 1.11, // $1.11 / year
       price_currency: 'usd',
       pay_currency: payCurrency,
       user_id: userId || null,
-      email_to_reserve: emailToReserve
+      email_to_reserve: emailToReserve,
+      api_key: customKey || undefined
     })
   });
   const data = await safeJsonParse(res, 'Failed to create payment invoice');
@@ -600,22 +662,21 @@ export async function createNowPaymentsInvoice(
   return data.payment;
 }
 
-export async function checkNowPaymentsStatus(paymentId: string): Promise<{ is_confirmed: boolean; payment_status: string }> {
+export async function checkNowPaymentsStatus(paymentId: string): Promise<{
+  is_confirmed: boolean;
+  payment_status: string;
+  pay_amount?: number;
+  pay_currency?: string;
+  pay_address?: string;
+}> {
+  const customKey = getNowPaymentsApiKey();
   const res = await fetch(`/api/payments/nowpayments/status/${paymentId}`, {
-    headers: getHeaders()
+    headers: getHeaders({
+      ...(customKey ? { 'x-nowpayments-key': customKey } : {})
+    })
   });
   if (!res.ok) throw new Error('Failed to check payment status');
   return await safeJsonParse(res, 'Failed to check payment status');
-}
-
-export async function simulateNowPaymentsSuccess(paymentId: string, password?: string): Promise<boolean> {
-  const res = await fetch('/api/payments/nowpayments/simulate-success', {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ payment_id: paymentId, password })
-  });
-  const data = await safeJsonParse(res, 'Simulation failed');
-  return data.success;
 }
 
 // ================= ADMIN APIS =================

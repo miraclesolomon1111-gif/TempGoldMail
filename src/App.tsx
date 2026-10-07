@@ -15,7 +15,10 @@ import {
   cleanUpSpace,
   fetchCurrentUser,
   clearAuthToken,
-  setStoredUser
+  setStoredUser,
+  getLocalAddresses,
+  saveLocalAddresses,
+  addLocalAddress
 } from './lib/api';
 import { generateRandomEmail } from './lib/emailGenerator';
 import { GmailHeader } from './components/GmailHeader';
@@ -46,9 +49,24 @@ export default function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAccountSwitcherOpen, setIsAccountSwitcherOpen] = useState(false);
 
-  // Email and Mailbox state
+  // Email and Mailbox state - seamlessly loads and retains all created custom emails
   const [activeEmail, setActiveEmail] = useState<string>(() => getStoredActiveEmail());
-  const [createdEmails, setCreatedEmails] = useState<TempEmail[]>([]);
+  const [createdEmails, setCreatedEmails] = useState<TempEmail[]>(() => {
+    const list = getLocalAddresses();
+    const storedActive = getStoredActiveEmail();
+    if (storedActive && !list.some(e => e.email_address.toLowerCase() === storedActive.toLowerCase())) {
+      const initialRecord: TempEmail = {
+        id: 'addr_' + Math.random().toString(36).substring(2, 9),
+        email_address: storedActive,
+        created_at: new Date().toISOString(),
+        is_custom: true,
+        message_count: 0
+      };
+      list.unshift(initialRecord);
+      saveLocalAddresses(list);
+    }
+    return list;
+  });
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -107,21 +125,50 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Load created email addresses for this browser / user
+  // Load created email addresses for this browser / user preserving all custom emails
   const loadAddresses = useCallback(async () => {
     try {
-      const list = await fetchTempEmails(user?.id);
-      setCreatedEmails(list || []);
-
-      // If active email is set, ensure it exists in list or pick first if available
-      if (list && list.length > 0) {
-        const found = list.some(
-          (item) => item.email_address.toLowerCase() === activeEmail.toLowerCase()
-        );
-        if (!found && !activeEmail) {
-          setActiveEmail(list[0].email_address);
-          setStoredActiveEmail(list[0].email_address);
+      const serverList = await fetchTempEmails(user?.id);
+      setCreatedEmails((prev) => {
+        const localList = getLocalAddresses();
+        const map = new Map<string, TempEmail>();
+        // 1. Previous in memory
+        for (const item of prev) {
+          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
         }
+        // 2. Local storage
+        for (const item of localList) {
+          if (item?.email_address) {
+            const cur = map.get(item.email_address.toLowerCase());
+            map.set(item.email_address.toLowerCase(), { ...cur, ...item });
+          }
+        }
+        // 3. Server list
+        for (const item of (serverList || [])) {
+          if (item?.email_address) {
+            const cur = map.get(item.email_address.toLowerCase());
+            map.set(item.email_address.toLowerCase(), { ...cur, ...item });
+          }
+        }
+        // 4. Ensure current active email is always in list
+        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
+          map.set(activeEmail.toLowerCase(), {
+            id: 'addr_' + Math.random().toString(36).substring(2, 9),
+            email_address: activeEmail,
+            created_at: new Date().toISOString(),
+            is_custom: true,
+            message_count: 0
+          });
+        }
+        const merged = Array.from(map.values());
+        saveLocalAddresses(merged);
+        return merged;
+      });
+
+      // If active email is not set, pick first available
+      if (serverList && serverList.length > 0 && !activeEmail) {
+        setActiveEmail(serverList[0].email_address);
+        setStoredActiveEmail(serverList[0].email_address);
       }
     } catch (e) {
       console.warn('Failed to load user addresses:', e);
@@ -249,11 +296,56 @@ export default function App() {
         isCustom: false,
         userId: user?.id
       });
+      setCreatedEmails((prev) => {
+        const map = new Map<string, TempEmail>();
+        for (const item of prev) {
+          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
+        }
+        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
+          map.set(activeEmail.toLowerCase(), {
+            id: 'addr_' + Math.random().toString(36).substring(2, 9),
+            email_address: activeEmail,
+            created_at: new Date().toISOString(),
+            is_custom: false,
+            message_count: 0
+          });
+        }
+        map.set(created.email_address.toLowerCase(), created);
+        const updated = Array.from(map.values());
+        saveLocalAddresses(updated);
+        return updated;
+      });
       setActiveEmail(created.email_address);
       setStoredActiveEmail(created.email_address);
       await loadAddresses();
     } catch (err: any) {
       console.warn('Generate address fallback:', err);
+      const fallbackRecord: TempEmail = {
+        id: 'addr_' + Math.random().toString(36).substring(2, 9),
+        email_address: random,
+        created_at: new Date().toISOString(),
+        is_custom: false,
+        message_count: 0
+      };
+      setCreatedEmails((prev) => {
+        const map = new Map<string, TempEmail>();
+        for (const item of prev) {
+          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
+        }
+        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
+          map.set(activeEmail.toLowerCase(), {
+            id: 'addr_' + Math.random().toString(36).substring(2, 9),
+            email_address: activeEmail,
+            created_at: new Date().toISOString(),
+            is_custom: false,
+            message_count: 0
+          });
+        }
+        map.set(fallbackRecord.email_address.toLowerCase(), fallbackRecord);
+        const updated = Array.from(map.values());
+        saveLocalAddresses(updated);
+        return updated;
+      });
       setActiveEmail(random);
       setStoredActiveEmail(random);
       await loadAddresses();
@@ -294,7 +386,7 @@ export default function App() {
     setStoredActiveEmail(unlocked.email_address);
   };
 
-  // Create custom email
+  // Create custom email (preserves all previous custom emails so user can switch between them)
   const handleCreateCustom = async (data: {
     emailAddress: string;
     isCustom: boolean;
@@ -306,6 +398,26 @@ export default function App() {
       ...data,
       userId: user?.id
     });
+    // Add new email to createdEmails list and PRESERVE all previous custom emails
+    setCreatedEmails((prev) => {
+      const map = new Map<string, TempEmail>();
+      for (const item of prev) {
+        if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
+      }
+      if (activeEmail && !map.has(activeEmail.toLowerCase())) {
+        map.set(activeEmail.toLowerCase(), {
+          id: 'addr_' + Math.random().toString(36).substring(2, 9),
+          email_address: activeEmail,
+          created_at: new Date().toISOString(),
+          is_custom: true,
+          message_count: 0
+        });
+      }
+      map.set(created.email_address.toLowerCase(), created);
+      const updated = Array.from(map.values());
+      saveLocalAddresses(updated);
+      return updated;
+    });
     setActiveEmail(created.email_address);
     setStoredActiveEmail(created.email_address);
     await loadAddresses();
@@ -314,6 +426,9 @@ export default function App() {
   // Delete custom email address
   const handleDeleteCustomEmail = async (id: string, emailAddr: string) => {
     await deleteTempEmail(id || emailAddr);
+    setCreatedEmails((prev) =>
+      prev.filter((e) => e.email_address.toLowerCase() !== emailAddr.toLowerCase())
+    );
     if (activeEmail.toLowerCase() === emailAddr.toLowerCase()) {
       const remaining = createdEmails.filter(
         (e) => e.email_address.toLowerCase() !== emailAddr.toLowerCase()
