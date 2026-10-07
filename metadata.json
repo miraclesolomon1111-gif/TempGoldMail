@@ -1,0 +1,6 @@
+{
+  "name": "GoldMail - Temporary Disposable Email",
+  "description": "Professional Gmail-style temporary email service on goldmailer.xyz with multi-inbox management, secure email reservation, and real-time messaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
