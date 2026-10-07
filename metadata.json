@@ -1,6 +1,6 @@
 {
-  "name": "GoldMail - Temporary Disposable Email",
-  "description": "Professional Gmail-style temporary email service on goldmailer.xyz with multi-inbox management, secure email reservation, and real-time messaging.",
+  "name": "GoldMailer - Fast, Secure Permanent Email",
+  "description": "Fast, secure email for everyone on goldmailer.xyz with 15GB storage, 2-step verification, Gmail-style glass orange interface, and OAuth 2.0 provider.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

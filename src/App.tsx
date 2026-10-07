@@ -1,829 +1,540 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { MailFolder, TempEmail, EmailMessage, UserProfile } from './types';
+import { MailFolder, EmailMessage, UserProfile, Draft } from './types';
 import {
   getStoredActiveEmail,
   setStoredActiveEmail,
-  fetchTempEmails,
-  createTempEmail,
-  unlockTempEmail,
-  deleteTempEmail,
-  updateEmailPicture,
-  fetchEmails,
-  sendEmail,
-  updateEmailStatus,
-  deleteEmail,
-  cleanUpSpace,
-  fetchCurrentUser,
-  clearAuthToken,
+  getStoredUser,
   setStoredUser,
-  getLocalAddresses,
-  saveLocalAddresses,
-  addLocalAddress,
-  getStoredEmailsForAccount,
-  storeSentEmail,
-  updateStoredEmail,
-  deleteStoredEmail
+  clearAuthToken,
+  fetchCurrentUser,
+  fetchEmails,
+  syncEmails,
+  fetchDrafts,
+  deleteDraft,
+  updateEmailStatus,
+  deleteEmail
 } from './lib/api';
-import { generateRandomEmail } from './lib/emailGenerator';
+
 import { GmailHeader } from './components/GmailHeader';
 import { GmailDrawer } from './components/GmailDrawer';
-import { AccountSwitcherSheet } from './components/AccountSwitcherSheet';
 import { EmailListView } from './components/EmailListView';
 import { EmailDetailModal } from './components/EmailDetailModal';
 import { ComposeModal } from './components/ComposeModal';
-import { CustomEmailModal } from './components/CustomEmailModal';
-import { PasswordUnlockModal } from './components/PasswordUnlockModal';
-import { NowPaymentsModal } from './components/NowPaymentsModal';
-import { AuthModal } from './components/AuthModal';
-import { ProfileModal } from './components/ProfileModal';
-import { AdminPanelModal } from './components/AdminPanelModal';
-import { SupportModal } from './components/SupportModal';
+import { AuthWizardModal } from './components/AuthWizardModal';
+import { SuspiciousLoginModal } from './components/SuspiciousLoginModal';
+import { DeviceApprovalPrompt } from './components/DeviceApprovalPrompt';
+import { OAuthConsentModal } from './components/OAuthConsentModal';
+import { OAuthDeveloperModal } from './components/OAuthDeveloperModal';
 import { SettingsModal } from './components/SettingsModal';
-import { PrivacyModal, TermsModal } from './components/LegalModals';
+import { AdminPanelModal } from './components/AdminPanelModal';
+import { AccountSwitcherSheet } from './components/AccountSwitcherSheet';
 import { HeroLegalPage } from './components/HeroLegalPage';
 
 export default function App() {
-  // Navigation & View Mode
+  // Theme State
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('goldmailer_theme');
+    return saved !== 'light';
+  });
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('goldmailer_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('goldmailer_theme', 'light');
+    }
+  }, [darkMode]);
+
+  const toggleDarkMode = () => setDarkMode(!darkMode);
+
+  // User State
+  const [user, setUser] = useState<UserProfile | null>(() => getStoredUser());
+  const [activeEmail, setActiveEmail] = useState<string>(() => {
+    const stored = getStoredActiveEmail();
+    if (stored) return stored;
+    return 'miracle@goldmailer.xyz';
+  });
+
+  // View Mode: 'app' (Webmail) vs 'hero' (Landing Page)
   const [viewMode, setViewMode] = useState<'app' | 'hero'>('app');
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
 
-  // Navigation & Folder state
+  // Mailbox State
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [isAccountSwitcherOpen, setIsAccountSwitcherOpen] = useState(false);
-
-  // Email and Mailbox state - seamlessly loads and retains all created custom emails
-  const [activeEmail, setActiveEmail] = useState<string>(() => getStoredActiveEmail());
-  const [createdEmails, setCreatedEmails] = useState<TempEmail[]>(() => {
-    const list = getLocalAddresses();
-    const storedActive = getStoredActiveEmail();
-    if (storedActive && !list.some(e => e.email_address.toLowerCase() === storedActive.toLowerCase())) {
-      const initialRecord: TempEmail = {
-        id: 'addr_' + Math.random().toString(36).substring(2, 9),
-        email_address: storedActive,
-        created_at: new Date().toISOString(),
-        is_custom: true,
-        message_count: 0
-      };
-      list.unshift(initialRecord);
-      saveLocalAddresses(list);
-    }
-    return list;
-  });
-  const [emails, setEmails] = useState<EmailMessage[]>(() => {
-    const storedActive = getStoredActiveEmail();
-    return storedActive ? getStoredEmailsForAccount(storedActive, 'primary') : [];
-  });
+  const [emails, setEmails] = useState<EmailMessage[]>([]);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
-  // User state
-  const [user, setUser] = useState<UserProfile | null>(null);
-
-  // Modal open states
+  // Modals
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isAccountSwitcherOpen, setIsAccountSwitcherOpen] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState<EmailMessage | null>(null);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [composeInitialTo, setComposeInitialTo] = useState('');
   const [composeInitialSubject, setComposeInitialSubject] = useState('');
-  const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
-  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
-  const [unlockTargetEmail, setUnlockTargetEmail] = useState('');
-  const [isNowPaymentsOpen, setIsNowPaymentsOpen] = useState(false);
-  const [reserveTargetEmail, setReserveTargetEmail] = useState('');
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
-  const [isSupportOpen, setIsSupportOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
-  const [isTermsOpen, setIsTermsOpen] = useState(false);
+  const [composeInitialBody, setComposeInitialBody] = useState('');
 
-  // Check URL path and hash for direct routes
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [isOAuthDevOpen, setIsOAuthDevOpen] = useState(false);
+
+  // Suspicious Login Modal
+  const [suspiciousLoginData, setSuspiciousLoginData] = useState<any>(null);
+  const [isSuspiciousModalOpen, setIsSuspiciousModalOpen] = useState(false);
+
+  // OAuth 2.0 Consent Screen
+  const [isOAuthConsentOpen, setIsOAuthConsentOpen] = useState(false);
+  const [oauthParams, setOauthParams] = useState<{
+    clientId: string;
+    redirectUri: string;
+    scope: string;
+    state: string;
+  }>({
+    clientId: '',
+    redirectUri: '',
+    scope: 'openid email profile',
+    state: ''
+  });
+
+  // Handle URL Hash and Query Routes
   useEffect(() => {
-    const checkRoute = () => {
-      const hash = window.location.hash.toLowerCase();
-      const path = window.location.pathname.toLowerCase();
+    const handleRouteCheck = () => {
+      const url = new URL(window.location.href);
+      const hash = url.hash.toLowerCase();
+      const path = url.pathname.toLowerCase();
+
+      // Admin route
       if (path === '/admin' || hash === '#admin') {
         setIsAdminOpen(true);
-      } else if (hash === '#hero' || hash === '#about' || path === '/hero') {
+      }
+
+      // Landing / Hero route
+      if (path === '/hero' || hash === '#hero') {
         setViewMode('hero');
         setHeroInitialSection('hero');
-      } else if (hash === '#terms' || path === '/terms') {
+      } else if (path === '/terms' || hash === '#terms') {
         setViewMode('hero');
         setHeroInitialSection('terms');
-      } else if (hash === '#privacy' || path === '/privacy') {
+      } else if (path === '/privacy' || hash === '#privacy') {
         setViewMode('hero');
         setHeroInitialSection('privacy');
       }
-    };
-    checkRoute();
-    window.addEventListener('hashchange', checkRoute);
-    return () => window.removeEventListener('hashchange', checkRoute);
-  }, []);
 
-  // Initial authentication check
-  useEffect(() => {
-    fetchCurrentUser()
-      .then((u) => {
-        if (u) setUser(u);
-      })
-      .catch(() => {});
-  }, []);
-
-  // Load created email addresses for this browser / user preserving all custom emails
-  const loadAddresses = useCallback(async () => {
-    try {
-      const serverList = await fetchTempEmails(user?.id);
-      setCreatedEmails((prev) => {
-        const localList = getLocalAddresses();
-        const map = new Map<string, TempEmail>();
-        // 1. Previous in memory
-        for (const item of prev) {
-          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
+      // OAuth Consent query
+      if (url.searchParams.get('oauth_consent') === 'true' || path === '/oauth/authorize' || path === '/api/oauth/authorize') {
+        const cId = url.searchParams.get('client_id') || '';
+        const rUri = url.searchParams.get('redirect_uri') || '';
+        const scp = url.searchParams.get('scope') || 'openid email profile';
+        const st = url.searchParams.get('state') || '';
+        if (cId) {
+          setOauthParams({ clientId: cId, redirectUri: rUri, scope: scp, state: st });
+          setIsOAuthConsentOpen(true);
         }
-        // 2. Local storage
-        for (const item of localList) {
-          if (item?.email_address) {
-            const cur = map.get(item.email_address.toLowerCase());
-            map.set(item.email_address.toLowerCase(), { ...cur, ...item });
-          }
-        }
-        // 3. Server list
-        for (const item of (serverList || [])) {
-          if (item?.email_address) {
-            const cur = map.get(item.email_address.toLowerCase());
-            map.set(item.email_address.toLowerCase(), { ...cur, ...item });
-          }
-        }
-        // 4. Ensure current active email is always in list
-        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
-          map.set(activeEmail.toLowerCase(), {
-            id: 'addr_' + Math.random().toString(36).substring(2, 9),
-            email_address: activeEmail,
-            created_at: new Date().toISOString(),
-            is_custom: true,
-            message_count: 0
-          });
-        }
-        const merged = Array.from(map.values());
-        saveLocalAddresses(merged);
-        return merged;
-      });
-
-      // If active email is not set, pick first available
-      if (serverList && serverList.length > 0 && !activeEmail) {
-        setActiveEmail(serverList[0].email_address);
-        setStoredActiveEmail(serverList[0].email_address);
       }
-    } catch (e) {
-      console.warn('Failed to load user addresses:', e);
-    }
-  }, [user?.id, activeEmail]);
-
-  useEffect(() => {
-    loadAddresses();
-  }, [loadAddresses]);
-
-  // AbortController ref to cancel in-flight email fetch on fast switching
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  // Load emails for the active email address with race-condition cancellation
-  useEffect(() => {
-    if (!activeEmail) {
-      setEmails([]);
-      setIsLoadingEmails(false);
-      return;
-    }
-
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-
-    // Immediately load persistent stored emails so old, new, and sent emails show instantly without disappearing
-    const cached = getStoredEmailsForAccount(activeEmail, folderParam);
-    if (cached.length > 0) {
-      setEmails(cached);
-      setIsLoadingEmails(false);
-    } else {
-      setIsLoadingEmails(true);
-    }
-
-    // Cancel previous fetch when switching email with AbortController
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    fetchEmails(activeEmail, folderParam, controller.signal)
-      .then((data) => {
-        if (!controller.signal.aborted) {
-          console.log(`[App Email Fetch] activeEmail: ${activeEmail}, folder: ${folderParam}, fetched count: ${data?.length || 0}`);
-          setEmails(data || []);
-          setIsLoadingEmails(false);
-          setIsRefreshing(false);
-        }
-      })
-      .catch((err) => {
-        if (err.name === 'AbortError' || controller.signal.aborted) {
-          return;
-        }
-        console.warn('Failed to fetch emails:', err);
-        if (!controller.signal.aborted) {
-          setIsLoadingEmails(false);
-          setIsRefreshing(false);
-        }
-      });
-
-    return () => {
-      controller.abort();
     };
-  }, [activeEmail, currentFolder]);
 
-  // Real-time polling every 4 seconds to ingest incoming webhooks immediately
+    handleRouteCheck();
+    window.addEventListener('hashchange', handleRouteCheck);
+    return () => window.removeEventListener('hashchange', handleRouteCheck);
+  }, []);
+
+  // Fetch current user on mount
   useEffect(() => {
-    if (!activeEmail) return;
-    const targetEmail = activeEmail;
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
+    fetchCurrentUser().then((u) => {
+      if (u) {
+        setUser(u);
+        setActiveEmail(u.email);
+        setStoredActiveEmail(u.email);
+      }
+    }).catch(() => {});
+  }, []);
 
-    const interval = setInterval(() => {
-      fetchEmails(targetEmail, folderParam)
-        .then((data) => {
-          if (activeEmail.toLowerCase() === targetEmail.toLowerCase()) {
-            setEmails(data || []);
-          }
-        })
-        .catch(() => {});
-    }, 4000);
-
-    return () => clearInterval(interval);
+  // Load emails and drafts for current folder & active email
+  const loadMailData = useCallback(async (silent = false) => {
+    if (!silent) setIsLoadingEmails(true);
+    try {
+      const [emailList, draftList] = await Promise.all([
+        fetchEmails(activeEmail, currentFolder),
+        fetchDrafts()
+      ]);
+      setEmails(emailList);
+      setDrafts(draftList);
+    } catch {
+      // safe fallback
+    } finally {
+      if (!silent) setIsLoadingEmails(false);
+    }
   }, [activeEmail, currentFolder]);
 
-  // Manual refresh trigger
-  const handleManualRefresh = () => {
-    if (!activeEmail) return;
-    setIsRefreshing(true);
-    setIsLoadingEmails(true);
+  useEffect(() => {
+    loadMailData();
+  }, [loadMailData]);
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+  // Periodic automatic sync every 8 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadMailData(true);
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [loadMailData]);
+
+  // Sync Emails action (inbound + historical)
+  const handleSyncEmails = async () => {
+    setIsSyncing(true);
+    try {
+      await syncEmails(activeEmail);
+      await loadMailData(false);
+    } catch (e: any) {
+      console.warn('Sync note:', e);
+    } finally {
+      setIsSyncing(false);
     }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-    fetchEmails(activeEmail, folderParam, controller.signal)
-      .then((data) => {
-        if (!controller.signal.aborted) {
-          console.log(`[Manual Refresh] activeEmail: ${activeEmail}, count: ${data?.length || 0}`);
-          setEmails(data || []);
-        }
-      })
-      .catch((err) => {
-        if (err.name !== 'AbortError') console.warn(err);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setIsLoadingEmails(false);
-          setIsRefreshing(false);
-        }
-      });
-
-    loadAddresses();
   };
 
-  // Copy active email to clipboard
+  // Copy email
   const handleCopyEmail = () => {
-    if (!activeEmail) return;
     navigator.clipboard.writeText(activeEmail);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   };
 
-  // Quick generate random email
-  const handleGenerateQuick = async () => {
-    const random = generateRandomEmail();
-    try {
-      const created = await createTempEmail({
-        emailAddress: random,
-        isCustom: false,
-        userId: user?.id
-      });
-      setCreatedEmails((prev) => {
-        const map = new Map<string, TempEmail>();
-        for (const item of prev) {
-          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
-        }
-        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
-          map.set(activeEmail.toLowerCase(), {
-            id: 'addr_' + Math.random().toString(36).substring(2, 9),
-            email_address: activeEmail,
-            created_at: new Date().toISOString(),
-            is_custom: false,
-            message_count: 0
-          });
-        }
-        map.set(created.email_address.toLowerCase(), created);
-        const updated = Array.from(map.values());
-        saveLocalAddresses(updated);
-        return updated;
-      });
-      setActiveEmail(created.email_address);
-      setStoredActiveEmail(created.email_address);
-      await loadAddresses();
-    } catch (err: any) {
-      console.warn('Generate address fallback:', err);
-      const fallbackRecord: TempEmail = {
-        id: 'addr_' + Math.random().toString(36).substring(2, 9),
-        email_address: random,
-        created_at: new Date().toISOString(),
-        is_custom: false,
-        message_count: 0
-      };
-      setCreatedEmails((prev) => {
-        const map = new Map<string, TempEmail>();
-        for (const item of prev) {
-          if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
-        }
-        if (activeEmail && !map.has(activeEmail.toLowerCase())) {
-          map.set(activeEmail.toLowerCase(), {
-            id: 'addr_' + Math.random().toString(36).substring(2, 9),
-            email_address: activeEmail,
-            created_at: new Date().toISOString(),
-            is_custom: false,
-            message_count: 0
-          });
-        }
-        map.set(fallbackRecord.email_address.toLowerCase(), fallbackRecord);
-        const updated = Array.from(map.values());
-        saveLocalAddresses(updated);
-        return updated;
-      });
-      setActiveEmail(random);
-      setStoredActiveEmail(random);
-      await loadAddresses();
-    }
-  };
-
-  // Switch to another email address with password check & clean loading transition
-  const handleSelectEmail = async (emailAddr: string) => {
-    const cleanAddr = emailAddr.trim().toLowerCase();
-    if (cleanAddr === activeEmail.toLowerCase()) return;
-
-    const target = createdEmails.find(
-      (e) => e.email_address.toLowerCase() === cleanAddr
-    );
-
-    if (target?.is_password_protected) {
-      setUnlockTargetEmail(cleanAddr);
-      setIsUnlockModalOpen(true);
-      return;
-    }
-
-    // Cancel in-flight fetch immediately
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-    // Load stored emails immediately so no empty screen or disappearing messages!
-    const cached = getStoredEmailsForAccount(cleanAddr, folderParam);
-    setEmails(cached);
-    setIsLoadingEmails(cached.length === 0);
-
-    setActiveEmail(cleanAddr);
-    setStoredActiveEmail(cleanAddr);
-  };
-
-  // Unlock password-protected mailbox
-  const handleUnlockMailbox = async (password: string) => {
-    const unlocked = await unlockTempEmail(unlockTargetEmail, password);
-    const cleanAddr = unlocked.email_address.toLowerCase();
-    const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-    const cached = getStoredEmailsForAccount(cleanAddr, folderParam);
-    setEmails(cached);
-    setIsLoadingEmails(cached.length === 0);
-    setActiveEmail(unlocked.email_address);
-    setStoredActiveEmail(unlocked.email_address);
-  };
-
-  // Create custom email (preserves all previous custom emails so user can switch between them)
-  const handleCreateCustom = async (data: {
-    emailAddress: string;
-    isCustom: boolean;
-    password?: string;
-    avatarUrl?: string;
-    isReserved?: boolean;
-  }) => {
-    const created = await createTempEmail({
-      ...data,
-      userId: user?.id
-    });
-    // Add new email to createdEmails list and PRESERVE all previous custom emails
-    setCreatedEmails((prev) => {
-      const map = new Map<string, TempEmail>();
-      for (const item of prev) {
-        if (item?.email_address) map.set(item.email_address.toLowerCase(), item);
-      }
-      if (activeEmail && !map.has(activeEmail.toLowerCase())) {
-        map.set(activeEmail.toLowerCase(), {
-          id: 'addr_' + Math.random().toString(36).substring(2, 9),
-          email_address: activeEmail,
-          created_at: new Date().toISOString(),
-          is_custom: true,
-          message_count: 0
-        });
-      }
-      map.set(created.email_address.toLowerCase(), created);
-      const updated = Array.from(map.values());
-      saveLocalAddresses(updated);
-      return updated;
-    });
-    setActiveEmail(created.email_address);
-    setStoredActiveEmail(created.email_address);
-    await loadAddresses();
-  };
-
-  // Delete custom email address
-  const handleDeleteCustomEmail = async (id: string, emailAddr: string) => {
-    await deleteTempEmail(id || emailAddr);
-    setCreatedEmails((prev) =>
-      prev.filter((e) => e.email_address.toLowerCase() !== emailAddr.toLowerCase())
-    );
-    if (activeEmail.toLowerCase() === emailAddr.toLowerCase()) {
-      const remaining = createdEmails.filter(
-        (e) => e.email_address.toLowerCase() !== emailAddr.toLowerCase()
-      );
-      const nextEmail = remaining[0]?.email_address || '';
-      setActiveEmail(nextEmail);
-      setStoredActiveEmail(nextEmail);
-    }
-    await loadAddresses();
-  };
-
-  // Send Email (with slow reply / scheduled send) - guaranteed saving for sent messages
-  const handleSendEmail = async (data: {
-    from: string;
-    to: string;
-    subject: string;
-    text: string;
-    scheduledFor?: string;
-  }) => {
-    const sender = data.from || activeEmail;
-    const res = await sendEmail({
-      from: sender,
-      to: data.to,
-      subject: data.subject,
-      text: data.text,
-      scheduledFor: data.scheduledFor
-    });
-
-    if (res?.email) {
-      storeSentEmail(res.email);
-    }
-
-    if (activeEmail) {
-      const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-      const refreshed = await fetchEmails(activeEmail, folderParam);
-      setEmails(refreshed);
-    }
-  };
-
-  // Star / Unstar
-  const handleToggleStar = async (emailId: string, currentStarred: boolean, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+  // Star toggle
+  const handleToggleStar = async (emailId: string, currentStarred: boolean, e: React.MouseEvent) => {
+    e.stopPropagation();
     setEmails((prev) =>
       prev.map((m) => (m.id === emailId ? { ...m, is_starred: !currentStarred } : m))
     );
-    updateStoredEmail(emailId, { is_starred: !currentStarred });
     try {
       await updateEmailStatus(emailId, { is_starred: !currentStarred });
     } catch {}
   };
 
-  // Move to Trash
-  const handleMoveToTrash = async (emailId: string) => {
-    setEmails((prev) => prev.filter((m) => m.id !== emailId));
-    if (selectedEmail?.id === emailId) setSelectedEmail(null);
-    updateStoredEmail(emailId, { folder: 'trash' });
-    try {
-      await updateEmailStatus(emailId, { folder: 'trash' });
-    } catch {}
-  };
-
-  // Move to Spam
-  const handleMoveToSpam = async (emailId: string) => {
-    setEmails((prev) => prev.filter((m) => m.id !== emailId));
-    if (selectedEmail?.id === emailId) setSelectedEmail(null);
-    updateStoredEmail(emailId, { folder: 'spam' });
-    try {
-      await updateEmailStatus(emailId, { folder: 'spam' });
-    } catch {}
-  };
-
-  // Reply
-  const handleReply = (to: string, subject: string) => {
-    setComposeInitialTo(to);
-    setComposeInitialSubject(subject.startsWith('Re:') ? subject : `Re: ${subject}`);
+  // Open Compose for new email
+  const handleOpenCompose = () => {
+    setActiveDraft(null);
+    setComposeInitialTo('');
+    setComposeInitialSubject('');
+    setComposeInitialBody('');
     setIsComposeOpen(true);
   };
 
-  // Forward
+  // Open Compose to continue editing a saved draft
+  const handleSelectDraft = (draft: Draft) => {
+    setActiveDraft(draft);
+    setComposeInitialTo(draft.to || '');
+    setComposeInitialSubject(draft.subject || '');
+    setComposeInitialBody(draft.body || '');
+    setIsComposeOpen(true);
+  };
+
+  // Delete draft
+  const handleDeleteDraft = async (draftId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDrafts((prev) => prev.filter((d) => d.id !== draftId));
+    try {
+      await deleteDraft(draftId);
+    } catch {}
+  };
+
+  // Reply handler
+  const handleReply = (to: string, subject: string) => {
+    setSelectedEmail(null);
+    setActiveDraft(null);
+    setComposeInitialTo(to);
+    setComposeInitialSubject(subject);
+    setComposeInitialBody('');
+    setIsComposeOpen(true);
+  };
+
+  // Forward handler
   const handleForward = (email: EmailMessage) => {
+    setSelectedEmail(null);
+    setActiveDraft(null);
     setComposeInitialTo('');
     setComposeInitialSubject(`Fwd: ${email.subject}`);
+    setComposeInitialBody(`\n\n---------- Forwarded message ---------\nFrom: ${email.sender}\nDate: ${email.received_at}\nSubject: ${email.subject}\nTo: ${email.recipient}\n\n${email.body_text || email.body || ''}`);
     setIsComposeOpen(true);
   };
 
-  // Cleanup Storage (deletes trash & spam)
-  const handleCleanStorage = async () => {
-    const res = await cleanUpSpace();
-    alert(res.message);
-    if (activeEmail) {
-      const folderParam = currentFolder === 'all_inboxes' ? 'all' : currentFolder;
-      const refreshed = await fetchEmails(activeEmail, folderParam);
-      setEmails(refreshed);
-    }
+  // Email Move to trash
+  const handleMoveToTrash = async (id: string) => {
+    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setSelectedEmail(null);
+    try {
+      await updateEmailStatus(id, { folder: 'trash' });
+    } catch {}
   };
 
-  // Profile Avatar update
-  const handleUpdateAvatar = async (base64OrUrl: string) => {
-    if (user) {
-      setUser({ ...user, avatar_url: base64OrUrl });
-      setStoredUser({ ...user, avatar_url: base64OrUrl });
-    }
-    if (activeEmail) {
-      try {
-        await updateEmailPicture(activeEmail, base64OrUrl);
-        await loadAddresses();
-      } catch {}
-    }
+  // Email Move to spam
+  const handleMoveToSpam = async (id: string) => {
+    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setSelectedEmail(null);
+    try {
+      await updateEmailStatus(id, { folder: 'spam' });
+    } catch {}
+  };
+
+  // Delete email permanently
+  const handleDeleteEmail = async (id: string) => {
+    setEmails((prev) => prev.filter((m) => m.id !== id));
+    setSelectedEmail(null);
+    try {
+      await deleteEmail(id, true);
+    } catch {}
+  };
+
+  // Auth Success
+  const handleAuthSuccess = (authenticatedUser: UserProfile) => {
+    setUser(authenticatedUser);
+    setActiveEmail(authenticatedUser.email);
+    setStoredActiveEmail(authenticatedUser.email);
+    setStoredUser(authenticatedUser);
+    setViewMode('app');
+    loadMailData();
+  };
+
+  // Suspicious login detected during sign-in
+  const handleSuspiciousLoginDetected = (data: any) => {
+    setSuspiciousLoginData(data);
+    setIsSuspiciousModalOpen(true);
   };
 
   // Logout
   const handleLogout = () => {
     clearAuthToken();
     setUser(null);
-    loadAddresses();
+    setActiveEmail('miracle@goldmailer.xyz');
+    setStoredActiveEmail('miracle@goldmailer.xyz');
+    setViewMode('hero');
   };
 
-  // Calculate real unread counts per folder across all stored messages for this active account
-  const accountAllEmails = activeEmail ? getStoredEmailsForAccount(activeEmail, 'all') : [];
-  const unreadCounts: Record<string, number> = {
-    total: accountAllEmails.filter((e) => !e.is_read && e.folder !== 'trash').length,
-    primary: accountAllEmails.filter((e) => !e.is_read && (!e.folder || e.folder === 'primary')).length,
-    promotions: accountAllEmails.filter((e) => !e.is_read && e.category === 'promotions').length,
-    social: accountAllEmails.filter((e) => !e.is_read && e.category === 'social').length,
-    updates: accountAllEmails.filter((e) => !e.is_read && e.category === 'updates').length,
-    sent: accountAllEmails.filter((e) => e.folder === 'sent').length,
-    scheduled: accountAllEmails.filter((e) => e.folder === 'scheduled').length,
-    outbox: 0,
-    drafts: 0,
-    all_mail: accountAllEmails.length,
-    spam: accountAllEmails.filter((e) => e.folder === 'spam').length,
-    trash: accountAllEmails.filter((e) => e.folder === 'trash').length
+  // Unread / count metrics for folders
+  const unreadCounts = {
+    primary: emails.filter((e) => !e.is_read && e.folder === 'primary').length,
+    promotions: emails.filter((e) => !e.is_read && e.folder === 'promotions').length,
+    social: emails.filter((e) => !e.is_read && e.folder === 'social').length,
+    updates: emails.filter((e) => !e.is_read && e.folder === 'updates').length,
+    starred: emails.filter((e) => e.is_starred).length,
+    sent: emails.filter((e) => e.folder === 'sent').length,
+    scheduled: emails.filter((e) => e.folder === 'scheduled').length,
+    drafts: drafts.length,
+    all_mail: emails.length,
+    spam: emails.filter((e) => e.folder === 'spam').length,
+    trash: emails.filter((e) => e.folder === 'trash').length
   };
 
-  // Filter emails by search query in real time
-  const filteredEmails = emails.filter((m) => {
+  // Filter emails by search query
+  const filteredEmails = emails.filter((e) => {
     if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase().trim();
+    const q = searchQuery.toLowerCase();
     return (
-      m.subject?.toLowerCase().includes(q) ||
-      m.sender?.toLowerCase().includes(q) ||
-      m.sender_name?.toLowerCase().includes(q) ||
-      m.body_text?.toLowerCase().includes(q)
+      (e.subject && e.subject.toLowerCase().includes(q)) ||
+      (e.sender && e.sender.toLowerCase().includes(q)) ||
+      (e.sender_name && e.sender_name.toLowerCase().includes(q)) ||
+      (e.body_text && e.body_text.toLowerCase().includes(q))
     );
   });
 
-  // If user navigated to Hero / Landing Page view
-  if (viewMode === 'hero') {
-    return (
-      <HeroLegalPage
-        onBackToApp={() => {
-          setViewMode('app');
-          if (window.location.hash) {
-            window.history.pushState(null, '', window.location.pathname);
-          }
-        }}
-        initialSection={heroInitialSection}
-        activeEmail={activeEmail || 'anything@goldmailer.xyz'}
-      />
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-[#121212] text-[#e3e3e3] flex flex-col font-sans select-none antialiased">
-      {/* Top Gmail Search Header (Screenshot 3) */}
-      <GmailHeader
-        onOpenDrawer={() => setIsDrawerOpen(true)}
-        onOpenAccountSwitcher={() => setIsAccountSwitcherOpen(true)}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
+    <div className={`min-h-screen flex flex-col font-sans transition-colors ${
+      darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'
+    }`}>
+      {/* Real-time Push Alert for Other Device Approval */}
+      <DeviceApprovalPrompt />
+
+      {/* Hero Landing Page View */}
+      {viewMode === 'hero' ? (
+        <HeroLegalPage
+          initialSection={heroInitialSection}
+          onBackToApp={() => setViewMode('app')}
+          onOpenLogin={() => {
+            setAuthMode('login');
+            setIsAuthOpen(true);
+          }}
+          onOpenRegister={() => {
+            setAuthMode('register');
+            setIsAuthOpen(true);
+          }}
+          onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+          darkMode={darkMode}
+          onToggleDarkMode={toggleDarkMode}
+        />
+      ) : (
+        /* Permanent Webmail View */
+        <div className="flex-1 flex flex-col min-h-screen">
+          {/* Header */}
+          <GmailHeader
+            onOpenDrawer={() => setIsDrawerOpen(true)}
+            onOpenAccountSwitcher={() => setIsAccountSwitcherOpen(true)}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            user={user}
+            activeEmail={activeEmail}
+            isSyncing={isSyncing}
+            onSyncEmails={handleSyncEmails}
+            darkMode={darkMode}
+            onToggleDarkMode={toggleDarkMode}
+            onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+          />
+
+          {/* Mail List & Inbox */}
+          <main className="flex-1 flex flex-col min-h-0">
+            <EmailListView
+              currentFolder={currentFolder}
+              emails={filteredEmails}
+              drafts={drafts}
+              activeEmail={activeEmail}
+              isLoading={isLoadingEmails}
+              isRefreshing={isSyncing}
+              onRefresh={handleSyncEmails}
+              onSelectEmail={(m) => setSelectedEmail(m)}
+              onSelectDraft={handleSelectDraft}
+              onDeleteDraft={handleDeleteDraft}
+              onToggleStar={handleToggleStar}
+              onOpenCompose={handleOpenCompose}
+              isCopied={isCopied}
+              onCopyEmail={handleCopyEmail}
+              darkMode={darkMode}
+            />
+          </main>
+
+          {/* Drawer Sidebar */}
+          <GmailDrawer
+            isOpen={isDrawerOpen}
+            onClose={() => setIsDrawerOpen(false)}
+            currentFolder={currentFolder}
+            onSelectFolder={(folder) => setCurrentFolder(folder)}
+            unreadCounts={unreadCounts}
+            user={user}
+            onOpenCompose={handleOpenCompose}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenHelp={() => alert('For support, email us at team@goldmailer.xyz or visit goldmailer.xyz/help.')}
+            onOpenAdmin={() => setIsAdminOpen(true)}
+            onOpenHeroPage={(section) => {
+              setViewMode('hero');
+              if (section) setHeroInitialSection(section);
+            }}
+            onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+            darkMode={darkMode}
+          />
+        </div>
+      )}
+
+      {/* Compose Email Modal (with auto-save draft every 3s) */}
+      <ComposeModal
+        isOpen={isComposeOpen}
+        onClose={() => {
+          setIsComposeOpen(false);
+          loadMailData(true);
+        }}
+        activeEmail={activeEmail}
+        onEmailSent={() => loadMailData(false)}
+        initialDraft={activeDraft}
+        initialTo={composeInitialTo}
+        initialSubject={composeInitialSubject}
+        initialBody={composeInitialBody}
+      />
+
+      {/* Email Detail Reading Modal */}
+      {selectedEmail && (
+        <EmailDetailModal
+          email={selectedEmail}
+          onClose={() => setSelectedEmail(null)}
+          onDelete={handleDeleteEmail}
+          onMoveToTrash={handleMoveToTrash}
+          onMoveToSpam={handleMoveToSpam}
+          onToggleStar={(id, starred) => handleToggleStar(id, starred, { stopPropagation: () => {} } as any)}
+          onReply={handleReply}
+          onForward={handleForward}
+          darkMode={darkMode}
+        />
+      )}
+
+      {/* Account Creation Flow & Login Wizard */}
+      <AuthWizardModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        onSuccess={handleAuthSuccess}
+        initialMode={authMode}
+        onSuspiciousLoginDetected={handleSuspiciousLoginDetected}
+      />
+
+      {/* Suspicious Login Modal (Screen detected new device) */}
+      <SuspiciousLoginModal
+        isOpen={isSuspiciousModalOpen}
+        onClose={() => setIsSuspiciousModalOpen(false)}
+        data={suspiciousLoginData}
+        onLoginApproved={(approvedUser) => {
+          setIsSuspiciousModalOpen(false);
+          handleAuthSuccess(approvedUser);
+        }}
+      />
+
+      {/* OAuth 2.0 Consent Screen Modal */}
+      <OAuthConsentModal
+        isOpen={isOAuthConsentOpen}
+        onClose={() => setIsOAuthConsentOpen(false)}
+        clientId={oauthParams.clientId}
+        redirectUri={oauthParams.redirectUri}
+        scope={oauthParams.scope}
+        state={oauthParams.state}
         user={user}
+      />
+
+      {/* OAuth 2.0 Developer Portal Modal */}
+      <OAuthDeveloperModal
+        isOpen={isOAuthDevOpen}
+        onClose={() => setIsOAuthDevOpen(false)}
         activeEmail={activeEmail}
       />
 
-      {/* Main Mail View (Category header, email list, Compose FAB, Bottom Nav) */}
-      <EmailListView
-        currentFolder={currentFolder}
-        emails={filteredEmails}
-        activeEmail={activeEmail}
-        isLoading={isLoadingEmails}
-        isRefreshing={isRefreshing}
-        onRefresh={handleManualRefresh}
-        onSelectEmail={(msg) => {
-          setSelectedEmail(msg);
-          // Mark as read immediately
-          if (!msg.is_read) {
-            updateEmailStatus(msg.id, { is_read: true });
-            setEmails((prev) =>
-              prev.map((e) => (e.id === msg.id ? { ...e, is_read: true } : e))
-            );
-          }
-        }}
-        onToggleStar={handleToggleStar}
-        onOpenCompose={() => {
-          setComposeInitialTo('');
-          setComposeInitialSubject('');
-          setIsComposeOpen(true);
-        }}
-        onOpenCreateModal={() => setIsCustomModalOpen(true)}
-        onGenerateQuick={handleGenerateQuick}
-        isCopied={isCopied}
-        onCopyEmail={handleCopyEmail}
-        totalUnreadCount={unreadCounts.total}
-      />
-
-      {/* Navigation Drawer (Screenshots 1 & 2) */}
-      <GmailDrawer
-        isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
-        currentFolder={currentFolder}
-        onSelectFolder={(f) => setCurrentFolder(f)}
-        unreadCounts={unreadCounts}
-        user={user}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenHelp={() => setIsSupportOpen(true)}
-        onOpenCreateLabel={() => setIsCustomModalOpen(true)}
-        onOpenAdmin={() => setIsAdminOpen(true)}
-        onOpenHeroPage={(section) => {
-          setHeroInitialSection(section || 'hero');
-          setViewMode('hero');
-        }}
-      />
-
-      {/* Account Switcher Bottom Sheet / Dialog (Screenshots 4 & 5) */}
+      {/* Account Switcher Sheet */}
       <AccountSwitcherSheet
         isOpen={isAccountSwitcherOpen}
         onClose={() => setIsAccountSwitcherOpen(false)}
         activeEmail={activeEmail}
-        createdEmails={createdEmails}
         user={user}
-        onSelectEmail={handleSelectEmail}
-        onOpenAddAccount={() => setIsCustomModalOpen(true)}
-        onOpenProfile={() => setIsProfileOpen(true)}
-        onOpenPremium={() => {
-          setReserveTargetEmail(activeEmail || 'custom@goldmailer.xyz');
-          setIsNowPaymentsOpen(true);
-        }}
-        onDeleteCustomEmail={handleDeleteCustomEmail}
-        onCleanStorage={handleCleanStorage}
-        onUpdateAvatar={handleUpdateAvatar}
-        onOpenPrivacy={() => {
-          setHeroInitialSection('privacy');
-          setViewMode('hero');
-        }}
-        onOpenTerms={() => {
-          setHeroInitialSection('terms');
-          setViewMode('hero');
-        }}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
         onOpenHeroPage={(section) => {
-          setHeroInitialSection(section || 'hero');
           setViewMode('hero');
+          setHeroInitialSection(section);
         }}
-        onOpenAuth={() => setIsAuthOpen(true)}
+        onOpenAuth={(mode) => {
+          setAuthMode(mode || 'login');
+          setIsAuthOpen(true);
+        }}
         onLogout={handleLogout}
+        darkMode={darkMode}
       />
 
-      {/* Email Detail Reading View (with clickable links) */}
-      <EmailDetailModal
-        email={selectedEmail}
-        onClose={() => setSelectedEmail(null)}
-        onDelete={(id) => {
-          deleteEmail(id);
-          setEmails((prev) => prev.filter((m) => m.id !== id));
-          setSelectedEmail(null);
-        }}
-        onMoveToTrash={handleMoveToTrash}
-        onMoveToSpam={handleMoveToSpam}
-        onToggleStar={(id, starred) => {
-          handleToggleStar(id, !starred);
-          if (selectedEmail) {
-            setSelectedEmail({ ...selectedEmail, is_starred: starred });
-          }
-        }}
-        onReply={handleReply}
-        onForward={handleForward}
-      />
-
-      {/* Compose Email Modal (Slow Reply / Scheduled Send) */}
-      <ComposeModal
-        isOpen={isComposeOpen}
-        onClose={() => setIsComposeOpen(false)}
-        availableFromEmails={createdEmails}
-        activeEmail={activeEmail}
-        onSend={handleSendEmail}
-        initialTo={composeInitialTo}
-        initialSubject={composeInitialSubject}
-      />
-
-      {/* Custom & Multi Email Management Modal */}
-      <CustomEmailModal
-        isOpen={isCustomModalOpen}
-        onClose={() => setIsCustomModalOpen(false)}
-        user={user}
-        onCreate={handleCreateCustom}
-        onOpenReservePayment={(emailAddr) => {
-          setReserveTargetEmail(emailAddr);
-          setIsNowPaymentsOpen(true);
-        }}
-      />
-
-      {/* Password Unlock Modal for Protected Mailboxes */}
-      <PasswordUnlockModal
-        isOpen={isUnlockModalOpen}
-        onClose={() => setIsUnlockModalOpen(false)}
-        emailAddress={unlockTargetEmail}
-        onUnlock={handleUnlockMailbox}
-      />
-
-      {/* NOWPayments Modal ($1.11 / Year Reserve Email Forever) */}
-      <NowPaymentsModal
-        isOpen={isNowPaymentsOpen}
-        onClose={() => setIsNowPaymentsOpen(false)}
-        targetEmail={reserveTargetEmail}
-        userId={user?.id}
-        onSuccess={() => {
-          loadAddresses();
-          if (user) {
-            setUser({ ...user, isPremium: true });
-          }
-        }}
-      />
-
-      {/* Auth Modal (Login / Sign Up with Profile & 250 Countries) */}
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        onAuthSuccess={(u) => {
-          setUser(u);
-          loadAddresses();
-        }}
-      />
-
-      {/* User Profile & Account Settings Modal */}
-      <ProfileModal
-        isOpen={isProfileOpen}
-        onClose={() => setIsProfileOpen(false)}
-        user={user}
-        createdEmails={createdEmails}
-        onUpdateUser={(updated) => setUser(updated)}
-        onDeleteEmail={handleDeleteCustomEmail}
-        onOpenReserve={(emailAddr) => {
-          setReserveTargetEmail(emailAddr);
-          setIsNowPaymentsOpen(true);
-        }}
-      />
-
-      {/* Admin Panel Modal (/admin) */}
-      <AdminPanelModal
-        isOpen={isAdminOpen}
-        onClose={() => {
-          setIsAdminOpen(false);
-          if (window.location.pathname === '/admin') {
-            window.history.pushState(null, '', '/');
-          }
-        }}
-      />
-
-      {/* Help & Feedback / Support Chat Modal */}
-      <SupportModal
-        isOpen={isSupportOpen}
-        onClose={() => setIsSupportOpen(false)}
-        userEmail={user?.email || activeEmail}
-      />
-
-      {/* Settings Modal */}
+      {/* Settings Modal (2FA & Devices) */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         activeEmail={activeEmail}
+        user={user}
+        onUserUpdated={(u) => {
+          setUser(u);
+          setStoredUser(u);
+        }}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
       />
 
-      {/* Privacy & Terms Modals */}
-      <PrivacyModal isOpen={isPrivacyOpen} onClose={() => setIsPrivacyOpen(false)} />
-      <TermsModal isOpen={isTermsOpen} onClose={() => setIsTermsOpen(false)} />
+      {/* Admin Panel Modal */}
+      <AdminPanelModal
+        isOpen={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
+      />
     </div>
   );
 }

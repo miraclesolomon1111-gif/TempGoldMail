@@ -1,57 +1,61 @@
 import React from 'react';
 import {
   Star,
-  Pencil,
   Mail,
   Copy,
   Check,
   RefreshCw,
   Plus,
-  Sparkles,
   Inbox,
   Send,
   Trash2,
   Clock,
-  ShieldCheck,
-  QrCode
+  FileText,
+  AlertOctagon,
+  Tag,
+  Users,
+  Info
 } from 'lucide-react';
-import { EmailMessage, MailFolder } from '../types';
+import { EmailMessage, MailFolder, Draft } from '../types';
 
 interface EmailListViewProps {
   currentFolder: MailFolder | 'all_inboxes';
   emails: EmailMessage[];
+  drafts: Draft[];
   activeEmail: string;
   isLoading: boolean;
   isRefreshing: boolean;
   onRefresh: () => void;
   onSelectEmail: (email: EmailMessage) => void;
+  onSelectDraft: (draft: Draft) => void;
+  onDeleteDraft: (draftId: string, e: React.MouseEvent) => void;
   onToggleStar: (emailId: string, currentStarred: boolean, e: React.MouseEvent) => void;
   onOpenCompose: () => void;
-  onOpenCreateModal: () => void;
-  onGenerateQuick: () => void;
   isCopied: boolean;
   onCopyEmail: () => void;
-  totalUnreadCount: number;
+  darkMode: boolean;
 }
 
 export const EmailListView: React.FC<EmailListViewProps> = ({
   currentFolder,
   emails,
+  drafts,
   activeEmail,
   isLoading,
   isRefreshing,
   onRefresh,
   onSelectEmail,
+  onSelectDraft,
+  onDeleteDraft,
   onToggleStar,
   onOpenCompose,
-  onOpenCreateModal,
-  onGenerateQuick,
   isCopied,
   onCopyEmail,
-  totalUnreadCount
+  darkMode
 }) => {
-  // Format timestamp like Gmail (e.g., 9:14 AM for today, Oct 6 for this year, 10/6/24 for older years)
-  const formatGmailTime = (isoString: string) => {
+  // Format Gmail-style time
+  const formatGmailTime = (isoString?: string) => {
+    if (!isoString) return '';
     try {
       const d = new Date(isoString);
       const now = new Date();
@@ -63,277 +67,206 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
       if (isToday) {
         return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       }
-      const isThisYear = d.getFullYear() === now.getFullYear();
-      if (isThisYear) {
-        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-      }
-      return d.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
     } catch {
       return '';
     }
   };
 
-  // Sender avatar color
-  const getAvatarColor = (str: string) => {
-    const colors = [
-      'bg-[#0b57d0]',
-      'bg-[#c5221f]',
-      'bg-[#e37400]',
-      'bg-[#137333]',
-      'bg-[#9333ea]',
-      'bg-[#0284c7]',
-      'bg-[#475569]'
-    ];
-    const code = (str || 'a').charCodeAt(0);
-    return colors[code % colors.length];
-  };
-
   const getFolderTitle = () => {
     switch (currentFolder) {
-      case 'all_inboxes':
-        return 'All inboxes';
-      case 'primary':
-        return 'Primary';
-      case 'promotions':
-        return 'Promotions';
-      case 'social':
-        return 'Social';
-      case 'updates':
-        return 'Updates';
-      case 'starred':
-        return 'Starred';
-      case 'snoozed':
-        return 'Snoozed';
-      case 'important':
-        return 'Important';
-      case 'sent':
-        return 'Sent';
-      case 'scheduled':
-        return 'Scheduled';
-      case 'outbox':
-        return 'Outbox';
-      case 'drafts':
-        return 'Drafts';
-      case 'all_mail':
-        return 'All mail';
-      case 'spam':
-        return 'Spam';
-      case 'trash':
-        return 'Trash';
-      case 'manage_subscriptions':
-        return 'Subscriptions';
-      default:
-        return 'Inbox';
+      case 'all_inboxes': return 'All Inboxes';
+      case 'primary': return 'Primary';
+      case 'promotions': return 'Promotions';
+      case 'social': return 'Social';
+      case 'updates': return 'Updates';
+      case 'starred': return 'Starred';
+      case 'sent': return 'Sent';
+      case 'scheduled': return 'Scheduled';
+      case 'drafts': return 'Drafts';
+      case 'all_mail': return 'All Mail';
+      case 'spam': return 'Spam';
+      case 'trash': return 'Trash';
+      default: return 'Inbox';
     }
   };
 
+  const isDraftFolder = currentFolder === 'drafts';
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 relative bg-[#121212]">
+    <div className={`flex-1 flex flex-col min-h-0 relative ${darkMode ? 'bg-[#121214]' : 'bg-[#fbf9f7]'}`}>
       {/* Category / Folder Header */}
-      <div className="px-5 pt-1 pb-2 flex items-center justify-between">
+      <div className="px-5 pt-2 pb-2 flex items-center justify-between border-b border-white/5">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-[#9aa0a6]">
+          <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
             {getFolderTitle()}
           </span>
-          {emails.length > 0 && (
-            <span className="text-[11px] text-[#5f6368] font-mono">({emails.length})</span>
-          )}
+          <span className="text-[11px] text-zinc-500 font-mono">
+            ({isDraftFolder ? drafts.length : emails.length})
+          </span>
         </div>
 
-        {/* Quick active email info pill & refresh */}
-        {activeEmail && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onCopyEmail}
-              title="Copy active email"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#2d2f31] border border-white/5 text-[11px] font-mono text-[#8ab4f8] transition-colors"
-            >
-              {isCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-              <span className="max-w-[150px] truncate">{activeEmail}</span>
-            </button>
-            <button
-              onClick={onRefresh}
-              disabled={isRefreshing}
-              title="Refresh inbox"
-              className="p-1.5 text-[#9aa0a6] hover:text-white rounded-full hover:bg-white/5 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-[#8ab4f8]' : ''}`} />
-            </button>
-          </div>
-        )}
+        {/* Quick Email Pill and Refresh button */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onCopyEmail}
+            title="Copy your permanent address"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-[#FF6A00]/25 text-[11px] font-mono text-[#FF8C42] transition-colors"
+          >
+            {isCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+            <span className="max-w-[170px] truncate">{activeEmail}</span>
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            title="Refresh inbox"
+            className="p-1.5 text-zinc-400 hover:text-[#FF6A00] rounded-full hover:bg-white/10 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-[#FF6A00]' : ''}`} />
+          </button>
+        </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto pb-24 scrollbar-thin scrollbar-thumb-zinc-800">
-        {/* If user hasn't generated or chosen an address yet (Zero state requested) */}
-        {!activeEmail ? (
-          <div className="max-w-md mx-auto my-12 px-6 text-center space-y-6">
-            <div className="w-16 h-16 mx-auto rounded-3xl bg-[#1e1f20] border border-white/10 flex items-center justify-center text-[#fbbc04]">
-              <Mail className="w-8 h-8" />
-            </div>
-            <div>
-              <h2 className="text-xl font-medium text-white mb-2">Welcome to GoldMail</h2>
-              <p className="text-sm text-[#9aa0a6] leading-relaxed">
-                A clean, secure, disposable email platform. No shared public inboxes — generate an
-                instant address or create your own custom handle to start receiving emails.
-              </p>
-            </div>
-            <div className="space-y-3 pt-2">
-              <button
-                onClick={onGenerateQuick}
-                className="w-full py-3.5 px-5 rounded-2xl bg-[#0b57d0] hover:bg-[#1a73e8] text-white font-medium text-sm flex items-center justify-center gap-2 shadow-lg transition-colors"
-              >
-                <Sparkles className="w-4 h-4 text-[#fbbc04]" />
-                <span>Generate Instant Disposable Email</span>
-              </button>
-              <button
-                onClick={onOpenCreateModal}
-                className="w-full py-3.5 px-5 rounded-2xl bg-[#1e1f20] hover:bg-[#2d2f31] border border-[#303134] text-[#c2e7ff] font-medium text-sm flex items-center justify-center gap-2 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Create Custom @goldmailer.xyz</span>
-              </button>
-            </div>
-          </div>
-        ) : isLoading ? (
-          /* Gmail-style Skeleton Loader */
-          <div className="divide-y divide-[#1e1f20]/60 animate-pulse">
-            {[1, 2, 3, 4, 5, 6, 7].map((n) => (
-              <div key={n} className="flex items-start gap-3.5 px-4 py-3.5 bg-[#121212]">
-                <div className="pt-0.5 flex-shrink-0">
-                  <div className="w-10 h-10 rounded-full bg-[#242528] flex-shrink-0" />
-                </div>
-                <div className="flex-1 min-w-0 pr-1 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="h-3.5 w-28 sm:w-36 bg-[#2a2b2e] rounded" />
-                    <div className="h-3 w-12 bg-[#202124] rounded" />
-                  </div>
-                  <div className="h-3.5 w-3/4 sm:w-1/2 bg-[#2a2b2e] rounded" />
-                  <div className="h-3 w-5/6 sm:w-2/3 bg-[#1e1f20] rounded" />
-                </div>
-                <div className="pt-1 flex-shrink-0">
-                  <div className="w-4 h-4 rounded bg-[#1e1f20]" />
+      {/* Main Mail List / Drafts List */}
+      <div className="flex-1 overflow-y-auto pb-24">
+        {isLoading ? (
+          /* Skeleton Loader */
+          <div className="divide-y divide-white/5 animate-pulse">
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <div key={n} className="flex items-center gap-3.5 px-4 py-3.5">
+                <div className="w-10 h-10 rounded-full bg-white/5 flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 w-32 bg-white/10 rounded" />
+                  <div className="h-3 w-48 bg-white/5 rounded" />
                 </div>
               </div>
             ))}
           </div>
-        ) : emails.length === 0 ? (
-          /* Empty Folder View */
-          <div className="max-w-md mx-auto my-16 px-6 text-center space-y-4">
-            <div className="w-16 h-16 mx-auto rounded-2xl bg-[#1e1f20] flex items-center justify-center text-[#5f6368]">
-              {currentFolder === 'sent' ? <Send className="w-8 h-8" /> : <Inbox className="w-8 h-8" />}
-            </div>
-            <div>
-              <h3 className="text-base font-medium text-white">Nothing in {getFolderTitle()}</h3>
-              <p className="text-xs text-[#9aa0a6] mt-1">
-                {currentFolder === 'sent'
-                  ? 'Your sent messages are saved permanently and will appear here.'
-                  : currentFolder === 'scheduled'
-                  ? 'No scheduled messages waiting to be dispatched.'
-                  : 'Your messages will appear here in real time as they arrive.'}
+        ) : isDraftFolder ? (
+          /* Drafts List View */
+          drafts.length === 0 ? (
+            <div className="max-w-md mx-auto my-16 px-6 text-center space-y-3">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-zinc-500">
+                <FileText className="w-7 h-7" />
+              </div>
+              <h3 className="text-sm font-semibold text-white">You have no saved drafts</h3>
+              <p className="text-xs text-zinc-400">
+                Drafts are automatically saved every 3 seconds while typing in Compose.
               </p>
-            </div>
-            <div className="pt-4 flex items-center justify-center gap-3">
               <button
-                onClick={onRefresh}
-                className="px-4 py-2 rounded-full bg-[#1e1f20] hover:bg-[#2d2f31] text-xs font-medium text-[#8ab4f8] border border-white/5 flex items-center gap-2 transition-colors"
+                type="button"
+                onClick={onOpenCompose}
+                className="mt-2 px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                <span>Check for new mail</span>
+                Compose Email
               </button>
             </div>
+          ) : (
+            <div className="divide-y divide-white/5">
+              {drafts.map((d) => (
+                <div
+                  key={d.id}
+                  onClick={() => onSelectDraft(d)}
+                  className="flex items-center justify-between px-4 py-3 hover:bg-white/5 cursor-pointer transition-colors group"
+                >
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <span className="text-xs font-bold text-red-400 uppercase tracking-wider flex-shrink-0">
+                      Draft
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-white truncate">
+                        {d.to ? `To: ${d.to}` : '(No recipient specified)'}
+                      </p>
+                      <p className="text-xs text-zinc-400 truncate">
+                        <span className="text-zinc-200">{d.subject || '(No subject)'}</span> — {d.body || '(Empty body)'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-shrink-0 ml-3">
+                    <span className="text-[11px] text-zinc-500 font-mono">
+                      {formatGmailTime(d.updated_at)}
+                    </span>
+                    <button
+                      type="button"
+                      title="Delete draft"
+                      onClick={(e) => onDeleteDraft(d.id, e)}
+                      className="p-1.5 text-zinc-500 hover:text-red-400 rounded-lg hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : emails.length === 0 ? (
+          /* Empty Folder View */
+          <div className="max-w-md mx-auto my-16 px-6 text-center space-y-3">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-zinc-500">
+              {currentFolder === 'sent' ? <Send className="w-7 h-7" /> : <Inbox className="w-7 h-7" />}
+            </div>
+            <h3 className="text-sm font-semibold text-white">No messages in {getFolderTitle()}</h3>
+            <p className="text-xs text-zinc-400">
+              {currentFolder === 'sent'
+                ? 'Sent messages are stored permanently and will appear here.'
+                : 'All inbound messages arriving at your permanent @goldmailer.xyz address will appear here instantly.'}
+            </p>
+            <button
+              onClick={onRefresh}
+              className="mt-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-zinc-200 transition-colors"
+            >
+              Check for New Messages
+            </button>
           </div>
         ) : (
-          /* Gmail Email List (Screenshot 3 style) */
-          <div className="divide-y divide-[#1e1f20]/60">
-            {emails.map((msg) => {
-              const isOutbound =
-                currentFolder === 'sent' ||
-                currentFolder === 'scheduled' ||
-                msg.folder === 'sent' ||
-                msg.folder === 'scheduled';
-              const targetRecipient = msg.recipient || msg.to_email || '';
-              const senderDisplayName = isOutbound
-                ? (targetRecipient ? `To: ${targetRecipient}` : 'To: (Recipient)')
-                : (msg.sender_name || msg.sender.split('@')[0] || 'Unknown');
-              const isUnread = !msg.is_read;
-              const senderInitial = isOutbound
-                ? (targetRecipient ? targetRecipient.replace(/^to:\s*/i, '').trim().charAt(0).toUpperCase() || 'T' : 'T')
-                : (senderDisplayName || 'S').charAt(0).toUpperCase();
-
+          /* Emails List View */
+          <div className="divide-y divide-white/5">
+            {emails.map((e) => {
+              const isUnread = !e.is_read;
               return (
                 <div
-                  key={msg.id}
-                  onClick={() => onSelectEmail(msg)}
-                  className={`flex items-start gap-3.5 px-4 py-3.5 hover:bg-[#1e1f20]/90 transition-colors cursor-pointer group select-none ${
-                    isUnread ? 'bg-[#18191a]' : 'bg-[#121212]'
+                  key={e.id}
+                  onClick={() => onSelectEmail(e)}
+                  className={`flex items-start gap-3.5 px-4 py-3 cursor-pointer transition-colors hover:bg-white/5 ${
+                    isUnread ? 'bg-[#FF6A00]/5 font-semibold' : ''
                   }`}
                 >
-                  {/* Sender Avatar Circle */}
+                  {/* Sender Avatar */}
                   <div className="pt-0.5 flex-shrink-0">
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-medium text-sm shadow-sm ${getAvatarColor(
-                        isOutbound ? targetRecipient : msg.sender
-                      )}`}
-                    >
-                      {senderInitial}
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-bold text-xs text-white shadow-inner">
+                      {(e.sender_name || e.sender || 'S').charAt(0).toUpperCase()}
                     </div>
                   </div>
 
-                  {/* Main Subject & Preview Column */}
+                  {/* Message Details */}
                   <div className="flex-1 min-w-0 pr-1">
-                    {/* Top Row: Sender Name + Timestamp */}
                     <div className="flex items-center justify-between gap-2 mb-0.5">
-                      <span
-                        className={`truncate text-[14px] leading-tight ${
-                          isUnread ? 'font-bold text-white' : 'font-medium text-[#c4c7c5]'
-                        }`}
-                      >
-                        {senderDisplayName}
+                      <span className={`text-xs truncate ${isUnread ? 'text-white font-bold' : 'text-zinc-300'}`}>
+                        {e.sender_name || e.sender}
                       </span>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {isUnread && (
-                          <span className="w-2 h-2 rounded-full bg-[#8ab4f8]" />
-                        )}
-                        <span
-                          className={`text-[12px] ${
-                            isUnread ? 'text-[#8ab4f8] font-semibold' : 'text-[#8e918f]'
-                          }`}
-                        >
-                          {formatGmailTime(msg.received_at)}
-                        </span>
-                      </div>
+                      <span className="text-[11px] text-zinc-500 font-mono flex-shrink-0">
+                        {formatGmailTime(e.received_at || e.created_at)}
+                      </span>
                     </div>
 
-                    {/* Middle Row: Subject Line */}
-                    <p
-                      className={`truncate text-[13.5px] leading-snug mb-0.5 ${
-                        isUnread ? 'font-semibold text-white' : 'font-normal text-[#e3e3e3]'
-                      }`}
-                    >
-                      {msg.subject || '(No Subject)'}
+                    <p className={`text-xs truncate ${isUnread ? 'text-white' : 'text-zinc-300'}`}>
+                      {e.subject || '(No Subject)'}
                     </p>
 
-                    {/* Bottom Row: Preview Snippet */}
-                    <p className="truncate text-[12.5px] text-[#8e918f] font-normal leading-normal">
-                      {msg.body_text || msg.body_html.replace(/<[^>]+>/g, ' ').slice(0, 120) || 'No message content'}
+                    <p className="text-xs text-zinc-500 truncate mt-0.5 font-normal">
+                      {(e.body_text || e.text || e.body || '').slice(0, 100)}
                     </p>
                   </div>
 
-                  {/* Far Right: Star button */}
+                  {/* Star toggle */}
                   <div className="pt-1 flex-shrink-0">
                     <button
-                      onClick={(e) => onToggleStar(msg.id, Boolean(msg.is_starred), e)}
-                      title={msg.is_starred ? 'Starred' : 'Not starred'}
-                      className="p-1 text-[#8e918f] hover:text-[#fbbc04] transition-colors"
+                      type="button"
+                      onClick={(evt) => onToggleStar(e.id, Boolean(e.is_starred), evt)}
+                      className="p-1 text-zinc-500 hover:text-amber-400 transition-colors"
                     >
-                      <Star
-                        className={`w-4.5 h-4.5 ${
-                          msg.is_starred
-                            ? 'fill-[#fbbc04] text-[#fbbc04]'
-                            : 'text-[#8e918f] hover:text-[#c4c7c5]'
-                        }`}
-                      />
+                      <Star className={`w-4 h-4 ${e.is_starred ? 'fill-amber-400 text-amber-400' : ''}`} />
                     </button>
                   </div>
                 </div>
@@ -343,31 +276,13 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
         )}
       </div>
 
-      {/* Floating Action Button (FAB) Compose Button (Screenshot 3) */}
-      <div className="fixed bottom-20 right-5 z-20">
-        <button
-          onClick={onOpenCompose}
-          className="flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-[#0b57d0] hover:bg-[#1a73e8] active:scale-95 text-white shadow-xl shadow-black/50 border border-blue-400/20 transition-all font-medium text-[14px]"
-        >
-          <Pencil className="w-5 h-5 text-white" />
-          <span>Compose</span>
-        </button>
-      </div>
-
-      {/* Bottom Navigation Bar (Clean Inbox Tab) */}
-      <nav className="fixed bottom-0 inset-x-0 h-14 bg-[#1e1f20] border-t border-[#303134] flex items-center justify-center z-20 px-8">
-        {/* Mail Tab */}
-        <div className="flex flex-col items-center justify-center relative w-16">
-          <div className="px-6 py-1.5 rounded-full bg-[#333d4d] text-[#c2e7ff] transition-colors shadow-xs">
-            <Mail className="w-5 h-5" />
-          </div>
-          {totalUnreadCount > 0 && (
-            <span className="absolute -top-1 right-2 bg-[#ea4335] text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full min-w-4 text-center">
-              {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
-            </span>
-          )}
-        </div>
-      </nav>
+      {/* Floating Compose Button on mobile */}
+      <button
+        onClick={onOpenCompose}
+        className="sm:hidden fixed bottom-6 right-5 p-4 rounded-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-xl shadow-[#FF6A00]/30 hover:scale-105 active:scale-95 transition-all z-20 flex items-center justify-center"
+      >
+        <Plus className="w-6 h-6" />
+      </button>
     </div>
   );
 };

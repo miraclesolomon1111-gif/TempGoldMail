@@ -35,12 +35,12 @@ export const SupportModal: React.FC<SupportModalProps> = ({ isOpen, onClose, use
     setTimeout(() => {
       let reply = "Thank you for reaching out! Our team has logged your inquiry. If you are experiencing email delivery delays, please verify your sender MX/SPF records or check that your recipient is formatted as anything@goldmailer.xyz.";
       const lower = userText.toLowerCase();
-      if (lower.includes('reserve') || lower.includes('1.11') || lower.includes('premium')) {
-        reply = "To reserve any custom address forever for $1.11/year, tap 'Reserve Email Forever' in your account switcher. You can pay via USDT, BTC, ETH, SOL, or LTC using NOWPayments, and lock it with your secret password!";
-      } else if (lower.includes('resend') || lower.includes('webhook')) {
-        reply = "GoldMail automatically connects to Resend and Cloudflare Email Routing catch-all workers on goldmailer.xyz. Any incoming email to your handle arrives in real time.";
-      } else if (lower.includes('password') || lower.includes('lock')) {
-        reply = "When creating an address, check 'Password Protect Mailbox'. Once set, nobody can view or recreate that email address without providing your password.";
+      if (lower.includes('reserve') || lower.includes('permanent') || lower.includes('account')) {
+        reply = "Every GoldMailer account is 100% permanent and free with 15GB cloud storage! Simply create an account with your chosen username, and it is locked forever with your password and optional 2-Step Verification.";
+      } else if (lower.includes('resend') || lower.includes('webhook') || lower.includes('sync')) {
+        reply = "GoldMailer automatically syncs incoming emails in real time from Resend and Cloudflare Email Routing catch-all workers on goldmailer.xyz.";
+      } else if (lower.includes('oauth') || lower.includes('continue')) {
+        reply = "GoldMailer provides an OAuth 2.0 provider so any external app can implement 'Continue with GoldMailer'. Visit Settings > OAuth Developer Portal to register your client.";
       }
       setMessages(prev => [
         ...prev,

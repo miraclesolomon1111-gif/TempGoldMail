@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, Search, X } from 'lucide-react';
+import { Menu, Search, X, RefreshCw, Sun, Moon, ShieldCheck, Code2 } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface GmailHeaderProps {
@@ -9,6 +9,11 @@ interface GmailHeaderProps {
   onSearchChange: (q: string) => void;
   user: UserProfile | null;
   activeEmail: string;
+  isSyncing: boolean;
+  onSyncEmails: () => void;
+  darkMode: boolean;
+  onToggleDarkMode: () => void;
+  onOpenOAuthDev: () => void;
 }
 
 export const GmailHeader: React.FC<GmailHeaderProps> = ({
@@ -17,76 +22,97 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
   searchQuery,
   onSearchChange,
   user,
-  activeEmail
+  activeEmail,
+  isSyncing,
+  onSyncEmails,
+  darkMode,
+  onToggleDarkMode,
+  onOpenOAuthDev
 }) => {
-  // Determine avatar representation
-  const avatarLetter = (user?.name || activeEmail || 'G').charAt(0).toUpperCase();
-  const avatarImage = user?.avatar_url || '';
-
-  // Deterministic avatar color based on name/email
-  const colors = [
-    'bg-[#0b57d0]',
-    'bg-[#ea4335]',
-    'bg-[#fbbc04] text-zinc-900',
-    'bg-[#34a853]',
-    'bg-[#9333ea]',
-    'bg-[#0284c7]',
-    'bg-[#e11d48]'
-  ];
-  const charCode = (activeEmail || 'g').charCodeAt(0);
-  const colorClass = colors[charCode % colors.length];
+  const avatarLetter = (user?.first_name || user?.name || activeEmail || 'M').charAt(0).toUpperCase();
 
   return (
-    <header className="sticky top-0 z-30 pt-3 pb-2 px-3 bg-[#121212]/95 backdrop-blur-md">
-      {/* Gmail-style search bar container */}
-      <div className="flex items-center h-12 bg-[#2d2f31] hover:bg-[#333538] transition-colors rounded-full px-3.5 shadow-sm border border-white/5 gap-3">
-        {/* Left: Hamburger menu */}
+    <header className="sticky top-0 z-30 pt-3 pb-2 px-3 sm:px-4">
+      {/* Search and Navigation Bar with Glassmorphism Orange style */}
+      <div className={`flex items-center h-12 rounded-2xl sm:rounded-full px-3.5 shadow-sm border transition-colors gap-2.5 sm:gap-3 backdrop-blur-xl ${
+        darkMode
+          ? 'bg-[#1e1f24]/90 hover:bg-[#25262c]/95 border-white/10 text-white'
+          : 'bg-white/85 hover:bg-white/95 border-orange-200 text-zinc-900 shadow-orange-500/5'
+      }`}>
+        {/* Left: Hamburger Menu */}
         <button
           onClick={onOpenDrawer}
           aria-label="Open menu"
-          className="p-1.5 -ml-1 text-[#e3e3e3] hover:text-white hover:bg-white/10 rounded-full transition-colors flex-shrink-0"
+          className="p-1.5 -ml-1 text-zinc-400 hover:text-[#FF6A00] rounded-full hover:bg-white/10 transition-colors flex-shrink-0"
         >
           <Menu className="w-5 h-5" />
         </button>
 
         {/* Center: Search input */}
         <div className="flex-1 flex items-center min-w-0">
+          <Search className="w-4 h-4 text-zinc-400 mr-2 flex-shrink-0" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search in mail"
-            className="w-full bg-transparent text-[#e3e3e3] placeholder-[#9aa0a6] text-[15px] outline-none font-normal"
+            className="w-full bg-transparent text-sm placeholder-zinc-500 outline-none font-normal"
           />
           {searchQuery && (
             <button
               onClick={() => onSearchChange('')}
-              className="p-1 text-[#9aa0a6] hover:text-white rounded-full transition-colors"
+              className="p-1 text-zinc-400 hover:text-white rounded-full transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
           )}
         </div>
 
-        {/* Right: User Avatar */}
+        {/* Sync Emails (Old & New) Button */}
+        <button
+          type="button"
+          onClick={onSyncEmails}
+          disabled={isSyncing}
+          title="Sync emails (old & new messages)"
+          className="p-2 rounded-xl text-zinc-400 hover:text-[#FF6A00] hover:bg-white/10 transition-colors flex items-center gap-1.5"
+        >
+          <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-[#FF6A00]' : ''}`} />
+          <span className="hidden md:inline text-xs font-semibold">Sync</span>
+        </button>
+
+        {/* Dark/Light mode toggle */}
+        <button
+          type="button"
+          onClick={onToggleDarkMode}
+          title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          className="p-2 rounded-xl text-zinc-400 hover:text-[#FF8C42] hover:bg-white/10 transition-colors"
+        >
+          {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+        </button>
+
+        {/* OAuth 2.0 Dev Portal Quick Action */}
+        <button
+          type="button"
+          onClick={onOpenOAuthDev}
+          title="OAuth 2.0 Provider Developer Portal"
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#FF6A00]/15 hover:bg-[#FF6A00]/25 text-[#FF8C42] border border-[#FF6A00]/30 text-xs font-bold transition-all"
+        >
+          <Code2 className="w-3.5 h-3.5" />
+          <span>OAuth</span>
+        </button>
+
+        {/* Active User Email Pill (from screenshot) */}
         <button
           onClick={onOpenAccountSwitcher}
           aria-label="Account details"
-          className="relative flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-[#8ab4f8] rounded-full p-0.5"
+          className="flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-[#FF6A00]/30 transition-all focus:outline-none"
         >
-          {avatarImage ? (
-            <img
-              src={avatarImage}
-              alt={user?.name || 'Account'}
-              className="w-8 h-8 rounded-full object-cover border border-white/10"
-            />
-          ) : (
-            <div
-              className={`w-8 h-8 rounded-full flex items-center justify-center font-medium text-sm text-white shadow-inner ${colorClass}`}
-            >
-              {avatarLetter}
-            </div>
-          )}
+          <span className="hidden lg:inline text-xs font-mono font-medium text-[#FF8C42] truncate max-w-[160px]">
+            {activeEmail}
+          </span>
+          <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-bold text-xs text-white shadow-inner flex-shrink-0">
+            {avatarLetter}
+          </div>
         </button>
       </div>
     </header>

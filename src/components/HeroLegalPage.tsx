@@ -7,505 +7,294 @@ import {
   Lock,
   CheckCircle2,
   ArrowRight,
-  ExternalLink,
-  ChevronRight,
-  Copy,
-  Check,
-  Server,
-  EyeOff,
-  Flame,
   Globe,
-  RefreshCw,
+  HardDrive,
+  KeyRound,
   Sparkles,
-  ArrowLeft
+  Smartphone,
+  Code2,
+  Sun,
+  Moon
 } from 'lucide-react';
-import { PRIMARY_DOMAIN } from '../lib/emailGenerator';
 
 interface HeroLegalPageProps {
   onBackToApp: () => void;
+  onOpenLogin: () => void;
+  onOpenRegister: () => void;
+  onOpenOAuthDev: () => void;
   initialSection?: 'hero' | 'terms' | 'privacy';
-  activeEmail: string;
+  darkMode: boolean;
+  onToggleDarkMode: () => void;
 }
 
 export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
   onBackToApp,
+  onOpenLogin,
+  onOpenRegister,
+  onOpenOAuthDev,
   initialSection = 'hero',
-  activeEmail,
+  darkMode,
+  onToggleDarkMode
 }) => {
   const [activeTab, setActiveTab] = useState<'hero' | 'terms' | 'privacy'>(initialSection);
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(activeEmail);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   return (
-    <div className="min-h-screen bg-[#121212] text-white selection:bg-[#00C07F] selection:text-black">
-      {/* Top Sticky Navigation */}
-      <nav className="sticky top-0 z-50 bg-[#121212]/90 backdrop-blur-xl border-b border-[#242424] px-4 py-3">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('hero')}>
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#00A066] to-[#00C07F] flex items-center justify-center shadow-lg shadow-[#00C07F]/20">
-              <Mail className="w-5 h-5 text-white" />
+    <div className={`min-h-screen transition-colors ${darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'}`}>
+      {/* Top Glass Navigation Bar */}
+      <nav className={`sticky top-0 z-50 px-4 py-3 border-b backdrop-blur-xl ${
+        darkMode ? 'bg-[#121214]/85 border-white/10' : 'bg-white/80 border-orange-200/50'
+      }`}>
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div
+            className="flex items-center space-x-3 cursor-pointer"
+            onClick={() => setActiveTab('hero')}
+          >
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center shadow-lg shadow-[#FF6A00]/25 text-white font-extrabold text-xl">
+              G
             </div>
             <div>
-              <span className="font-extrabold text-base tracking-tight text-white">GoldMailer</span>
-              <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-[#00C07F]/15 text-[#00C07F] rounded border border-[#00C07F]/30">
+              <span className="font-extrabold text-lg tracking-tight bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] bg-clip-text text-transparent">
+                GoldMailer
+              </span>
+              <span className="ml-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-[#FF6A00]/15 text-[#FF8C42] rounded-full border border-[#FF6A00]/30">
                 xyz
               </span>
             </div>
           </div>
 
-          {/* Section Nav Links */}
-          <div className="hidden sm:flex items-center space-x-1 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800">
+          {/* Section Navigation Tabs */}
+          <div className="hidden md:flex items-center space-x-1 p-1 bg-white/5 rounded-2xl border border-white/10 text-xs font-semibold">
             <button
               onClick={() => setActiveTab('hero')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'hero' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400 hover:text-white'
+              className={`px-3.5 py-1.5 rounded-xl transition-all ${
+                activeTab === 'hero' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400 hover:text-white'
               }`}
             >
               Overview
             </button>
             <button
               onClick={() => setActiveTab('terms')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'terms' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400 hover:text-white'
+              className={`px-3.5 py-1.5 rounded-xl transition-all ${
+                activeTab === 'terms' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400 hover:text-white'
               }`}
             >
               Terms of Usage
             </button>
             <button
               onClick={() => setActiveTab('privacy')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'privacy' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400 hover:text-white'
+              className={`px-3.5 py-1.5 rounded-xl transition-all ${
+                activeTab === 'privacy' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400 hover:text-white'
               }`}
             >
               Privacy Policy
             </button>
           </div>
 
-          {/* Action button to switch back to Webmail */}
-          <button
-            onClick={onBackToApp}
-            className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#00C07F] hover:bg-[#00D78E] text-black font-extrabold text-xs shadow-md shadow-[#00C07F]/20 active:scale-95 transition-all"
-          >
-            <Mail className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>Open Webmail</span>
-          </button>
-        </div>
+          {/* Actions: Theme Toggle + Login + Get Started */}
+          <div className="flex items-center space-x-2.5">
+            <button
+              type="button"
+              onClick={onToggleDarkMode}
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 hover:text-white transition-colors"
+              title="Toggle Light / Dark mode"
+            >
+              {darkMode ? <Sun className="w-4 h-4 text-[#FF8C42]" /> : <Moon className="w-4 h-4 text-zinc-800" />}
+            </button>
 
-        {/* Mobile secondary tab switcher */}
-        <div className="flex sm:hidden mt-2 pt-2 border-t border-zinc-800/80 grid grid-cols-3 gap-1">
-          <button
-            onClick={() => setActiveTab('hero')}
-            className={`py-1.5 rounded-lg text-xs font-semibold text-center ${
-              activeTab === 'hero' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400'
-            }`}
-          >
-            Overview
-          </button>
-          <button
-            onClick={() => setActiveTab('terms')}
-            className={`py-1.5 rounded-lg text-xs font-semibold text-center ${
-              activeTab === 'terms' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400'
-            }`}
-          >
-            Terms
-          </button>
-          <button
-            onClick={() => setActiveTab('privacy')}
-            className={`py-1.5 rounded-lg text-xs font-semibold text-center ${
-              activeTab === 'privacy' ? 'bg-[#00C07F] text-black font-bold' : 'text-zinc-400'
-            }`}
-          >
-            Privacy
-          </button>
+            <button
+              type="button"
+              onClick={onOpenLogin}
+              className="px-4 py-2 rounded-xl border border-[#FF6A00]/30 hover:border-[#FF6A00] text-xs font-bold transition-all text-[#FF8C42] hover:bg-[#FF6A00]/10"
+            >
+              Login
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenRegister}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center gap-1.5"
+            >
+              <span>Get Started</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </nav>
 
-      {/* Main Content Area */}
-      <main className="max-w-4xl mx-auto px-4 py-8 sm:py-12">
-        {/* ================= 1. HERO SECTION ================= */}
-        {activeTab === 'hero' && (
-          <div className="space-y-12 animate-in fade-in duration-300">
-            {/* Hero Main Header */}
-            <div className="text-center space-y-4 max-w-2xl mx-auto">
-              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#00C07F]/15 text-[#00C07F] border border-[#00C07F]/30 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-[#00C07F] animate-pulse" />
-                <span>Next-Gen Temporary Disposable Email • {PRIMARY_DOMAIN}</span>
-              </div>
-
-              <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
-                Spam-Free, Disposable Email with <span className="text-[#00C07F]">Instant Realtime</span> Delivery
-              </h1>
-
-              <p className="text-sm sm:text-base text-zinc-400 leading-relaxed">
-                Protect your primary inbox from spam, data leaks, and unwanted newsletters. 
-                Generate disposable inboxes on <strong className="text-white">goldmailer.xyz</strong> with Cloudflare Catch-All routing and sandboxed email parsing.
-              </p>
-
-              {/* Quick Hero Email Box */}
-              <div className="pt-2">
-                <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-4 sm:p-5 max-w-lg mx-auto shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="flex items-center space-x-3 w-full sm:w-auto">
-                    <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-700/80 flex items-center justify-center shrink-0">
-                      <Mail className="w-5 h-5 text-[#00C07F]" />
-                    </div>
-                    <div className="text-left min-w-0">
-                      <span className="text-[11px] text-zinc-400 block font-medium">Your Ready Disposable Address:</span>
-                      <span className="font-mono text-sm sm:text-base font-bold text-white truncate block">
-                        {activeEmail}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center space-x-2 w-full sm:w-auto shrink-0">
-                    <button
-                      onClick={handleCopy}
-                      className="flex-1 sm:flex-none px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white border border-zinc-700 transition-colors flex items-center justify-center space-x-1.5"
-                    >
-                      {copied ? <Check className="w-3.5 h-3.5 text-[#00C07F]" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copied ? 'Copied' : 'Copy'}</span>
-                    </button>
-                    <button
-                      onClick={onBackToApp}
-                      className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-[#00C07F] hover:bg-[#00D78E] text-black font-extrabold text-xs shadow-md shadow-[#00C07F]/20 transition-all flex items-center justify-center space-x-1.5"
-                    >
-                      <span>Go to Inbox</span>
-                      <ArrowRight className="w-3.5 h-3.5 stroke-[3]" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+      {/* Main Tab Content */}
+      {activeTab === 'hero' ? (
+        <main className="max-w-6xl mx-auto px-4 py-12 sm:py-20">
+          {/* Hero Section */}
+          <section className="text-center max-w-3xl mx-auto space-y-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#FF6A00]/10 border border-[#FF6A00]/30 text-xs font-semibold text-[#FF8C42] shadow-sm">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Permanent Gmail-Style Provider · Domain: goldmailer.xyz</span>
             </div>
 
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 pt-4">
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-4 text-center">
-                <div className="text-2xl sm:text-3xl font-extrabold text-[#00C07F]">0%</div>
-                <div className="text-xs text-zinc-400 mt-1">Spam In Real Inbox</div>
-              </div>
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-4 text-center">
-                <div className="text-2xl sm:text-3xl font-extrabold text-white">&lt; 2s</div>
-                <div className="text-xs text-zinc-400 mt-1">Catch-All Latency</div>
-              </div>
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-4 text-center">
-                <div className="text-2xl sm:text-3xl font-extrabold text-cyan-400">100%</div>
-                <div className="text-xs text-zinc-400 mt-1">Sandboxed HTML</div>
-              </div>
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-4 text-center">
-                <div className="text-2xl sm:text-3xl font-extrabold text-amber-400">Zero</div>
-                <div className="text-xs text-zinc-400 mt-1">User Logs Stored</div>
-              </div>
-            </div>
+            <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight leading-tight">
+              Fast, Secure Email{' '}
+              <span className="bg-gradient-to-r from-[#FF6A00] via-[#FF8C42] to-[#FFB266] bg-clip-text text-transparent">
+                for Everyone
+              </span>
+            </h1>
 
-            {/* Feature Cards Grid */}
-            <div className="space-y-4">
-              <h2 className="text-lg font-bold text-white text-center">
-                Engineered for Speed, Privacy & Simplicity
-              </h2>
+            <p className="text-base sm:text-lg text-zinc-400 max-w-2xl mx-auto leading-relaxed">
+              Step into the modern era of email. Experience 15GB permanent storage, military-grade 2-Step Verification, instant draft auto-saving, and an OAuth 2.0 provider that lets third-party apps add <em>"Continue with GoldMailer"</em>.
+            </p>
 
-              <div className="grid sm:grid-cols-3 gap-4">
-                <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#00C07F]/15 border border-[#00C07F]/30 flex items-center justify-center text-[#00C07F]">
-                    <Zap className="w-5 h-5" />
-                  </div>
-                  <h3 className="font-bold text-base text-white">Cloudflare Catch-All</h3>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    Every incoming email addressed to any <code className="text-zinc-200">@goldmailer.xyz</code> handle is routed directly into your live webmail via Cloudflare Email Routing Workers.
-                  </p>
-                </div>
-
-                <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                    <Shield className="w-5 h-5" />
-                  </div>
-                  <h3 className="font-bold text-base text-white">Isolated Sandbox Reader</h3>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    Emails render in secure, script-disabled sandboxed iframes. Tracking pixels, external scripts, and malicious links are nullified before reaching you.
-                  </p>
-                </div>
-
-                <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-                    <Lock className="w-5 h-5" />
-                  </div>
-                  <h3 className="font-bold text-base text-white">Multi-Address Switcher</h3>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    Generate dozens of addresses simultaneously. Switch between random, domain-based, or custom handles with real-time message counters.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick jump to Legal Docs */}
-            <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div>
-                <h4 className="font-bold text-white text-base">Looking for our Legal & Compliance Policies?</h4>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  Review our complete Terms of Usage and Privacy Policy below to understand our zero-log architecture.
-                </p>
-              </div>
-              <div className="flex space-x-2 w-full sm:w-auto">
-                <button
-                  onClick={() => setActiveTab('terms')}
-                  className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-zinc-700 transition-colors"
-                >
-                  Terms of Usage
-                </button>
-                <button
-                  onClick={() => setActiveTab('privacy')}
-                  className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-zinc-700 transition-colors"
-                >
-                  Privacy Policy
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ================= 2. TERMS OF USAGE ================= */}
-        {activeTab === 'terms' && (
-          <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="border-b border-zinc-800 pb-4">
-              <div className="flex items-center space-x-2 text-xs text-[#00C07F] font-semibold mb-1">
-                <FileText className="w-4 h-4" />
-                <span>Legal Agreement</span>
-              </div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-                Terms of Usage (Terms of Service)
-              </h1>
-              <p className="text-xs text-zinc-400 mt-1">
-                Last updated: October 2026 • Governing service on <strong>goldmailer.xyz</strong>
-              </p>
-            </div>
-
-            <div className="space-y-6 text-xs sm:text-sm text-zinc-300 leading-relaxed">
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#00C07F]/20 text-[#00C07F] text-xs font-bold flex items-center justify-center">1</span>
-                  <span>Acceptance of Terms</span>
-                </h3>
-                <p>
-                  By accessing, browsing, or using <strong>TempGoldMail</strong> / <strong>GoldMailer</strong> at <strong>goldmailer.xyz</strong> (the "Service"), you agree to be bound by these Terms of Usage ("Terms"). If you do not agree to all provisions of these Terms, please do not use the Service.
-                </p>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#00C07F]/20 text-[#00C07F] text-xs font-bold flex items-center justify-center">2</span>
-                  <span>Nature of Disposable Email Service</span>
-                </h3>
-                <p>
-                  GoldMailer provides ephemeral, disposable email inboxes under the <code>goldmailer.xyz</code> domain.
-                </p>
-                <ul className="list-disc pl-5 space-y-1.5 text-zinc-400">
-                  <li><strong>Temporary Retention:</strong> Inboxes are meant for non-permanent communications, registrations, service testing, and spam insulation. We make no guarantee of indefinite retention for free tier inboxes.</li>
-                  <li><strong>No Outbound Sending:</strong> GoldMailer is an inbound receiving service. The Service is not configured to send unsolicited outbound communications.</li>
-                  <li><strong>User Responsibility:</strong> Do not use temporary email addresses for critical financial, government, or medical accounts that require permanent identity recovery.</li>
-                </ul>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#00C07F]/20 text-[#00C07F] text-xs font-bold flex items-center justify-center">3</span>
-                  <span>Acceptable Use & Anti-Abuse Standards</span>
-                </h3>
-                <p>
-                  You agree to use GoldMailer only for lawful purposes. You shall not utilize the Service to:
-                </p>
-                <ul className="list-disc pl-5 space-y-1.5 text-zinc-400">
-                  <li>Engage in, facilitate, or promote cybercrime, identity fraud, phishing campaigns, or unauthorized system access.</li>
-                  <li>Evade rate limits or conduct automated denial-of-service (DoS) attempts against the goldmailer.xyz infrastructure or third parties.</li>
-                  <li>Receive, store, or distribute illicit, defamatory, threatening, or infringing digital content.</li>
-                  <li>Circumvent licensing or abuse trial periods in violation of applicable laws.</li>
-                </ul>
-                <p className="text-zinc-400 pt-1">
-                  We reserve the absolute right to block, filter, or blacklist any inbound address or IP pattern violating these anti-abuse standards.
-                </p>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#00C07F]/20 text-[#00C07F] text-xs font-bold flex items-center justify-center">4</span>
-                  <span>Intellectual Property</span>
-                </h3>
-                <p>
-                  All software code, visual design, icons, trade dress, trademarks, and logos associated with TempGoldMail and goldmailer.xyz are protected intellectual property. You may not reverse engineer, resell, or distribute the service interface without prior written authorization.
-                </p>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#00C07F]/20 text-[#00C07F] text-xs font-bold flex items-center justify-center">5</span>
-                  <span>Disclaimer of Warranties & Limitation of Liability</span>
-                </h3>
-                <p>
-                  THE SERVICE IS PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-                </p>
-                <p className="text-zinc-400">
-                  GoldMailer does not warrant uninterrupted availability, zero loss of email messages, or immediate receipt of all third-party emails. In no event shall GoldMailer, its maintainers, or infrastructure providers (Cloudflare, Supabase) be liable for indirect, punitive, or consequential damages resulting from the use or inability to use the service.
-                </p>
-              </div>
-            </div>
-
-            <div className="pt-4 flex justify-between items-center border-t border-zinc-800">
+            {/* Orange Glass Call to Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
               <button
-                onClick={() => setActiveTab('privacy')}
-                className="text-xs text-[#00C07F] font-bold hover:underline flex items-center space-x-1"
+                type="button"
+                onClick={onOpenRegister}
+                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-base shadow-xl shadow-[#FF6A00]/35 hover:shadow-[#FF6A00]/50 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5"
               >
-                <span>Read Privacy Policy</span>
-                <ChevronRight className="w-3.5 h-3.5" />
+                <span>Get Started - Create GoldMailer Account</span>
+                <ArrowRight className="w-4 h-4" />
               </button>
 
               <button
+                type="button"
+                onClick={onOpenLogin}
+                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-white/10 hover:bg-white/15 border border-[#FF6A00]/40 text-white font-bold text-base backdrop-blur-xl transition-all flex items-center justify-center gap-2"
+              >
+                <span>Login</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={onBackToApp}
-                className="px-4 py-2 rounded-xl bg-[#00C07F] text-black font-extrabold text-xs shadow-md"
+                className="w-full sm:w-auto px-6 py-4 rounded-2xl border border-white/10 hover:bg-white/5 text-zinc-300 font-semibold text-sm transition-all"
               >
-                Back to Webmail
+                <span>Open Mailbox</span>
               </button>
             </div>
-          </div>
-        )}
+          </section>
 
-        {/* ================= 3. PRIVACY POLICY ================= */}
-        {activeTab === 'privacy' && (
-          <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="border-b border-zinc-800 pb-4">
-              <div className="flex items-center space-x-2 text-xs text-cyan-400 font-semibold mb-1">
-                <Shield className="w-4 h-4" />
-                <span>Data Protection & Privacy</span>
+          {/* 5 Core Feature Highlights (From user prompt) */}
+          <section className="mt-20 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            {/* Feature 1: 15GB storage */}
+            <div className="p-6 rounded-3xl bg-white/5 border border-[#FF6A00]/20 backdrop-blur-xl hover:border-[#FF6A00]/40 transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF6A00]/15 flex items-center justify-center text-[#FF6A00]">
+                <HardDrive className="w-6 h-6" />
               </div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-                Privacy Policy
-              </h1>
-              <p className="text-xs text-zinc-400 mt-1">
-                Zero-logging guarantee • Published for <strong>goldmailer.xyz</strong>
+              <h3 className="text-base font-bold text-white">15GB Storage</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Generous high-capacity permanent mailbox quota for all your messages, attachments, and archives.
               </p>
             </div>
 
-            <div className="space-y-6 text-xs sm:text-sm text-zinc-300 leading-relaxed">
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">1</span>
-                  <span>Our Fundamental Privacy Promise</span>
-                </h3>
-                <p>
-                  TempGoldMail was engineered with a strict <strong>Privacy-First & Zero-Tracking Philosophy</strong>. We believe your online identities and communications are your own business.
-                </p>
-                <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5 text-zinc-400">
-                  <div className="flex items-center space-x-2 text-white font-medium">
-                    <CheckCircle2 className="w-4 h-4 text-[#00C07F]" />
-                    <span>No IP Address Logging</span>
-                  </div>
-                  <div className="flex items-center space-x-2 text-white font-medium">
-                    <CheckCircle2 className="w-4 h-4 text-[#00C07F]" />
-                    <span>No Third-Party Advertising Trackers or Beacons</span>
-                  </div>
-                  <div className="flex items-center space-x-2 text-white font-medium">
-                    <CheckCircle2 className="w-4 h-4 text-[#00C07F]" />
-                    <span>No Selling or Renting of User Data</span>
-                  </div>
-                </div>
+            {/* Feature 2: Secure */}
+            <div className="p-6 rounded-3xl bg-white/5 border border-[#FF6A00]/20 backdrop-blur-xl hover:border-[#FF6A00]/40 transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF8C42]/15 flex items-center justify-center text-[#FF8C42]">
+                <Shield className="w-6 h-6" />
               </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">2</span>
-                  <span>Information We Process</span>
-                </h3>
-                <p>
-                  When an email is sent by a third party to an address ending in <code>@goldmailer.xyz</code>:
-                </p>
-                <ul className="list-disc pl-5 space-y-1.5 text-zinc-400">
-                  <li><strong>Sender & Recipient Headers:</strong> Read dynamically by Cloudflare Catch-All Email Routing to place the message in the correct inbox.</li>
-                  <li><strong>Subject & Message Body:</strong> Parsed via standard MIME decoders to render readable text and HTML in your sandboxed viewer.</li>
-                  <li><strong>Browser Local Storage:</strong> Stored locally in your client device browser (localStorage) so you retain your addresses between visits without requiring server cookies.</li>
-                </ul>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">3</span>
-                  <span>Sandboxed Email Security</span>
-                </h3>
-                <p>
-                  To prevent malicious senders from executing JavaScript, hijacking session cookies, or triggering tracking web-bugs, all received HTML emails are rendered within a strictly sandboxed <code>&lt;iframe sandbox="allow-same-origin"&gt;</code> element. External scripts and unsanctioned code execution are automatically prohibited.
-                </p>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">4</span>
-                  <span>Data Retention & Immediate Deletion</span>
-                </h3>
-                <p>
-                  You hold full control over the lifespan of your data:
-                </p>
-                <ul className="list-disc pl-5 space-y-1.5 text-zinc-400">
-                  <li>You can permanently delete any received email with the tap of a button.</li>
-                  <li>You can delete any created address from your account at any time, removing all associated inbox records.</li>
-                  <li>Emails that are not claimed or retained in active sessions are periodically purged to ensure database cleanliness.</li>
-                </ul>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">5</span>
-                  <span>GDPR & CCPA Rights</span>
-                </h3>
-                <p>
-                  Under European General Data Protection Regulation (GDPR) and California Consumer Privacy Act (CCPA), users have rights to access, rectify, and erase any personal data. Because we do not store identifying user profiles for anonymous sessions, clicking "Delete Address" or clearing your browser cache purges all associated local data instantly.
-                </p>
-              </div>
-
-              <div className="bg-[#1A1A1A] border border-[#2B2B2B] rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-base text-white flex items-center space-x-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-bold flex items-center justify-center">6</span>
-                  <span>Contact Information</span>
-                </h3>
-                <p>
-                  For privacy inquiries, DMCA notices, or technical reporting regarding <strong>goldmailer.xyz</strong>, contact our privacy maintainers via the in-app "Report & Contact" dialog or at <code>privacy@goldmailer.xyz</code>.
-                </p>
-              </div>
+              <h3 className="text-base font-bold text-white">Bank-Grade Secure</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Bcrypt password encryption, IP suspicious device protection, and atomic address locking.
+              </p>
             </div>
 
-            <div className="pt-4 flex justify-between items-center border-t border-zinc-800">
-              <button
-                onClick={() => setActiveTab('terms')}
-                className="text-xs text-zinc-400 hover:text-white flex items-center space-x-1"
-              >
-                <ChevronRight className="w-3.5 h-3.5 rotate-180" />
-                <span>Review Terms of Usage</span>
-              </button>
-
-              <button
-                onClick={onBackToApp}
-                className="px-4 py-2 rounded-xl bg-[#00C07F] text-black font-extrabold text-xs shadow-md"
-              >
-                Back to Webmail
-              </button>
+            {/* Feature 3: 250+ Countries */}
+            <div className="p-6 rounded-3xl bg-white/5 border border-[#FF6A00]/20 backdrop-blur-xl hover:border-[#FF6A00]/40 transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF6A00]/15 flex items-center justify-center text-[#FF6A00]">
+                <Globe className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-white">250+ Countries</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Global SMS phone verification and recovery options for international security and trust.
+              </p>
             </div>
+
+            {/* Feature 4: 2-step verification */}
+            <div className="p-6 rounded-3xl bg-white/5 border border-[#FF6A00]/20 backdrop-blur-xl hover:border-[#FF6A00]/40 transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF8C42]/15 flex items-center justify-center text-[#FF8C42]">
+                <KeyRound className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-white">2-Step Verification</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                TOTP Authenticator app QR code pairing + 10 single-use emergency backup recovery codes.
+              </p>
+            </div>
+
+            {/* Feature 5: Fast */}
+            <div className="p-6 rounded-3xl bg-white/5 border border-[#FF6A00]/20 backdrop-blur-xl hover:border-[#FF6A00]/40 transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FF6A00]/15 flex items-center justify-center text-[#FF6A00]">
+                <Zap className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-white">Lightning Fast</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Inbound delivery in milliseconds, real-time sync, and smooth Gmail-style glassmorphism interface.
+              </p>
+            </div>
+          </section>
+
+          {/* OAuth 2.0 Feature Banner */}
+          <section className="mt-16 p-8 rounded-3xl bg-gradient-to-r from-[#FF6A00]/15 via-[#FF8C42]/10 to-transparent border border-[#FF6A00]/30 backdrop-blur-2xl flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="space-y-2 text-left">
+              <div className="inline-flex items-center gap-2 text-xs font-bold text-[#FF8C42] uppercase tracking-wider">
+                <Code2 className="w-4 h-4" />
+                <span>OAuth 2.0 Identity Provider</span>
+              </div>
+              <h3 className="text-2xl font-bold text-white">
+                Integrate "Continue with GoldMailer" into your apps
+              </h3>
+              <p className="text-sm text-zinc-300 max-w-xl">
+                Offer your users a clean sign-in button just like Continue with Google. Endpoints available at <code>/api/oauth/authorize</code>, <code>/api/oauth/token</code>, and <code>/api/oauth/userinfo</code>.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenOAuthDev}
+              className="px-6 py-3 rounded-2xl bg-white/10 hover:bg-white/20 border border-[#FF6A00]/40 text-white font-bold text-sm transition-all whitespace-nowrap shadow-lg"
+            >
+              Open Developer Portal
+            </button>
+          </section>
+        </main>
+      ) : activeTab === 'terms' ? (
+        <div className="max-w-4xl mx-auto px-4 py-12 space-y-6 text-zinc-300">
+          <h2 className="text-3xl font-extrabold text-white">Terms of Usage</h2>
+          <p className="text-sm">
+            Welcome to GoldMailer (goldmailer.xyz). By accessing or using our permanent email platform, you agree to comply with our Terms of Service.
+          </p>
+          <div className="space-y-4 text-xs leading-relaxed p-6 bg-white/5 rounded-2xl border border-white/10">
+            <h3 className="text-base font-bold text-white">1. Account Ownership</h3>
+            <p>
+              Each account registered under @goldmailer.xyz is unique, permanent, and secured by your chosen password and optional 2-Step Verification. Accounts are allocated 15GB cloud storage.
+            </p>
+            <h3 className="text-base font-bold text-white">2. Acceptable Use</h3>
+            <p>
+              Users must not transmit spam, phishing material, malware, or unsolicited commercial messages.
+            </p>
+            <h3 className="text-base font-bold text-white">3. OAuth Provider Usage</h3>
+            <p>
+              Third-party developers integrating "Continue with GoldMailer" must honor user privacy and only request authorized scopes.
+            </p>
           </div>
-        )}
-      </main>
+        </div>
+      ) : (
+        <div className="max-w-4xl mx-auto px-4 py-12 space-y-6 text-zinc-300">
+          <h2 className="text-3xl font-extrabold text-white">Privacy Policy</h2>
+          <p className="text-sm">
+            Your privacy is our utmost priority at GoldMailer.
+          </p>
+          <div className="space-y-4 text-xs leading-relaxed p-6 bg-white/5 rounded-2xl border border-white/10">
+            <h3 className="text-base font-bold text-white">1. Data Storage & Encryption</h3>
+            <p>
+              Passphrases are hashed with bcrypt. Messages are stored securely with end-to-end access control.
+            </p>
+            <h3 className="text-base font-bold text-white">2. Device & Location Security</h3>
+            <p>
+              We analyze IP and browser signatures solely to detect suspicious login attempts and protect your account.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
-      <footer className="border-t border-[#222222] py-8 px-4 text-center text-xs text-zinc-500 space-y-2">
-        <div className="flex items-center justify-center space-x-4">
-          <button onClick={() => setActiveTab('hero')} className="hover:text-zinc-300">Overview</button>
-          <span>•</span>
-          <button onClick={() => setActiveTab('terms')} className="hover:text-zinc-300">Terms of Usage</button>
-          <span>•</span>
-          <button onClick={() => setActiveTab('privacy')} className="hover:text-zinc-300">Privacy Policy</button>
-          <span>•</span>
-          <button onClick={onBackToApp} className="text-[#00C07F] font-bold hover:underline">Launch Webmail</button>
-        </div>
-        <p>
-          Version 7.4.0 Beta • TempGoldMail • Powered by Cloudflare Email Routing & Supabase • goldmailer.xyz
-        </p>
+      <footer className="mt-20 py-8 border-t border-white/10 text-center text-xs text-zinc-500">
+        <p>GoldMailer · Fast, Secure Permanent Email · goldmailer.xyz · 15GB Cloud Storage</p>
       </footer>
     </div>
   );

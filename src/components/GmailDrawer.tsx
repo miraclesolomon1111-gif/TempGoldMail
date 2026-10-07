@@ -6,22 +6,20 @@ import {
   Info,
   Star,
   Clock,
-  Bookmark,
   Send,
   FileText,
   Archive,
   AlertOctagon,
   Trash2,
-  MailCheck,
   Plus,
-  Calendar,
   Settings,
   HelpCircle,
-  Layers,
   X,
-  UploadCloud,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  HardDrive,
+  Code2,
+  KeyRound
 } from 'lucide-react';
 import { MailFolder, UserProfile } from '../types';
 
@@ -32,11 +30,13 @@ interface GmailDrawerProps {
   onSelectFolder: (folder: MailFolder | 'all_inboxes') => void;
   unreadCounts: Record<string, number>;
   user: UserProfile | null;
+  onOpenCompose: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
-  onOpenCreateLabel: () => void;
   onOpenAdmin?: () => void;
   onOpenHeroPage?: (section?: 'hero' | 'terms' | 'privacy') => void;
+  onOpenOAuthDev: () => void;
+  darkMode: boolean;
 }
 
 export const GmailDrawer: React.FC<GmailDrawerProps> = ({
@@ -46,11 +46,13 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
   onSelectFolder,
   unreadCounts,
   user,
+  onOpenCompose,
   onOpenSettings,
   onOpenHelp,
-  onOpenCreateLabel,
   onOpenAdmin,
-  onOpenHeroPage
+  onOpenHeroPage,
+  onOpenOAuthDev,
+  darkMode
 }) => {
   if (!isOpen) return null;
 
@@ -65,176 +67,166 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
     id: MailFolder | 'all_inboxes',
     label: string,
     Icon: React.ElementType,
-    badgeCount?: number,
-    pillBadge?: string
+    badgeCount?: number
   ) => {
     const active = isSelected(id);
     return (
       <button
         onClick={() => handleItemClick(id)}
-        className={`w-full flex items-center justify-between px-6 py-3 text-left transition-colors text-[14px] font-normal ${
+        className={`w-full flex items-center justify-between px-5 py-2.5 text-left transition-all text-xs font-medium rounded-r-full ${
           active
-            ? 'bg-[#333d4d] text-[#c2e7ff] font-medium rounded-r-full -ml-2 pl-8'
-            : 'text-[#e3e3e3] hover:bg-white/5 rounded-r-full'
+            ? 'bg-[#FF6A00]/20 text-[#FF8C42] border-l-4 border-[#FF6A00] pl-4 font-bold shadow-sm'
+            : 'text-zinc-300 hover:bg-white/5 hover:text-white'
         }`}
       >
-        <div className="flex items-center gap-4.5 min-w-0">
-          <Icon className={`w-5 h-5 flex-shrink-0 ${active ? 'text-[#c2e7ff]' : 'text-[#c4c7c5]'}`} />
+        <div className="flex items-center gap-3 min-w-0">
+          <Icon className={`w-4 h-4 flex-shrink-0 ${active ? 'text-[#FF6A00]' : 'text-zinc-400'}`} />
           <span className="truncate">{label}</span>
         </div>
-        <div className="flex items-center gap-2">
-          {pillBadge && (
-            <span className="bg-[#0b57d0] text-white text-[11px] font-medium px-2 py-0.5 rounded-full">
-              {pillBadge}
-            </span>
-          )}
-          {badgeCount !== undefined && badgeCount > 0 && (
-            <span className={`text-[12px] font-medium ${active ? 'text-[#c2e7ff]' : 'text-[#c4c7c5]'}`}>
-              {badgeCount > 99 ? '99+' : badgeCount}
-            </span>
-          )}
-        </div>
+        {badgeCount !== undefined && badgeCount > 0 && (
+          <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+            active ? 'bg-[#FF6A00] text-white' : 'bg-white/10 text-zinc-300'
+          }`}>
+            {badgeCount}
+          </span>
+        )}
       </button>
     );
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div className="fixed inset-0 z-50 flex animate-in fade-in">
       {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/70 backdrop-blur-xs transition-opacity animate-in fade-in"
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 bg-black/75 backdrop-blur-xs" onClick={onClose} />
 
-      {/* Drawer Content */}
-      <div className="relative w-72 sm:w-80 max-w-[85vw] h-full bg-[#1e1f20] text-[#e3e3e3] shadow-2xl flex flex-col z-10 animate-in slide-in-from-left duration-250 ease-out border-r border-[#303134]">
-        {/* Drawer Header (Screenshot 1: "GoldMail") */}
-        <div className="flex items-center justify-between px-6 pt-5 pb-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xl font-medium tracking-tight text-white flex items-center gap-1.5 font-sans">
-              <span className="text-[#fbbc04] font-bold">Gold</span>
-              <span>Mail</span>
-            </span>
+      {/* Drawer Container */}
+      <div className={`relative w-72 sm:w-80 max-w-[85vw] h-full shadow-2xl flex flex-col z-10 border-r backdrop-blur-xl ${
+        darkMode ? 'bg-[#18191d]/95 border-white/10 text-white' : 'bg-white/95 border-orange-200 text-zinc-900'
+      }`}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-bold text-white shadow-md text-sm">
+              G
+            </div>
+            <div>
+              <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] bg-clip-text text-transparent">
+                GoldMailer
+              </span>
+              <span className="ml-1 text-[10px] text-zinc-400 font-mono">15GB</span>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-[#c4c7c5] hover:text-white hover:bg-white/10 rounded-full transition-colors"
+            className="p-1.5 text-zinc-400 hover:text-white rounded-full hover:bg-white/10 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Scrollable list */}
-        <div className="flex-1 overflow-y-auto py-2 space-y-0.5 pr-3 scrollbar-thin scrollbar-thumb-zinc-700">
-          {/* All inboxes */}
-          {renderNavButton('all_inboxes', 'All inboxes', Layers, unreadCounts.total)}
+        {/* Compose Button */}
+        <div className="px-4 py-2">
+          <button
+            type="button"
+            onClick={() => {
+              onOpenCompose();
+              onClose();
+            }}
+            className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Compose Email</span>
+          </button>
+        </div>
 
-          <div className="my-2 border-t border-[#303134]" />
-
-          {/* Primary & Main Categories */}
+        {/* Scrollable folder list */}
+        <div className="flex-1 overflow-y-auto py-2 space-y-0.5 pr-2">
           {renderNavButton('primary', 'Primary', Inbox, unreadCounts.primary)}
           {renderNavButton('promotions', 'Promotions', Tag, unreadCounts.promotions)}
           {renderNavButton('social', 'Social', Users, unreadCounts.social)}
           {renderNavButton('updates', 'Updates', Info, unreadCounts.updates)}
 
-          {/* All Labels Section */}
-          <div className="pt-3 pb-1 px-6">
-            <p className="text-[12px] font-semibold text-[#8e918f] tracking-wide">All labels</p>
-          </div>
+          <div className="my-2 border-t border-white/10" />
 
-          {renderNavButton('starred', 'Starred', Star)}
-          {renderNavButton('snoozed', 'Snoozed', Clock)}
-          {renderNavButton('important', 'Important', Bookmark)}
+          {renderNavButton('starred', 'Starred', Star, unreadCounts.starred)}
           {renderNavButton('sent', 'Sent', Send, unreadCounts.sent)}
           {renderNavButton('scheduled', 'Scheduled', Clock, unreadCounts.scheduled)}
-          {renderNavButton('outbox', 'Outbox', UploadCloud, unreadCounts.outbox)}
           {renderNavButton('drafts', 'Drafts', FileText, unreadCounts.drafts)}
-          {renderNavButton('all_mail', 'All mail', Archive, unreadCounts.all_mail)}
+          {renderNavButton('all_mail', 'All Mail', Archive, unreadCounts.all_mail)}
           {renderNavButton('spam', 'Spam', AlertOctagon, unreadCounts.spam)}
           {renderNavButton('trash', 'Trash', Trash2, unreadCounts.trash)}
 
-          {/* Manage subscriptions & Create label (Screenshot 2) */}
-          <div className="pt-2">
-            {renderNavButton('manage_subscriptions', 'Manage subscriptions', MailCheck, undefined, 'New')}
+          <div className="my-2 border-t border-white/10" />
 
-            <button
-              onClick={() => {
-                onOpenCreateLabel();
-                onClose();
-              }}
-              className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#e3e3e3] hover:bg-white/5 rounded-r-full transition-colors"
-            >
-              <Plus className="w-5 h-5 text-[#c4c7c5]" />
-              <span>Create label</span>
-            </button>
-          </div>
-
-          {/* GoldMail Apps Section */}
-          <div className="pt-4 pb-1 px-6">
-            <p className="text-[12px] font-semibold text-[#8e918f] tracking-wide">GoldMail apps</p>
-          </div>
-
+          {/* OAuth 2.0 Dev Portal Link */}
           <button
             onClick={() => {
-              window.open('https://calendar.google.com', '_blank');
+              onOpenOAuthDev();
               onClose();
             }}
-            className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#e3e3e3] hover:bg-white/5 rounded-r-full transition-colors"
+            className="w-full flex items-center gap-3 px-5 py-2.5 text-left text-xs text-[#FF8C42] hover:bg-[#FF6A00]/10 rounded-r-full font-bold transition-colors"
           >
-            <Calendar className="w-5 h-5 text-[#c4c7c5]" />
-            <span>Calendar</span>
+            <Code2 className="w-4 h-4 text-[#FF8C42]" />
+            <span>OAuth 2.0 Developer Portal</span>
           </button>
 
           {/* Admin link if user is admin */}
-          {(user?.role === 'admin' || user?.email?.includes('admin') || user?.email === 'mariampeter0312@gmail.com') && (
+          {(user?.role === 'admin' || user?.email?.includes('admin') || user?.email === 'miracle@goldmailer.xyz') && (
             <button
               onClick={() => {
                 if (onOpenAdmin) onOpenAdmin();
                 onClose();
               }}
-              className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#fbbc04] hover:bg-white/5 rounded-r-full transition-colors"
+              className="w-full flex items-center gap-3 px-5 py-2.5 text-left text-xs text-amber-400 hover:bg-amber-500/10 rounded-r-full font-bold transition-colors"
             >
-              <ShieldCheck className="w-5 h-5 text-[#fbbc04]" />
-              <span className="font-medium">Admin Control Panel</span>
+              <ShieldCheck className="w-4 h-4" />
+              <span>Admin Panel (/admin)</span>
             </button>
           )}
 
-          <div className="my-2 border-t border-[#303134]" />
-
-          {/* GoldMail Hero / Landing Page Link */}
+          {/* Hero Landing Page Link */}
           <button
             onClick={() => {
               if (onOpenHeroPage) onOpenHeroPage('hero');
               onClose();
             }}
-            className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#00C07F] hover:bg-white/5 rounded-r-full transition-colors"
+            className="w-full flex items-center gap-3 px-5 py-2.5 text-left text-xs text-zinc-300 hover:bg-white/5 rounded-r-full transition-colors"
           >
-            <Sparkles className="w-5 h-5 text-[#00C07F]" />
-            <span className="font-semibold">GoldMail Hero & Landing Page</span>
+            <Sparkles className="w-4 h-4 text-[#FF6A00]" />
+            <span>Landing Page</span>
           </button>
 
-          {/* Settings & Help */}
+          {/* Settings */}
           <button
             onClick={() => {
               onOpenSettings();
               onClose();
             }}
-            className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#e3e3e3] hover:bg-white/5 rounded-r-full transition-colors"
+            className="w-full flex items-center gap-3 px-5 py-2.5 text-left text-xs text-zinc-300 hover:bg-white/5 rounded-r-full transition-colors"
           >
-            <Settings className="w-5 h-5 text-[#c4c7c5]" />
-            <span>Settings</span>
+            <Settings className="w-4 h-4 text-zinc-400" />
+            <span>Security & Settings</span>
           </button>
+        </div>
 
-          <button
-            onClick={() => {
-              onOpenHelp();
-              onClose();
-            }}
-            className="w-full flex items-center gap-4.5 px-6 py-3 text-left text-[14px] text-[#e3e3e3] hover:bg-white/5 rounded-r-full transition-colors"
-          >
-            <HelpCircle className="w-5 h-5 text-[#c4c7c5]" />
-            <span>Help & feedback</span>
-          </button>
+        {/* Footer: 15GB Cloud Storage Status Bar & 2FA Badge */}
+        <div className="p-4 border-t border-white/10 space-y-2 bg-black/20 text-xs">
+          <div className="flex items-center justify-between text-[11px] text-zinc-400">
+            <span className="flex items-center gap-1 font-semibold text-white">
+              <HardDrive className="w-3.5 h-3.5 text-[#FF6A00]" /> 15 GB Storage
+            </span>
+            <span className="font-mono">0.42 GB (2.8%)</span>
+          </div>
+          <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] rounded-full" style={{ width: '2.8%' }} />
+          </div>
+
+          <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1">
+            <span className="flex items-center gap-1 text-emerald-400 font-medium">
+              <KeyRound className="w-3 h-3" /> 2FA Security Ready
+            </span>
+            <span>goldmailer.xyz</span>
+          </div>
         </div>
       </div>
     </div>

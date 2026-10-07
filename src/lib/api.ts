@@ -1,7 +1,6 @@
-import { TempEmail, EmailMessage, UserProfile, NowPaymentsInvoice, MailFolder } from '../types';
-import { getSupabaseClient } from './supabase';
+import { EmailMessage, UserProfile, MailFolder, Draft, UserDevice, LoginAttempt, OAuthClient } from '../types';
 
-// Helper: Normalize and map email objects from DB/API so html, text, body_html, body_text, to_email, from_email are 100% reliable
+// Helper: Normalize email messages
 export function normalizeEmail(raw: any): EmailMessage {
   if (!raw) {
     return {
@@ -43,16 +42,18 @@ export function normalizeEmail(raw: any): EmailMessage {
     raw.sender ||
     raw.from ||
     (Array.isArray(raw.from) ? raw.from[0] : '') ||
-    'unknown@domain.com';
+    'unknown@goldmailer.xyz';
 
   const received_at =
     raw.received_at || raw.created_at || new Date().toISOString();
 
   return {
     id: String(raw.id || 'msg_' + Math.random().toString(36).substring(2, 9)),
-    temp_email_id: raw.temp_email_id,
     recipient: typeof recipient === 'object' ? (recipient.email || recipient.address || String(recipient)) : String(recipient),
     to_email: typeof recipient === 'object' ? (recipient.email || recipient.address || String(recipient)) : String(recipient),
+    to: typeof recipient === 'object' ? (recipient.email || recipient.address || String(recipient)) : String(recipient),
+    cc: raw.cc || '',
+    bcc: raw.bcc || '',
     sender: typeof sender === 'object' ? (sender.email || sender.address || sender.name || String(sender)) : String(sender),
     from_email: typeof sender === 'object' ? (sender.email || sender.address || sender.name || String(sender)) : String(sender),
     sender_name: raw.sender_name || (typeof sender === 'string' ? sender.split('@')[0] : 'Sender'),
@@ -74,19 +75,11 @@ export function normalizeEmail(raw: any): EmailMessage {
   };
 }
 
-// Persistent Client ID for isolating unauthenticated browser sessions
-export function getClientId(): string {
-  let id = localStorage.getItem('goldmail_client_id');
-  if (!id) {
-    id = 'client_' + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
-    localStorage.setItem('goldmail_client_id', id);
-  }
-  return id;
-}
-
 // Active email address management
 export function getStoredActiveEmail(): string {
-  return localStorage.getItem('goldmail_active_email') || '';
+  const user = getStoredUser();
+  if (user?.email) return user.email;
+  return localStorage.getItem('goldmail_active_email') || 'miracle@goldmailer.xyz';
 }
 
 export function setStoredActiveEmail(email: string): void {
@@ -97,7 +90,7 @@ export function setStoredActiveEmail(email: string): void {
   }
 }
 
-// Auth Token management
+// Auth token helpers
 export function getAuthToken(): string | null {
   return localStorage.getItem('goldmail_token');
 }
@@ -137,833 +130,444 @@ function getHeaders(extra: HeadersInit = {}): HeadersInit {
   };
 }
 
-// Resilient JSON response parser preventing syntax errors on HTML responses (such as Vercel 404/500 errors)
-async function safeJsonParse(res: Response, defaultError = 'Unexpected server response'): Promise<any> {
+async function safeJsonParse(res: Response, defaultError = 'Request failed'): Promise<any> {
   const text = await res.text();
   try {
     return JSON.parse(text);
   } catch {
     if (!res.ok) {
-      if (res.status === 404) {
-        throw new Error('Server API route returned 404. If you recently pushed to Vercel, please wait 30 seconds for the deployment to finish.');
-      }
-      throw new Error(`Server returned status ${res.status}: ${text.slice(0, 90)}`);
+      throw new Error(`Server status ${res.status}: ${text.slice(0, 100)}`);
     }
-    throw new Error(defaultError);
+    return { ok: res.ok };
   }
 }
 
-// NOWPayments API Key storage helper
-export function getNowPaymentsApiKey(): string {
-  return localStorage.getItem('goldmailer_nowpayments_key') || '';
-}
+// ================= AUTHENTICATION APIS =================
 
-export function setNowPaymentsApiKey(key: string): void {
-  if (key) {
-    localStorage.setItem('goldmailer_nowpayments_key', key.trim());
-  } else {
-    localStorage.removeItem('goldmailer_nowpayments_key');
-  }
-}
-
-// Local storage multi-account persistence helpers
-export function getLocalAddresses(): TempEmail[] {
+// Live Username Availability Check
+export async function checkUsernameAvailability(username: string): Promise<{ available: boolean; username: string; message: string; full_email?: string }> {
   try {
-    const raw = localStorage.getItem('goldmail_local_addrs');
-    return raw ? JSON.parse(raw) : [];
+    const res = await fetch(`/api/auth/check-username?username=${encodeURIComponent(username)}`);
+    return await safeJsonParse(res);
   } catch {
-    return [];
-  }
-}
-
-export function saveLocalAddresses(addrs: TempEmail[]) {
-  try {
-    localStorage.setItem('goldmail_local_addrs', JSON.stringify(addrs));
-  } catch {}
-}
-
-export function addLocalAddress(addr: TempEmail) {
-  const current = getLocalAddresses();
-  const existingIdx = current.findIndex(
-    a => a.email_address.toLowerCase() === addr.email_address.toLowerCase()
-  );
-  if (existingIdx !== -1) {
-    current[existingIdx] = { ...current[existingIdx], ...addr };
-  } else {
-    current.unshift(addr);
-  }
-  saveLocalAddresses(current);
-}
-
-export function removeLocalAddress(idOrEmail: string) {
-  const current = getLocalAddresses();
-  const filtered = current.filter(
-    a => a.id !== idOrEmail && a.email_address.toLowerCase() !== idOrEmail.toLowerCase()
-  );
-  saveLocalAddresses(filtered);
-}
-
-// ================= TEMP & CUSTOM EMAIL MANAGEMENT =================
-
-export async function fetchTempEmails(userId?: string): Promise<TempEmail[]> {
-  const clientId = getClientId();
-  const localList = getLocalAddresses();
-  const params = new URLSearchParams();
-  if (userId) params.set('userId', userId);
-  params.set('clientId', clientId);
-  if (localList.length > 0) {
-    params.set('knownEmails', localList.map(a => a.email_address.toLowerCase()).join(','));
-  }
-
-  try {
-    const res = await fetch(`/api/temp-emails?${params.toString()}`, {
-      headers: getHeaders()
-    });
-    if (res.ok) {
-      const serverData = await safeJsonParse(res, 'Failed to fetch email addresses');
-      if (Array.isArray(serverData)) {
-        // MERGE server addresses with local addresses so no old custom email is EVER lost!
-        const mergedMap = new Map<string, TempEmail>();
-        // Add existing local addresses first
-        for (const item of localList) {
-          mergedMap.set(item.email_address.toLowerCase(), item);
-        }
-        // Add or update with server addresses
-        for (const item of serverData) {
-          const key = item.email_address.toLowerCase();
-          mergedMap.set(key, {
-            ...(mergedMap.get(key) || {}),
-            ...item
-          });
-        }
-        const mergedList = Array.from(mergedMap.values());
-        saveLocalAddresses(mergedList);
-        return mergedList;
-      }
-    }
-  } catch (e) {
-    console.warn('API fetchTempEmails fallback to local:', e);
-  }
-  return localList;
-}
-
-export async function createTempEmail(options: {
-  emailAddress: string;
-  isCustom?: boolean;
-  password?: string;
-  avatarUrl?: string;
-  isReserved?: boolean;
-  userId?: string;
-}): Promise<TempEmail> {
-  const clientId = getClientId();
-  try {
-    const res = await fetch('/api/temp-emails', {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({
-        email_address: options.emailAddress,
-        user_id: options.userId || null,
-        client_id: clientId,
-        is_custom: Boolean(options.isCustom),
-        password: options.password || undefined,
-        avatar_url: options.avatarUrl || undefined,
-        is_reserved: Boolean(options.isReserved)
-      })
-    });
-
-    const data = await safeJsonParse(res, 'Failed to create email address');
-    if (!res.ok) {
-      const error: any = new Error(data.error || 'Failed to create email address');
-      error.is_password_protected = data.is_password_protected;
-      error.email_address = data.email_address;
-      error.requires_upgrade = data.requires_upgrade;
-      throw error;
-    }
-    // Save to local addresses so old ones remain and new one is added
-    addLocalAddress(data);
-    return data;
-  } catch (err: any) {
-    if (err.requires_upgrade || err.is_password_protected) {
-      throw err;
-    }
-    console.warn('createTempEmail network fallback:', err);
-    // Graceful offline fallback preserving all addresses
-    const fallback: TempEmail = {
-      id: 'addr_' + Math.random().toString(36).substring(2, 9),
-      email_address: options.emailAddress,
-      created_at: new Date().toISOString(),
-      user_id: options.userId || null,
-      client_id: clientId,
-      is_custom: Boolean(options.isCustom),
-      is_password_protected: Boolean(options.password),
-      avatar_url: options.avatarUrl || '',
-      domain: 'goldmailer.xyz',
-      is_reserved: Boolean(options.isReserved),
-      expires_at: options.isReserved ? null : new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-      message_count: 0
+    return {
+      available: true,
+      username,
+      message: 'Username format valid.'
     };
-    addLocalAddress(fallback);
-    return fallback;
   }
 }
 
-export async function unlockTempEmail(emailAddress: string, password: string): Promise<TempEmail> {
-  const res = await fetch('/api/temp-emails/unlock', {
+// Smart Username Suggestions
+export async function suggestUsernames(firstName: string, lastName: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/auth/suggest-usernames?firstName=${encodeURIComponent(firstName)}&lastName=${encodeURIComponent(lastName)}`);
+    const data = await safeJsonParse(res);
+    return data.suggestions || [
+      `${firstName.toLowerCase()}.${lastName.toLowerCase()}123@goldmailer.xyz`,
+      `${firstName.toLowerCase()}${lastName.toLowerCase()}07@goldmailer.xyz`,
+      `${firstName.toLowerCase()}.${new Date().getFullYear()}@goldmailer.xyz`
+    ];
+  } catch {
+    return [
+      `${firstName.toLowerCase()}.${lastName.toLowerCase()}123@goldmailer.xyz`,
+      `${firstName.toLowerCase()}${lastName.toLowerCase()}07@goldmailer.xyz`,
+      `${firstName.toLowerCase()}.${new Date().getFullYear()}@goldmailer.xyz`
+    ];
+  }
+}
+
+// Send Phone OTP
+export async function sendPhoneOtp(phone: string): Promise<{ success: boolean; message: string; mock_code?: string }> {
+  const res = await fetch('/api/auth/send-phone-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone })
+  });
+  return await safeJsonParse(res);
+}
+
+// Verify Phone OTP
+export async function verifyPhoneOtp(phone: string, code: string): Promise<{ success: boolean; verified: boolean }> {
+  const res = await fetch('/api/auth/verify-phone-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, code })
+  });
+  return await safeJsonParse(res);
+}
+
+// Multi-step Registration
+export async function registerGoldUser(formData: {
+  firstName: string;
+  lastName: string;
+  dob: string;
+  gender: string;
+  username: string;
+  password: string;
+  phone: string;
+  country: string;
+}): Promise<{ success: boolean; token: string; user: UserProfile; backup_codes: string[] }> {
+  const res = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(formData)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Registration failed');
+  }
+  if (data.token) {
+    setAuthToken(data.token);
+    setStoredUser(data.user);
+    setStoredActiveEmail(data.user.email);
+  }
+  return data;
+}
+
+export async function registerUser(formData: any): Promise<any> {
+  const username = formData.email ? formData.email.split('@')[0] : (formData.username || 'user');
+  return registerGoldUser({
+    firstName: formData.name || formData.firstName || username,
+    lastName: formData.lastName || '',
+    dob: formData.dob || '1998-05-15',
+    gender: formData.gender || 'Prefer not to say',
+    username,
+    password: formData.password,
+    phone: formData.phone || '',
+    country: formData.country || 'United States'
+  });
+}
+
+// Login with Suspicious Device & 2FA Detection
+export async function loginGoldUser(credentials: {
+  identifier: string;
+  password: string;
+  totp_code?: string;
+  backup_code?: string;
+}): Promise<any> {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Login failed');
+  }
+  if (data.token && data.user) {
+    setAuthToken(data.token);
+    setStoredUser(data.user);
+    setStoredActiveEmail(data.user.email);
+  }
+  return data;
+}
+
+export async function loginUser(emailOrIdentifier: string, password: string): Promise<any> {
+  return loginGoldUser({ identifier: emailOrIdentifier, password });
+}
+
+// Poll Login Attempt Status (for suspicious device screen)
+export async function checkLoginAttemptStatus(attemptId: string): Promise<any> {
+  const res = await fetch(`/api/security/login-attempts/${attemptId}/status`);
+  return await safeJsonParse(res);
+}
+
+// Respond to Login Attempt (Approve, Block, or Verify Code)
+export async function respondToLoginAttempt(
+  attemptId: string,
+  action: 'approve' | 'block' | 'verify_code',
+  code?: string
+): Promise<any> {
+  const res = await fetch(`/api/security/login-attempts/${attemptId}/respond`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ email_address: emailAddress, password })
+    body: JSON.stringify({ action, code })
   });
-
-  const data = await safeJsonParse(res, 'Incorrect password for mailbox');
-  if (!res.ok) throw new Error(data.error || 'Incorrect password for mailbox');
-  addLocalAddress(data.email);
-  return data.email;
+  return await safeJsonParse(res);
 }
 
-export async function updateEmailPicture(idOrEmail: string, avatarUrl: string): Promise<TempEmail> {
-  const res = await fetch(`/api/temp-emails/${encodeURIComponent(idOrEmail)}/picture`, {
-    method: 'PUT',
-    headers: getHeaders(),
-    body: JSON.stringify({ avatar_url: avatarUrl })
-  });
-  const data = await safeJsonParse(res, 'Failed to update email picture');
-  if (!res.ok) throw new Error(data.error || 'Failed to update email picture');
-  return data.email;
-}
-
-export async function deleteTempEmail(idOrEmail: string): Promise<boolean> {
-  removeLocalAddress(idOrEmail);
+// Check for incoming push approval requests on active session
+export async function getPendingLoginAttempts(): Promise<LoginAttempt[]> {
   try {
-    const res = await fetch(`/api/temp-emails/${encodeURIComponent(idOrEmail)}`, {
-      method: 'DELETE',
+    const res = await fetch('/api/security/login-attempts/pending', {
       headers: getHeaders()
     });
-    return res.ok;
-  } catch {
-    return true;
-  }
-}
-
-// ================= EMAIL PERSISTENCE STORE (OLD & NEW EMAILS & SENT MESSAGES) =================
-const EMAILS_STORAGE_KEY = 'goldmail_stored_emails';
-
-export function getLocalStoredEmails(): EmailMessage[] {
-  try {
-    const raw = localStorage.getItem(EMAILS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(normalizeEmail) : [];
+    return await safeJsonParse(res);
   } catch {
     return [];
   }
 }
 
-export function saveLocalStoredEmails(emails: EmailMessage[]): void {
+// Fetch Current Authenticated User
+export async function fetchCurrentUser(): Promise<UserProfile | null> {
+  const token = getAuthToken();
+  if (!token) return null;
   try {
-    // Keep max 2000 messages to prevent storage overflow
-    const trimmed = emails.slice(0, 2000);
-    localStorage.setItem(EMAILS_STORAGE_KEY, JSON.stringify(trimmed));
-  } catch (err) {
-    console.warn('Failed to save emails to localStorage:', err);
+    const res = await fetch('/api/auth/me', { headers: getHeaders() });
+    if (!res.ok) return null;
+    const data = await safeJsonParse(res);
+    if (data.user) {
+      setStoredUser(data.user);
+      return data.user;
+    }
+    return null;
+  } catch {
+    return getStoredUser();
   }
 }
 
-export function getStoredEmailsForAccount(
-  accountEmail: string,
-  folder: MailFolder | 'all' = 'all'
-): EmailMessage[] {
-  if (!accountEmail) return [];
-  const clean = accountEmail.trim().toLowerCase();
-  const all = getLocalStoredEmails();
-
-  const filtered = all.filter((e) => {
-    const to = (e.to_email || e.recipient || '').trim().toLowerCase();
-    const from = (e.from_email || e.sender || '').trim().toLowerCase();
-
-    // Check account match:
-    // For sent and scheduled folders, the sender was this address
-    if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-      if (!from.includes(clean)) return false;
-    } else if (folder === 'all' || folder === 'all_mail') {
-      if (!to.includes(clean) && !from.includes(clean)) return false;
-    } else {
-      if (!to.includes(clean)) return false;
-    }
-
-    // Check folder match
-    if (folder === 'all' || folder === 'all_mail') return true;
-    if (folder === 'starred') return Boolean(e.is_starred);
-    if (folder === 'sent') return e.folder === 'sent';
-    if (folder === 'scheduled') return e.folder === 'scheduled';
-    if (folder === 'trash') return e.folder === 'trash';
-    if (folder === 'spam') return e.folder === 'spam';
-    if (folder === 'primary') {
-      return (
-        (!e.folder || e.folder === 'primary') &&
-        e.folder !== 'trash' &&
-        e.folder !== 'spam' &&
-        e.folder !== 'sent' &&
-        e.folder !== 'scheduled'
-      );
-    }
-    return (e.folder || 'primary') === folder;
+export async function updateUserProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
+  const res = await fetch('/api/auth/profile', {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(updates)
   });
-
-  filtered.sort(
-    (a, b) =>
-      new Date(b.received_at || b.created_at || 0).getTime() -
-      new Date(a.received_at || a.created_at || 0).getTime()
-  );
-  return filtered;
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to update profile');
+  setStoredUser(data.user);
+  return data.user;
 }
 
-export function storeEmail(email: EmailMessage): void {
-  if (!email || !email.id) return;
-  const current = getLocalStoredEmails();
-  const index = current.findIndex((e) => e.id === email.id);
-  if (index !== -1) {
-    current[index] = { ...current[index], ...email };
-  } else {
-    current.unshift(email);
-  }
-  saveLocalStoredEmails(current);
-}
+// ================= SECURITY & 2FA =================
 
-export function storeSentEmail(sentEmail: EmailMessage): void {
-  if (!sentEmail) return;
-  const normalized = normalizeEmail({
-    ...sentEmail,
-    folder: sentEmail.folder || 'sent',
-    is_read: true,
-    received_at: sentEmail.received_at || sentEmail.created_at || new Date().toISOString()
+export async function setup2FA(): Promise<{ secret: string; otpauth_url: string; email: string }> {
+  const res = await fetch('/api/security/2fa/setup', {
+    method: 'POST',
+    headers: getHeaders()
   });
-  storeEmail(normalized);
+  return await safeJsonParse(res);
 }
 
-export function updateStoredEmail(id: string, updates: Partial<EmailMessage>): void {
-  const current = getLocalStoredEmails();
-  const index = current.findIndex((e) => e.id === id);
-  if (index !== -1) {
-    current[index] = { ...current[index], ...updates };
-    saveLocalStoredEmails(current);
-  }
+export async function enable2FA(code: string): Promise<{ success: boolean; two_factor_enabled: boolean; backup_codes: string[] }> {
+  const res = await fetch('/api/security/2fa/enable', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ code })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to verify code');
+  return data;
 }
 
-export function deleteStoredEmail(id: string): void {
-  const current = getLocalStoredEmails();
-  const filtered = current.filter((e) => e.id !== id);
-  saveLocalStoredEmails(filtered);
+export async function disable2FA(): Promise<{ success: boolean }> {
+  const res = await fetch('/api/security/2fa/disable', {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
 }
 
-export function mergeAndStoreEmails(incoming: EmailMessage[]): EmailMessage[] {
-  if (!incoming || incoming.length === 0) return getLocalStoredEmails();
-  const existing = getLocalStoredEmails();
-  const map = new Map<string, EmailMessage>();
-
-  // Load existing (preserves old emails and sent messages)
-  for (const e of existing) {
-    if (e.id) map.set(e.id, e);
-  }
-
-  // Merge incoming
-  for (const item of incoming) {
-    if (!item.id) continue;
-    const norm = normalizeEmail(item);
-    if (map.has(norm.id)) {
-      const prev = map.get(norm.id)!;
-      map.set(norm.id, {
-        ...norm,
-        is_starred: prev.is_starred !== undefined ? prev.is_starred : norm.is_starred,
-        is_read: prev.is_read !== undefined ? prev.is_read : norm.is_read,
-        folder: prev.folder || norm.folder
-      });
-    } else {
-      map.set(norm.id, norm);
-    }
-  }
-
-  const merged = Array.from(map.values());
-  merged.sort(
-    (a, b) =>
-      new Date(b.received_at || b.created_at || 0).getTime() -
-      new Date(a.received_at || a.created_at || 0).getTime()
-  );
-  saveLocalStoredEmails(merged);
-  return merged;
+export async function regenerateBackupCodes(): Promise<{ backup_codes: string[] }> {
+  const res = await fetch('/api/security/backup-codes/regenerate', {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
 }
 
-// ================= EMAIL INBOX & MESSAGING =================
-
-export async function fetchEmails(
-  recipientEmail: string,
-  folder: MailFolder | 'all' = 'all',
-  signal?: AbortSignal
-): Promise<EmailMessage[]> {
-  if (!recipientEmail) return [];
-  const cleanEmail = recipientEmail.trim().toLowerCase();
-
-  let remoteEmails: EmailMessage[] = [];
-
-  // 1. Try querying Supabase client directly if configured in settings or environment
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      let query = supabase.from('emails').select('*');
-
-      // Filter flexibly with case-insensitive matching for both old and new emails
-      if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-        query = query.or(`from_email.ilike.%${cleanEmail}%,sender.ilike.%${cleanEmail}%`);
-      } else if (folder === 'all' || folder === 'all_mail') {
-        query = query.or(`to_email.ilike.%${cleanEmail}%,from_email.ilike.%${cleanEmail}%,recipient.ilike.%${cleanEmail}%,sender.ilike.%${cleanEmail}%`);
-      } else {
-        // Inbox / Primary / Folder
-        query = query.or(`to_email.ilike.%${cleanEmail}%,recipient.ilike.%${cleanEmail}%`);
-        if (folder === 'starred') {
-          query = query.eq('is_starred', true);
-        } else if (folder === 'trash' || folder === 'spam') {
-          query = query.eq('folder', folder);
-        }
-      }
-
-      if (signal) {
-        query = (query as any).abortSignal ? (query as any).abortSignal(signal) : query;
-      }
-
-      // Fetch up to 1000 emails across all history
-      let result = await query.order('created_at', { ascending: false }).limit(1000);
-      if (result.error) {
-        // If created_at column is missing, try received_at
-        result = await query.order('received_at', { ascending: false }).limit(1000);
-      }
-      if (result.error) {
-        // Fallback without order
-        result = await query.limit(1000);
-      }
-
-      let dataRows = result?.data;
-      if (!dataRows || dataRows.length === 0 || result?.error) {
-        // Broad fallback: query emails and filter client-side to catch very old and new emails across column variations
-        const broad = await supabase.from('emails').select('*').limit(1000);
-        if (broad?.data && Array.isArray(broad.data)) {
-          dataRows = broad.data.filter((d: any) => {
-            const to = String(d.to_email || d.recipient || d.to || '').toLowerCase();
-            const from = String(d.from_email || d.sender || d.from || '').toLowerCase();
-            if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-              return from.includes(cleanEmail);
-            } else if (folder === 'all' || folder === 'all_mail') {
-              return to.includes(cleanEmail) || from.includes(cleanEmail);
-            } else {
-              return to.includes(cleanEmail);
-            }
-          });
-        }
-      }
-
-      if (Array.isArray(dataRows) && dataRows.length > 0) {
-        remoteEmails = dataRows.map(normalizeEmail);
-        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${remoteEmails.length} (old and new)`);
-      }
-    } catch (supaErr: any) {
-      if (supaErr.name === 'AbortError') throw supaErr;
-      console.warn('Supabase client fetch note (will fallback to API):', supaErr);
-    }
-  }
-
-  // 2. Query API route with AbortSignal support
+export async function fetchUserDevices(): Promise<UserDevice[]> {
   try {
-    const res = await fetch(
-      `/api/emails/${encodeURIComponent(cleanEmail)}?folder=${encodeURIComponent(folder)}`,
-      {
-        headers: getHeaders(),
-        signal
-      }
-    );
-    if (res.ok) {
-      const rawData = await safeJsonParse(res, 'Failed to fetch emails');
-      if (Array.isArray(rawData)) {
-        const fromApi = rawData.map(normalizeEmail);
-        const map = new Map<string, EmailMessage>();
-        for (const e of remoteEmails) map.set(e.id, e);
-        for (const e of fromApi) map.set(e.id, e);
-        remoteEmails = Array.from(map.values());
-      }
-    } else {
-      console.log(`[API Fetch Notice] Server returned ${res.status} for ${cleanEmail}`);
-    }
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      // Propagation of AbortError
-      throw err;
-    }
-    console.warn('Fetch emails failed:', err);
+    const res = await fetch('/api/security/devices', { headers: getHeaders() });
+    return await safeJsonParse(res);
+  } catch {
+    return [];
   }
-
-  // 3. Merge and store all remote emails so both old and new emails remain permanently
-  if (remoteEmails.length > 0) {
-    mergeAndStoreEmails(remoteEmails);
-  }
-
-  // Return complete persistent store for this active account and folder
-  const list = getStoredEmailsForAccount(cleanEmail, folder);
-  console.log(`[Email Fetch Result] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${list.length}`);
-  return list;
 }
 
-export async function sendEmail(options: {
-  from: string;
+export async function revokeAllOtherDevices(): Promise<void> {
+  await fetch('/api/security/devices/revoke-all', {
+    method: 'POST',
+    headers: getHeaders()
+  });
+}
+
+// ================= DRAFT AUTO-SAVE =================
+
+export async function fetchDrafts(): Promise<Draft[]> {
+  try {
+    const res = await fetch('/api/drafts', { headers: getHeaders() });
+    return await safeJsonParse(res);
+  } catch {
+    return [];
+  }
+}
+
+export async function saveDraft(draft: {
+  id?: string;
   to: string;
+  cc?: string;
+  bcc?: string;
   subject: string;
-  text: string;
-  html?: string;
-  scheduledFor?: string;
-}): Promise<{ success: boolean; email: EmailMessage; message: string; isScheduled: boolean }> {
-  const clientId = getClientId();
-  const isScheduled = Boolean(options.scheduledFor && new Date(options.scheduledFor).getTime() > Date.now());
-  const folder = isScheduled ? 'scheduled' : 'sent';
-  const cleanFrom = options.from.trim().toLowerCase();
-  const cleanTo = options.to.trim().toLowerCase();
-  const emailHtml = options.html || `<p>${(options.text || '').replace(/\n/g, '<br/>') || 'No content'}</p>`;
-  const emailText = options.text || '';
-  const now = new Date().toISOString();
+  body: string;
+}): Promise<{ success: boolean; draft: Draft; saved_at_formatted: string }> {
+  const res = await fetch('/api/drafts', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(draft)
+  });
+  return await safeJsonParse(res);
+}
 
-  // Create immediate local sent record so sent messages are NEVER lost!
-  const localSentRecord: EmailMessage = {
-    id: 'sent_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
-    recipient: cleanTo,
-    to_email: cleanTo,
-    sender: cleanFrom,
-    from_email: cleanFrom,
-    sender_name: cleanFrom.split('@')[0],
-    subject: options.subject?.trim() || '(No Subject)',
-    body_html: emailHtml,
-    html: emailHtml,
-    body_text: emailText,
-    text: emailText,
-    body: emailHtml || emailText,
-    received_at: now,
-    created_at: now,
-    is_read: true,
-    folder,
-    category: 'primary',
-    scheduled_for: options.scheduledFor,
-    client_id: clientId
-  };
+export async function deleteDraft(id: string): Promise<void> {
+  await fetch(`/api/drafts/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
 
-  // Store in persistent local store right away
-  storeSentEmail(localSentRecord);
+// ================= EMAILS & SYNC =================
 
+export async function fetchEmails(emailAddress: string, folder: string = 'all'): Promise<EmailMessage[]> {
   try {
-    const res = await fetch('/api/emails/send', {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({
-        from: cleanFrom,
-        to: cleanTo,
-        subject: options.subject,
-        text: emailText,
-        html: emailHtml,
-        scheduled_for: options.scheduledFor,
-        client_id: clientId
-      })
-    });
-    const data = await safeJsonParse(res, 'Failed to send email');
-    if (!res.ok) throw new Error(data.error || 'Failed to send email');
-
-    if (data.email) {
-      storeSentEmail(normalizeEmail(data.email));
+    const res = await fetch(`/api/emails/${encodeURIComponent(emailAddress)}?folder=${encodeURIComponent(folder)}`);
+    const list = await safeJsonParse(res);
+    if (Array.isArray(list)) {
+      return list.map(normalizeEmail);
     }
-    return data;
-  } catch (err: any) {
-    console.warn('sendEmail server call note (recorded locally in Sent):', err);
-    return {
-      success: true,
-      email: localSentRecord,
-      message: isScheduled
-        ? `Email scheduled to send on ${new Date(options.scheduledFor!).toLocaleString()}`
-        : 'Email dispatched and recorded in Sent folder.',
-      isScheduled
-    };
+    return [];
+  } catch {
+    return [];
   }
+}
+
+export async function syncEmails(email?: string): Promise<{ success: boolean; new_emails_synced: number; total_emails: number; synced_at: string }> {
+  const res = await fetch('/api/emails/sync', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email: email || getStoredActiveEmail() })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function sendEmail(payload: {
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  body: string;
+  sender?: string;
+  scheduled_for?: string;
+  draft_id?: string;
+}): Promise<any> {
+  const res = await fetch('/api/emails/send', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to send email');
+  return data;
 }
 
 export async function updateEmailStatus(
   id: string,
-  updates: { is_read?: boolean; is_starred?: boolean; folder?: MailFolder; category?: string }
-): Promise<EmailMessage> {
-  // Update local persistent store immediately
-  updateStoredEmail(id, updates);
+  updates: { is_read?: boolean; is_starred?: boolean; folder?: MailFolder }
+): Promise<any> {
+  const res = await fetch(`/api/emails/${id}`, {
+    method: 'PATCH',
+    headers: getHeaders(),
+    body: JSON.stringify(updates)
+  });
+  return await safeJsonParse(res);
+}
 
+export async function deleteEmail(id: string, permanent: boolean = false): Promise<any> {
+  const res = await fetch(`/api/emails/${id}?permanent=${permanent}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+// ================= OAUTH 2.0 PROVIDER =================
+
+export async function fetchOAuthClients(): Promise<OAuthClient[]> {
   try {
-    const res = await fetch(`/api/emails/${id}`, {
-      method: 'PATCH',
-      headers: getHeaders(),
-      body: JSON.stringify(updates)
-    });
-    const data = await safeJsonParse(res, 'Failed to update message');
-    if (!res.ok) throw new Error(data.error || 'Failed to update message');
-    return data.email;
+    const res = await fetch('/api/oauth/clients', { headers: getHeaders() });
+    return await safeJsonParse(res);
   } catch {
-    const all = getLocalStoredEmails();
-    const found = all.find((e) => e.id === id);
-    return (found || { id, ...updates }) as any;
+    return [];
   }
 }
 
-export async function deleteEmail(id: string): Promise<boolean> {
-  deleteStoredEmail(id);
-  try {
-    const res = await fetch(`/api/emails/${id}`, {
-      method: 'DELETE',
-      headers: getHeaders()
-    });
-    return res.ok;
-  } catch {
-    return true;
-  }
-}
-
-// ================= STORAGE & CLEANUP =================
-
-export async function cleanUpSpace(): Promise<{ success: boolean; message: string }> {
-  const all = getLocalStoredEmails();
-  const cleaned = all.filter((e) => e.folder !== 'trash' && e.folder !== 'spam');
-  saveLocalStoredEmails(cleaned);
-
-  try {
-    const res = await fetch('/api/storage/clean', {
-      method: 'POST',
-      headers: getHeaders()
-    });
-    return await res.json();
-  } catch {
-    return {
-      success: true,
-      message: `Cleaned up ${all.length - cleaned.length} messages from Trash and Spam.`
-    };
-  }
-}
-
-// ================= AUTHENTICATION (100% RELIABLE) =================
-
-export async function registerUser(profile: {
-  email: string;
-  password: string;
-  name?: string;
-  age?: number | string;
-  gender?: string;
-  country?: string;
-  location?: string;
-  avatar_url?: string;
-}): Promise<{ token: string; user: UserProfile }> {
-  try {
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(profile)
-    });
-    const data = await safeJsonParse(res, 'Registration failed');
-    if (!res.ok) throw new Error(data.error || 'Registration failed');
-    setAuthToken(data.token);
-    setStoredUser(data.user);
-    return data;
-  } catch (err: any) {
-    // If server is unavailable, fallback to local active user profile
-    if (!err.message || err.message.includes('JSON') || err.message.includes('Server returned') || err.message.includes('404')) {
-      const fallbackUser: UserProfile = {
-        id: 'usr_' + Math.random().toString(36).substring(2, 9),
-        email: profile.email,
-        name: profile.name || profile.email.split('@')[0],
-        age: profile.age,
-        gender: profile.gender || 'Prefer not to say',
-        country: profile.country || 'United States of America',
-        location: profile.location || '',
-        avatar_url: profile.avatar_url || '',
-        isPremium: false,
-        role: profile.email.includes('admin') ? 'admin' : 'user',
-        created_at: new Date().toISOString()
-      };
-      const token = 'local_session_' + Date.now();
-      setAuthToken(token);
-      setStoredUser(fallbackUser);
-      return { token, user: fallbackUser };
-    }
-    throw err;
-  }
-}
-
-export async function loginUser(email: string, password: string): Promise<{ token: string; user: UserProfile }> {
-  try {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    const data = await safeJsonParse(res, 'Login failed');
-    if (!res.ok) throw new Error(data.error || 'Login failed');
-    setAuthToken(data.token);
-    setStoredUser(data.user);
-    return data;
-  } catch (err: any) {
-    if (!err.message || err.message.includes('JSON') || err.message.includes('Server returned') || err.message.includes('404')) {
-      const fallbackUser: UserProfile = {
-        id: 'usr_local',
-        email,
-        name: email.split('@')[0],
-        country: 'United States of America',
-        created_at: new Date().toISOString()
-      };
-      const token = 'local_session_' + Date.now();
-      setAuthToken(token);
-      setStoredUser(fallbackUser);
-      return { token, user: fallbackUser };
-    }
-    throw err;
-  }
-}
-
-export async function fetchCurrentUser(): Promise<UserProfile | null> {
-  const token = getAuthToken();
-  if (!token) return getStoredUser();
-  try {
-    const res = await fetch('/api/auth/me', { headers: getHeaders() });
-    if (!res.ok) {
-      return getStoredUser();
-    }
-    const data = await safeJsonParse(res, 'Failed to fetch user');
-    if (data?.user) {
-      setStoredUser(data.user);
-      return data.user;
-    }
-  } catch {
-    // Return stored local user
-  }
-  return getStoredUser();
-}
-
-export async function updateUserProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
-  try {
-    const res = await fetch('/api/auth/profile', {
-      method: 'PUT',
-      headers: getHeaders(),
-      body: JSON.stringify(updates)
-    });
-    const data = await safeJsonParse(res, 'Failed to update profile');
-    if (data?.user) {
-      setStoredUser(data.user);
-      return data.user;
-    }
-  } catch (err) {
-    console.warn('Update profile fallback to local:', err);
-  }
-  const current = getStoredUser() || {
-    id: 'usr_local',
-    email: 'user@goldmailer.xyz',
-    created_at: new Date().toISOString()
-  };
-  const merged = { ...current, ...updates };
-  setStoredUser(merged);
-  return merged;
-}
-
-// ================= NOWPAYMENTS GATEWAY ($1.11 / Year Reserve Email) =================
-
-export async function createNowPaymentsInvoice(
-  emailToReserve: string,
-  payCurrency = 'usdttrc20',
-  userId?: string,
-  apiKeyOverride?: string
-): Promise<NowPaymentsInvoice> {
-  const customKey = apiKeyOverride || getNowPaymentsApiKey();
-  const res = await fetch('/api/payments/nowpayments/create-invoice', {
+export async function createOAuthClient(data: {
+  app_name: string;
+  redirect_uri: string;
+  logo_url?: string;
+  website_url?: string;
+}): Promise<{ success: boolean; client: OAuthClient }> {
+  const res = await fetch('/api/oauth/clients', {
     method: 'POST',
-    headers: getHeaders({
-      ...(customKey ? { 'x-nowpayments-key': customKey } : {})
-    }),
-    body: JSON.stringify({
-      price_amount: 1.11, // $1.11 / year
-      price_currency: 'usd',
-      pay_currency: payCurrency,
-      user_id: userId || null,
-      email_to_reserve: emailToReserve,
-      api_key: customKey || undefined
-    })
+    headers: getHeaders(),
+    body: JSON.stringify(data)
   });
-  const data = await safeJsonParse(res, 'Failed to create payment invoice');
-  if (!res.ok) throw new Error(data.error || 'Failed to create payment invoice');
-  return data.payment;
+  const parsed = await safeJsonParse(res);
+  if (!res.ok) throw new Error(parsed.error || 'Failed to create OAuth client');
+  return parsed;
 }
 
-export async function checkNowPaymentsStatus(paymentId: string): Promise<{
-  is_confirmed: boolean;
-  payment_status: string;
-  pay_amount?: number;
-  pay_currency?: string;
-  pay_address?: string;
-}> {
-  const customKey = getNowPaymentsApiKey();
-  const res = await fetch(`/api/payments/nowpayments/status/${paymentId}`, {
-    headers: getHeaders({
-      ...(customKey ? { 'x-nowpayments-key': customKey } : {})
-    })
+export async function authorizeOAuthConsent(data: {
+  client_id: string;
+  redirect_uri: string;
+  scope: string;
+  state?: string;
+}): Promise<{ success: boolean; redirect_url: string; code: string }> {
+  const res = await fetch('/api/oauth/authorize', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error('Failed to check payment status');
-  return await safeJsonParse(res, 'Failed to check payment status');
+  const parsed = await safeJsonParse(res);
+  if (!res.ok) throw new Error(parsed.error || 'OAuth authorization failed');
+  return parsed;
 }
 
-// ================= ADMIN APIS =================
+export async function exchangeOAuthToken(data: {
+  code: string;
+  client_id: string;
+  client_secret: string;
+  redirect_uri: string;
+}): Promise<any> {
+  const res = await fetch('/api/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  return await safeJsonParse(res);
+}
+
+export async function fetchOAuthUserInfo(accessToken: string): Promise<any> {
+  const res = await fetch('/api/oauth/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  return await safeJsonParse(res);
+}
+
+// ================= ADMIN APIS (/admin) =================
 
 export async function fetchAdminOverview(): Promise<any> {
   const res = await fetch('/api/admin/overview', { headers: getHeaders() });
-  if (!res.ok) throw new Error('Admin authorization required');
-  return await safeJsonParse(res, 'Admin overview failed');
+  return await safeJsonParse(res);
 }
 
-export async function fetchAdminUsers(): Promise<any[]> {
+export async function fetchAdminUsers(): Promise<UserProfile[]> {
   const res = await fetch('/api/admin/users', { headers: getHeaders() });
-  if (!res.ok) throw new Error('Failed to load users');
-  return await safeJsonParse(res, 'Failed to load users');
+  return await safeJsonParse(res);
 }
 
-export async function toggleAdminUserBan(userId: string): Promise<boolean> {
-  const res = await fetch(`/api/admin/users/${userId}/ban`, {
+export async function toggleBanUser(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/users/${id}/ban`, {
     method: 'POST',
     headers: getHeaders()
   });
-  return res.ok;
+  return await safeJsonParse(res);
 }
 
-export async function toggleAdminUserPremium(userId: string): Promise<boolean> {
-  const res = await fetch(`/api/admin/users/${userId}/premium`, {
-    method: 'POST',
-    headers: getHeaders()
-  });
-  return res.ok;
-}
-
-export async function deleteAdminUser(userId: string): Promise<boolean> {
-  const res = await fetch(`/api/admin/users/${userId}`, {
+export async function deleteAdminUser(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/users/${id}`, {
     method: 'DELETE',
     headers: getHeaders()
   });
-  return res.ok;
-}
-
-export async function fetchAdminEmails(): Promise<any[]> {
-  const res = await fetch('/api/admin/emails', { headers: getHeaders() });
-  if (!res.ok) throw new Error('Failed to load emails');
-  return res.json();
-}
-
-export async function deleteAdminEmail(id: string): Promise<boolean> {
-  const res = await fetch(`/api/admin/emails/${id}`, {
-    method: 'DELETE',
-    headers: getHeaders()
-  });
-  return res.ok;
-}
-
-export async function fetchAdminPayments(): Promise<any[]> {
-  const res = await fetch('/api/admin/payments', { headers: getHeaders() });
-  if (!res.ok) throw new Error('Failed to load payments');
-  return res.json();
+  return await safeJsonParse(res);
 }

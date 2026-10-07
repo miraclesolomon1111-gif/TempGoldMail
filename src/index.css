@@ -1,1 +1,61 @@
 @import "tailwindcss";
+
+:root {
+  --primary-orange: #FF6A00;
+  --secondary-orange: #FF8C42;
+}
+
+/* Glassmorphism Orange utilities */
+.glass-orange {
+  background: rgba(255, 106, 0, 0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 106, 0, 0.2);
+}
+
+.glass-orange-card {
+  background: rgba(255, 106, 0, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 140, 66, 0.2);
+}
+
+.glass-orange-btn {
+  background: linear-gradient(135deg, rgba(255, 106, 0, 0.9), rgba(255, 140, 66, 0.9));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 4px 20px -2px rgba(255, 106, 0, 0.35);
+  color: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.glass-orange-btn:hover {
+  background: linear-gradient(135deg, #FF6A00, #FF8C42);
+  box-shadow: 0 6px 25px rgba(255, 106, 0, 0.5);
+  transform: translateY(-1px);
+}
+
+.glass-panel {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 106, 0, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 106, 0, 0.5);
+}
