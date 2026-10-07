@@ -693,26 +693,25 @@ app.delete('/api/temp-emails/:id', (req: Request, res: Response) => {
 
 // ================= EMAIL MESSAGES & INBOX =================
 
-// GET emails for a specific recipient or folder
+// GET emails for a specific recipient or folder (fetches both very old and new emails)
 app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
   try {
     const emailAddress = req.params.emailAddress.toLowerCase().trim();
     const folder = (req.query.folder as string) || 'all';
 
-    // 1. Supabase database query if connected
+    // 1. Supabase database query across all history (limit 1000)
     let dbEmails: EmailRecord[] = [];
     if (supabase) {
       try {
         let query = supabase.from('emails').select('*');
 
-        // Filter correctly for inbox vs sent:
-        // select * from emails where to_email = activeEmail or from_email = activeEmail
+        // Case-insensitive matching across to_email, from_email, recipient, sender
         if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-          query = query.or(`from_email.eq.${emailAddress},sender.eq.${emailAddress}`);
+          query = query.or(`from_email.ilike.%${emailAddress}%,sender.ilike.%${emailAddress}%`);
         } else if (folder === 'all' || folder === 'all_mail') {
-          query = query.or(`to_email.eq.${emailAddress},from_email.eq.${emailAddress},recipient.eq.${emailAddress},sender.eq.${emailAddress}`);
+          query = query.or(`to_email.ilike.%${emailAddress}%,from_email.ilike.%${emailAddress}%,recipient.ilike.%${emailAddress}%,sender.ilike.%${emailAddress}%`);
         } else {
-          query = query.or(`to_email.eq.${emailAddress},recipient.eq.${emailAddress}`);
+          query = query.or(`to_email.ilike.%${emailAddress}%,recipient.ilike.%${emailAddress}%`);
           if (folder === 'starred') {
             query = query.eq('is_starred', true);
           } else if (folder === 'trash' || folder === 'spam') {
@@ -720,10 +719,16 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
           }
         }
 
-        const { data, error } = await query.order('created_at', { ascending: false });
+        let result = await query.order('created_at', { ascending: false }).limit(1000);
+        if (result.error) {
+          result = await query.order('received_at', { ascending: false }).limit(1000);
+        }
+        if (result.error) {
+          result = await query.limit(1000);
+        }
 
-        if (!error && Array.isArray(data)) {
-          dbEmails = data.map((d: any) => ({
+        if (!result.error && Array.isArray(result.data)) {
+          dbEmails = result.data.map((d: any) => ({
             id: String(d.id || 'db_' + Math.random().toString(36).substring(2, 9)),
             recipient: d.to_email || d.recipient || emailAddress,
             to_email: d.to_email || d.recipient || emailAddress,
@@ -749,7 +754,63 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
       }
     }
 
-    // 2. Query persistent store
+    // 2. Resend historical sync for inbound/outbound emails if API key is provided
+    if (resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+
+        // Sync historical inbound emails
+        if (folder !== 'sent' && client.emails && (client.emails as any).receiving && typeof (client.emails as any).receiving.list === 'function') {
+          const recRes = await (client.emails as any).receiving.list({ limit: 100 });
+          if (recRes && Array.isArray(recRes.data)) {
+            for (const item of recRes.data) {
+              const itemTo = extractCleanEmail(item.to);
+              if (itemTo.toLowerCase().includes(emailAddress)) {
+                const alreadyExists = localEmails.some(e => e.id === item.id || e.id === `msg_${item.id}`) ||
+                  dbEmails.some(e => e.id === item.id || e.id === `msg_${item.id}`);
+                if (!alreadyExists) {
+                  // Fetch full body
+                  let fullItem = item;
+                  try {
+                    const fullRes = await (client.emails as any).receiving.get(item.id);
+                    if (fullRes && fullRes.data) fullItem = fullRes.data;
+                  } catch {}
+
+                  const html = fullItem.html || fullItem.body_html || fullItem.body || '';
+                  const text = fullItem.text || fullItem.body_text || '';
+                  const finalHtml = html || (text ? `<pre style="font-family:inherit;white-space:pre-wrap;font-size:14px;color:#e3e3e3;">${text}</pre>` : '<p>No message content.</p>');
+                  const finalText = text || (html ? html.replace(/<[^>]+>/g, ' ').trim() : 'No message content.');
+
+                  const syncedEmail: EmailRecord = {
+                    id: String(item.id),
+                    recipient: itemTo,
+                    to_email: itemTo,
+                    sender: extractCleanSender(fullItem.from),
+                    from_email: extractCleanSender(fullItem.from),
+                    subject: fullItem.subject || '(No Subject)',
+                    body_html: finalHtml,
+                    html: finalHtml,
+                    body_text: finalText,
+                    text: finalText,
+                    body: finalHtml || finalText,
+                    received_at: fullItem.created_at || new Date().toISOString(),
+                    created_at: fullItem.created_at || new Date().toISOString(),
+                    is_read: false,
+                    folder: 'primary',
+                    category: 'primary'
+                  };
+                  localEmails.unshift(syncedEmail);
+                }
+              }
+            }
+          }
+        }
+      } catch (syncErr) {
+        console.warn('Resend historical sync note:', syncErr);
+      }
+    }
+
+    // 3. Query persistent store with inclusive address matching
     let localFiltered = localEmails.filter(e => {
       const to = (e.to_email || e.recipient || '').toLowerCase();
       const from = (e.from_email || e.sender || '').toLowerCase();
@@ -759,9 +820,9 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
         return from.includes(emailAddress);
       }
       if (folder === 'all' || folder === 'all_mail') {
-        return to === emailAddress || from.includes(emailAddress);
+        return to.includes(emailAddress) || from.includes(emailAddress);
       }
-      return to === emailAddress;
+      return to.includes(emailAddress);
     });
 
     if (folder !== 'all' && folder !== 'all_mail' && folder !== 'sent' && folder !== 'scheduled' && folder !== 'outbox') {
@@ -772,16 +833,17 @@ app.get('/api/emails/:emailAddress', async (req: Request, res: Response) => {
       });
     }
 
-    // Merge de-duplicated by id
+    // 4. Merge de-duplicated by id across DB and local store
     const combinedMap = new Map<string, EmailRecord>();
     for (const item of dbEmails) combinedMap.set(item.id, item);
     for (const item of localFiltered) combinedMap.set(item.id, item);
     const list = Array.from(combinedMap.values());
 
+    // Sort chronologically (newest to oldest)
     list.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
 
     // Debugging log for verification
-    console.log(`[API /api/emails] activeEmail: ${emailAddress}, folder: ${folder}, fetched count: ${list.length}`);
+    console.log(`[API /api/emails] activeEmail: ${emailAddress}, folder: ${folder}, count: ${list.length} (very old and new)`);
 
     return res.json(list);
   } catch (err: any) {

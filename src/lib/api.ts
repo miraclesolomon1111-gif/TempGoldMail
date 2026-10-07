@@ -322,15 +322,14 @@ export async function fetchEmails(
     try {
       let query = supabase.from('emails').select('*');
 
-      // Filter correctly for inbox vs sent:
-      // select * from emails where to_email = activeEmail or from_email = activeEmail
+      // Filter flexibly with case-insensitive matching for both old and new emails
       if (folder === 'sent' || folder === 'scheduled' || folder === 'outbox') {
-        query = query.or(`from_email.eq.${cleanEmail},sender.eq.${cleanEmail}`);
+        query = query.or(`from_email.ilike.%${cleanEmail}%,sender.ilike.%${cleanEmail}%`);
       } else if (folder === 'all' || folder === 'all_mail') {
-        query = query.or(`to_email.eq.${cleanEmail},from_email.eq.${cleanEmail},recipient.eq.${cleanEmail},sender.eq.${cleanEmail}`);
+        query = query.or(`to_email.ilike.%${cleanEmail}%,from_email.ilike.%${cleanEmail}%,recipient.ilike.%${cleanEmail}%,sender.ilike.%${cleanEmail}%`);
       } else {
         // Inbox / Primary / Folder
-        query = query.or(`to_email.eq.${cleanEmail},recipient.eq.${cleanEmail}`);
+        query = query.or(`to_email.ilike.%${cleanEmail}%,recipient.ilike.%${cleanEmail}%`);
         if (folder === 'starred') {
           query = query.eq('is_starred', true);
         } else if (folder === 'trash' || folder === 'spam') {
@@ -342,11 +341,22 @@ export async function fetchEmails(
         query = (query as any).abortSignal ? (query as any).abortSignal(signal) : query;
       }
 
-      const { data, error } = await query.order('created_at', { ascending: false });
+      // Fetch up to 1000 emails across all history
+      let result = await query.order('created_at', { ascending: false }).limit(1000);
+      if (result.error) {
+        // If created_at column is missing, try received_at
+        result = await query.order('received_at', { ascending: false }).limit(1000);
+      }
+      if (result.error) {
+        // Fallback without order
+        result = await query.limit(1000);
+      }
 
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const normalized = data.map(normalizeEmail);
-        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length}`);
+      if (!result.error && Array.isArray(result.data) && result.data.length > 0) {
+        const normalized = result.data.map(normalizeEmail);
+        // Ensure accurate chronological order: newest to oldest
+        normalized.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
+        console.log(`[Supabase Fetch] activeEmail: ${cleanEmail}, folder: ${folder}, count: ${normalized.length} (old and new)`);
         return normalized;
       }
     } catch (supaErr: any) {

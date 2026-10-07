@@ -50,7 +50,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   onCopyEmail,
   totalUnreadCount
 }) => {
-  // Format timestamp like Gmail (e.g., 9:14 AM or Oct 6)
+  // Format timestamp like Gmail (e.g., 9:14 AM for today, Oct 6 for this year, 10/6/24 for older years)
   const formatGmailTime = (isoString: string) => {
     try {
       const d = new Date(isoString);
@@ -63,7 +63,11 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
       if (isToday) {
         return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       }
-      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const isThisYear = d.getFullYear() === now.getFullYear();
+      if (isThisYear) {
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      }
+      return d.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
     } catch {
       return '';
     }
