@@ -5,7 +5,6 @@ import {
   UserPlus,
   Users,
   Sparkles,
-  Cloud,
   Trash2,
   Lock,
   Check,
@@ -13,7 +12,7 @@ import {
   ArrowRight,
   ChevronDown
 } from 'lucide-react';
-import { TempEmail, UserProfile, StorageStats } from '../types';
+import { TempEmail, UserProfile } from '../types';
 
 interface AccountSwitcherSheetProps {
   isOpen: boolean;
@@ -21,7 +20,6 @@ interface AccountSwitcherSheetProps {
   activeEmail: string;
   createdEmails: TempEmail[];
   user: UserProfile | null;
-  storageStats: StorageStats;
   onSelectEmail: (email: string) => void;
   onOpenAddAccount: () => void;
   onOpenProfile: () => void;
@@ -42,7 +40,6 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
   activeEmail,
   createdEmails,
   user,
-  storageStats,
   onSelectEmail,
   onOpenAddAccount,
   onOpenProfile,
@@ -286,45 +283,6 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
                 Crypto Pay
               </span>
             </button>
-          </div>
-
-          {/* Storage Card (Screenshot 5: 48% of 15 GB used) */}
-          <div className="bg-[#121212] border border-[#303134] rounded-2xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-white font-medium text-[13px]">
-                <Cloud className="w-4 h-4 text-[#8ab4f8]" />
-                <span>{storageStats.used_percentage}% of {storageStats.formatted_total} used</span>
-              </div>
-              <span className="text-[12px] text-[#8e918f] font-mono">
-                {storageStats.formatted_used}
-              </span>
-            </div>
-
-            {/* Progress bar */}
-            <div className="h-1.5 w-full bg-[#3c4043] rounded-full overflow-hidden">
-              <div
-                className="h-full bg-[#8ab4f8] rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.max(5, storageStats.used_percentage))}%` }}
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-1 text-[13px] font-medium">
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenPremium();
-                }}
-                className="text-[#8ab4f8] hover:underline"
-              >
-                Get storage
-              </button>
-              <button
-                onClick={onCleanStorage}
-                className="text-[#8ab4f8] hover:underline"
-              >
-                Clean up space
-              </button>
-            </div>
           </div>
 
           {/* Login / Logout status */}

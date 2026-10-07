@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { MailFolder, TempEmail, EmailMessage, UserProfile, StorageStats } from './types';
+import { MailFolder, TempEmail, EmailMessage, UserProfile } from './types';
 import {
   getStoredActiveEmail,
   setStoredActiveEmail,
@@ -12,7 +12,6 @@ import {
   sendEmail,
   updateEmailStatus,
   deleteEmail,
-  fetchStorageStats,
   cleanUpSpace,
   fetchCurrentUser,
   clearAuthToken,
@@ -55,15 +54,8 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
-  // User and Storage state
+  // User state
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [storageStats, setStorageStats] = useState<StorageStats>({
-    used_bytes: 7.21 * 1024 * 1024 * 1024,
-    total_bytes: 15 * 1024 * 1024 * 1024,
-    used_percentage: 48,
-    formatted_used: '7.21 GB',
-    formatted_total: '15 GB'
-  });
 
   // Modal open states
   const [selectedEmail, setSelectedEmail] = useState<EmailMessage | null>(null);
@@ -114,18 +106,6 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
-
-  // Fetch Storage Stats
-  const loadStorage = useCallback(async () => {
-    try {
-      const stats = await fetchStorageStats();
-      setStorageStats(stats);
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    loadStorage();
-  }, [loadStorage]);
 
   // Load created email addresses for this browser / user
   const loadAddresses = useCallback(async () => {
@@ -193,7 +173,6 @@ export default function App() {
     setIsRefreshing(true);
     loadEmails(false);
     loadAddresses();
-    loadStorage();
   };
 
   // Copy active email to clipboard
@@ -273,7 +252,6 @@ export default function App() {
       setStoredActiveEmail(nextEmail);
     }
     await loadAddresses();
-    loadStorage();
   };
 
   // Send Email (with slow reply / scheduled send)
@@ -292,7 +270,6 @@ export default function App() {
       scheduledFor: data.scheduledFor
     });
     await loadEmails();
-    loadStorage();
   };
 
   // Star / Unstar
@@ -312,7 +289,6 @@ export default function App() {
     if (selectedEmail?.id === emailId) setSelectedEmail(null);
     try {
       await updateEmailStatus(emailId, { folder: 'trash' });
-      loadStorage();
     } catch {}
   };
 
@@ -344,7 +320,6 @@ export default function App() {
     const res = await cleanUpSpace();
     alert(res.message);
     loadEmails();
-    loadStorage();
   };
 
   // Profile Avatar update
@@ -480,7 +455,6 @@ export default function App() {
         activeEmail={activeEmail}
         createdEmails={createdEmails}
         user={user}
-        storageStats={storageStats}
         onSelectEmail={handleSelectEmail}
         onOpenAddAccount={() => setIsCustomModalOpen(true)}
         onOpenProfile={() => setIsProfileOpen(true)}
@@ -515,7 +489,6 @@ export default function App() {
           deleteEmail(id);
           setEmails((prev) => prev.filter((m) => m.id !== id));
           setSelectedEmail(null);
-          loadStorage();
         }}
         onMoveToTrash={handleMoveToTrash}
         onMoveToSpam={handleMoveToSpam}

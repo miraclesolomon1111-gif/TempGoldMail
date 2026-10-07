@@ -1,4 +1,4 @@
-import { TempEmail, EmailMessage, UserProfile, NowPaymentsInvoice, StorageStats, MailFolder } from '../types';
+import { TempEmail, EmailMessage, UserProfile, NowPaymentsInvoice, MailFolder } from '../types';
 
 // Persistent Client ID for isolating unauthenticated browser sessions
 export function getClientId(): string {
@@ -203,20 +203,6 @@ export async function deleteEmail(id: string): Promise<boolean> {
 }
 
 // ================= STORAGE & CLEANUP =================
-
-export async function fetchStorageStats(): Promise<StorageStats> {
-  const res = await fetch('/api/storage', { headers: getHeaders() });
-  if (!res.ok) {
-    return {
-      used_bytes: 7.21 * 1024 * 1024 * 1024,
-      total_bytes: 15 * 1024 * 1024 * 1024,
-      used_percentage: 48,
-      formatted_used: '7.21 GB',
-      formatted_total: '15 GB'
-    };
-  }
-  return res.json();
-}
 
 export async function cleanUpSpace(): Promise<{ success: boolean; message: string }> {
   const res = await fetch('/api/storage/clean', {

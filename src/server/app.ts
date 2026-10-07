@@ -272,13 +272,6 @@ setInterval(() => {
 // Root health check
 app.get(['/api', '/api/health'], (_req: Request, res: Response) => {
   const totalEmailsCount = localEmails.length;
-  // Calculate storage usage: ~25KB per email average or byte length
-  const emailBytes = localEmails.reduce((acc, e) => acc + (e.body_html?.length || 0) + (e.body_text?.length || 0) + 1024, 0);
-  const totalStorageBytes = 15 * 1024 * 1024 * 1024; // 15 GB
-  // Baseline simulated active storage 7.21 GB (48% as requested in screenshot) + actual data
-  const baseStorageBytes = 7.21 * 1024 * 1024 * 1024;
-  const currentUsedBytes = baseStorageBytes + emailBytes;
-  const percentUsed = Math.min(100, Math.round((currentUsedBytes / totalStorageBytes) * 100));
 
   res.json({
     status: 'ok',
@@ -287,32 +280,10 @@ app.get(['/api', '/api/health'], (_req: Request, res: Response) => {
     totalUsers: localUsers.length,
     totalAddresses: localTempEmails.length,
     totalEmails: totalEmailsCount,
-    storage: {
-      used_gb: (currentUsedBytes / (1024 * 1024 * 1024)).toFixed(2),
-      total_gb: 15,
-      percent: percentUsed
-    },
     resendConfigured: Boolean(resendApiKey),
     supabaseConnected: Boolean(supabase),
     nowpaymentsConfigured: Boolean(process.env.NOWPAYMENTS_API_KEY),
     timestamp: new Date().toISOString()
-  });
-});
-
-// Storage endpoint matching Screenshot 5 ("48% of 15 GB used", 7.21 GB of 15 GB)
-app.get('/api/storage', (_req: Request, res: Response) => {
-  const emailBytes = localEmails.reduce((acc, e) => acc + (e.body_html?.length || 0) + (e.body_text?.length || 0) + 1024, 0);
-  const baseStorageBytes = 7.21 * 1024 * 1024 * 1024;
-  const totalStorageBytes = 15 * 1024 * 1024 * 1024;
-  const currentUsedBytes = baseStorageBytes + emailBytes;
-  const percent = Math.min(100, Math.round((currentUsedBytes / totalStorageBytes) * 100));
-
-  res.json({
-    used_bytes: currentUsedBytes,
-    total_bytes: totalStorageBytes,
-    used_percentage: percent,
-    formatted_used: `${(currentUsedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`,
-    formatted_total: '15 GB'
   });
 });
 
@@ -1112,11 +1083,6 @@ const requireAdmin = (req: Request, res: Response, next: express.NextFunction) =
 
 // Admin overview stats
 app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
-  const emailBytes = localEmails.reduce((acc, e) => acc + (e.body_html?.length || 0) + (e.body_text?.length || 0) + 1024, 0);
-  const baseStorageBytes = 7.21 * 1024 * 1024 * 1024;
-  const currentUsedBytes = baseStorageBytes + emailBytes;
-  const totalStorageBytes = 15 * 1024 * 1024 * 1024;
-
   res.json({
     totalUsers: localUsers.length,
     totalCustomEmails: localTempEmails.length,
@@ -1124,11 +1090,6 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     totalEmailsSent: localEmails.filter(e => e.folder === 'sent').length,
     totalPayments: localPayments.length,
     revenue: (localPayments.filter(p => p.payment_status === 'finished').length * 1.11).toFixed(2),
-    storage: {
-      usedFormatted: `${(currentUsedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`,
-      totalFormatted: '15 GB',
-      percentage: Math.min(100, Math.round((currentUsedBytes / totalStorageBytes) * 100))
-    },
     recentAuditLogs: emailAuditLogs.slice(0, 15)
   });
 });

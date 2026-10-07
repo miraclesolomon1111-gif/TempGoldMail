@@ -76,11 +76,3 @@ export interface NowPaymentsInvoice {
   email_to_reserve?: string;
   created_at?: string;
 }
-
-export interface StorageStats {
-  used_bytes: number;
-  total_bytes: number;
-  used_percentage: number;
-  formatted_used: string;
-  formatted_total: string;
-}

@@ -203,22 +203,6 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 </div>
               </div>
 
-              {/* Storage Breakdown Widget (Screenshot 5) */}
-              <div className="bg-[#121212] border border-[#303134] p-5 rounded-2xl space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-white">System Storage Utilization</span>
-                  <span className="text-[#8ab4f8] font-mono font-medium">
-                    {overview.storage?.percentage}% of {overview.storage?.totalFormatted} used ({overview.storage?.usedFormatted})
-                  </span>
-                </div>
-                <div className="h-2 w-full bg-[#303134] rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-[#8ab4f8] rounded-full transition-all duration-500"
-                    style={{ width: `${overview.storage?.percentage}%` }}
-                  />
-                </div>
-              </div>
-
               {/* Live Webhook / Resend logs */}
               {overview.recentAuditLogs?.length > 0 && (
                 <div className="bg-[#121212] border border-[#303134] p-4 rounded-2xl">
