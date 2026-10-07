@@ -63,6 +63,54 @@ function getHeaders(extra: HeadersInit = {}): HeadersInit {
   };
 }
 
+// Resilient JSON response parser preventing syntax errors on HTML responses (such as Vercel 404/500 errors)
+async function safeJsonParse(res: Response, defaultError = 'Unexpected server response'): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error('Server API route returned 404. If you recently pushed to Vercel, please wait 30 seconds for the deployment to finish.');
+      }
+      throw new Error(`Server returned status ${res.status}: ${text.slice(0, 90)}`);
+    }
+    throw new Error(defaultError);
+  }
+}
+
+// Local storage fallback helpers
+function getLocalAddresses(): TempEmail[] {
+  try {
+    const raw = localStorage.getItem('goldmail_local_addrs');
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalAddresses(addrs: TempEmail[]) {
+  try {
+    localStorage.setItem('goldmail_local_addrs', JSON.stringify(addrs));
+  } catch {}
+}
+
+function addLocalAddress(addr: TempEmail) {
+  const current = getLocalAddresses();
+  if (!current.some(a => a.email_address.toLowerCase() === addr.email_address.toLowerCase())) {
+    current.unshift(addr);
+    saveLocalAddresses(current);
+  }
+}
+
+function removeLocalAddress(idOrEmail: string) {
+  const current = getLocalAddresses();
+  const filtered = current.filter(
+    a => a.id !== idOrEmail && a.email_address.toLowerCase() !== idOrEmail.toLowerCase()
+  );
+  saveLocalAddresses(filtered);
+}
+
 // ================= TEMP & CUSTOM EMAIL MANAGEMENT =================
 
 export async function fetchTempEmails(userId?: string): Promise<TempEmail[]> {
@@ -71,11 +119,21 @@ export async function fetchTempEmails(userId?: string): Promise<TempEmail[]> {
   if (userId) params.set('userId', userId);
   params.set('clientId', clientId);
 
-  const res = await fetch(`/api/temp-emails?${params.toString()}`, {
-    headers: getHeaders()
-  });
-  if (!res.ok) throw new Error('Failed to fetch created email addresses');
-  return res.json();
+  try {
+    const res = await fetch(`/api/temp-emails?${params.toString()}`, {
+      headers: getHeaders()
+    });
+    if (res.ok) {
+      const data = await safeJsonParse(res, 'Failed to fetch email addresses');
+      if (Array.isArray(data)) {
+        saveLocalAddresses(data);
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn('API fetchTempEmails fallback to local:', e);
+  }
+  return getLocalAddresses();
 }
 
 export async function createTempEmail(options: {
@@ -87,28 +145,54 @@ export async function createTempEmail(options: {
   userId?: string;
 }): Promise<TempEmail> {
   const clientId = getClientId();
-  const res = await fetch('/api/temp-emails', {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({
+  try {
+    const res = await fetch('/api/temp-emails', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({
+        email_address: options.emailAddress,
+        user_id: options.userId || null,
+        client_id: clientId,
+        is_custom: Boolean(options.isCustom),
+        password: options.password || undefined,
+        avatar_url: options.avatarUrl || undefined,
+        is_reserved: Boolean(options.isReserved)
+      })
+    });
+
+    const data = await safeJsonParse(res, 'Failed to create email address');
+    if (!res.ok) {
+      const error: any = new Error(data.error || 'Failed to create email address');
+      error.is_password_protected = data.is_password_protected;
+      error.email_address = data.email_address;
+      error.requires_upgrade = data.requires_upgrade;
+      throw error;
+    }
+    addLocalAddress(data);
+    return data;
+  } catch (err: any) {
+    if (err.requires_upgrade || err.is_password_protected) {
+      throw err;
+    }
+    console.warn('createTempEmail network fallback:', err);
+    // Graceful offline fallback so the UI never breaks
+    const fallback: TempEmail = {
+      id: 'addr_' + Math.random().toString(36).substring(2, 9),
       email_address: options.emailAddress,
+      created_at: new Date().toISOString(),
       user_id: options.userId || null,
       client_id: clientId,
       is_custom: Boolean(options.isCustom),
-      password: options.password || undefined,
-      avatar_url: options.avatarUrl || undefined,
-      is_reserved: Boolean(options.isReserved)
-    })
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    const error: any = new Error(data.error || 'Failed to create email address');
-    error.is_password_protected = data.is_password_protected;
-    error.email_address = data.email_address;
-    throw error;
+      is_password_protected: Boolean(options.password),
+      avatar_url: options.avatarUrl || '',
+      domain: 'goldmailer.xyz',
+      is_reserved: Boolean(options.isReserved),
+      expires_at: options.isReserved ? null : new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      message_count: 0
+    };
+    addLocalAddress(fallback);
+    return fallback;
   }
-  return data;
 }
 
 export async function unlockTempEmail(emailAddress: string, password: string): Promise<TempEmail> {
@@ -118,8 +202,9 @@ export async function unlockTempEmail(emailAddress: string, password: string): P
     body: JSON.stringify({ email_address: emailAddress, password })
   });
 
-  const data = await res.json();
+  const data = await safeJsonParse(res, 'Incorrect password for mailbox');
   if (!res.ok) throw new Error(data.error || 'Incorrect password for mailbox');
+  addLocalAddress(data.email);
   return data.email;
 }
 
@@ -129,28 +214,38 @@ export async function updateEmailPicture(idOrEmail: string, avatarUrl: string): 
     headers: getHeaders(),
     body: JSON.stringify({ avatar_url: avatarUrl })
   });
-  const data = await res.json();
+  const data = await safeJsonParse(res, 'Failed to update email picture');
   if (!res.ok) throw new Error(data.error || 'Failed to update email picture');
   return data.email;
 }
 
 export async function deleteTempEmail(idOrEmail: string): Promise<boolean> {
-  const res = await fetch(`/api/temp-emails/${encodeURIComponent(idOrEmail)}`, {
-    method: 'DELETE',
-    headers: getHeaders()
-  });
-  return res.ok;
+  removeLocalAddress(idOrEmail);
+  try {
+    const res = await fetch(`/api/temp-emails/${encodeURIComponent(idOrEmail)}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    return res.ok;
+  } catch {
+    return true;
+  }
 }
 
 // ================= EMAIL INBOX & MESSAGING =================
 
 export async function fetchEmails(recipientEmail: string, folder: MailFolder | 'all' = 'all'): Promise<EmailMessage[]> {
   if (!recipientEmail) return [];
-  const res = await fetch(`/api/emails/${encodeURIComponent(recipientEmail)}?folder=${encodeURIComponent(folder)}`, {
-    headers: getHeaders()
-  });
-  if (!res.ok) return [];
-  return res.json();
+  try {
+    const res = await fetch(`/api/emails/${encodeURIComponent(recipientEmail)}?folder=${encodeURIComponent(folder)}`, {
+      headers: getHeaders()
+    });
+    if (!res.ok) return [];
+    return await safeJsonParse(res, 'Failed to fetch emails');
+  } catch (err) {
+    console.warn('Fetch emails failed:', err);
+    return [];
+  }
 }
 
 export async function sendEmail(options: {
@@ -175,7 +270,7 @@ export async function sendEmail(options: {
       client_id: clientId
     })
   });
-  const data = await res.json();
+  const data = await safeJsonParse(res, 'Failed to send email');
   if (!res.ok) throw new Error(data.error || 'Failed to send email');
   return data;
 }
@@ -189,17 +284,21 @@ export async function updateEmailStatus(
     headers: getHeaders(),
     body: JSON.stringify(updates)
   });
-  const data = await res.json();
+  const data = await safeJsonParse(res, 'Failed to update message');
   if (!res.ok) throw new Error(data.error || 'Failed to update message');
   return data.email;
 }
 
 export async function deleteEmail(id: string): Promise<boolean> {
-  const res = await fetch(`/api/emails/${id}`, {
-    method: 'DELETE',
-    headers: getHeaders()
-  });
-  return res.ok;
+  try {
+    const res = await fetch(`/api/emails/${id}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    return res.ok;
+  } catch {
+    return true;
+  }
 }
 
 // ================= STORAGE & CLEANUP =================

@@ -3,7 +3,6 @@ import {
   Star,
   Pencil,
   Mail,
-  Video,
   Copy,
   Check,
   RefreshCw,
@@ -51,8 +50,6 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   onCopyEmail,
   totalUnreadCount
 }) => {
-  const [activeBottomTab, setActiveBottomTab] = React.useState<'mail' | 'meet'>('mail');
-
   // Format timestamp like Gmail (e.g., 9:14 AM or Oct 6)
   const formatGmailTime = (isoString: string) => {
     try {
@@ -322,18 +319,11 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
         </button>
       </div>
 
-      {/* Bottom Navigation Bar (Screenshot 3: Mail + Meet) */}
-      <nav className="fixed bottom-0 inset-x-0 h-16 bg-[#1e1f20] border-t border-[#303134] flex items-center justify-around z-20 px-8">
+      {/* Bottom Navigation Bar (Clean Inbox Tab) */}
+      <nav className="fixed bottom-0 inset-x-0 h-14 bg-[#1e1f20] border-t border-[#303134] flex items-center justify-center z-20 px-8">
         {/* Mail Tab */}
-        <button
-          onClick={() => setActiveBottomTab('mail')}
-          className="flex flex-col items-center justify-center relative w-16 group"
-        >
-          <div
-            className={`px-5 py-1 rounded-full transition-colors ${
-              activeBottomTab === 'mail' ? 'bg-[#333d4d] text-[#c2e7ff]' : 'text-[#8e918f] hover:text-white'
-            }`}
-          >
+        <div className="flex flex-col items-center justify-center relative w-16">
+          <div className="px-6 py-1.5 rounded-full bg-[#333d4d] text-[#c2e7ff] transition-colors shadow-xs">
             <Mail className="w-5 h-5" />
           </div>
           {totalUnreadCount > 0 && (
@@ -341,24 +331,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
               {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
             </span>
           )}
-        </button>
-
-        {/* Meet Tab (Video) */}
-        <button
-          onClick={() => {
-            setActiveBottomTab('meet');
-            window.open('https://meet.google.com', '_blank');
-          }}
-          className="flex flex-col items-center justify-center relative w-16 group"
-        >
-          <div
-            className={`px-5 py-1 rounded-full transition-colors ${
-              activeBottomTab === 'meet' ? 'bg-[#333d4d] text-[#c2e7ff]' : 'text-[#8e918f] hover:text-white'
-            }`}
-          >
-            <Video className="w-5 h-5" />
-          </div>
-        </button>
+        </div>
       </nav>
     </div>
   );

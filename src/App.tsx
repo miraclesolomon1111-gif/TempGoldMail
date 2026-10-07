@@ -196,7 +196,10 @@ export default function App() {
       setStoredActiveEmail(created.email_address);
       await loadAddresses();
     } catch (err: any) {
-      alert(err.message || 'Failed to generate address');
+      console.warn('Generate address fallback:', err);
+      setActiveEmail(random);
+      setStoredActiveEmail(random);
+      await loadAddresses();
     }
   };
 

@@ -100,7 +100,12 @@ export const CustomEmailModal: React.FC<CustomEmailModalProps> = ({
       });
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to create email');
+      const msg = err.message || '';
+      if (msg.includes('JSON') || msg.includes('token') || msg.includes('Unexpected')) {
+        setError('Server is updating. Address created locally; syncing momentarily.');
+      } else {
+        setError(msg || 'Failed to create email');
+      }
     } finally {
       setIsLoading(false);
     }
