@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, Search, X, RefreshCw, Sun, Moon, ShieldCheck, Code2 } from 'lucide-react';
+import { Menu, Search, X, RefreshCw, Sun, Moon, ShieldCheck, Code2, Bell } from 'lucide-react';
 import { UserProfile } from '../types';
 
 interface GmailHeaderProps {
@@ -15,6 +15,8 @@ interface GmailHeaderProps {
   onToggleDarkMode: () => void;
   onOpenOAuthDev: () => void;
   onOpenAdmin?: () => void;
+  notifPermission?: string;
+  onToggleNotifications?: () => void;
 }
 
 export const GmailHeader: React.FC<GmailHeaderProps> = ({
@@ -29,7 +31,9 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
   darkMode,
   onToggleDarkMode,
   onOpenOAuthDev,
-  onOpenAdmin
+  onOpenAdmin,
+  notifPermission,
+  onToggleNotifications
 }) => {
   const avatarLetter = (user?.first_name || user?.name || activeEmail || 'M').charAt(0).toUpperCase();
 
@@ -81,6 +85,25 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
           <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-[#FF6A00]' : ''}`} />
           <span className="hidden md:inline text-xs font-semibold">Sync</span>
         </button>
+
+        {/* Push Notification Toggle / Quick Action */}
+        {onToggleNotifications && (
+          <button
+            type="button"
+            onClick={onToggleNotifications}
+            title={notifPermission === 'granted' ? 'Push Notifications Active (Click to test)' : 'Enable Push Notifications'}
+            className={`p-2 rounded-xl transition-colors relative cursor-pointer ${
+              notifPermission === 'granted'
+                ? 'text-[#FF8C42] hover:bg-orange-500/15'
+                : 'text-zinc-400 hover:text-amber-400 hover:bg-white/10'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {notifPermission === 'granted' && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-[#1e1f24]" />
+            )}
+          </button>
+        )}
 
         {/* Dark/Light mode toggle */}
         <button

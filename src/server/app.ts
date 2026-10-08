@@ -248,6 +248,7 @@ export interface StoredGoldUser {
 
 export interface StoredEmail {
   id: string;
+  messageId?: string;
   user_id?: string;
   recipient: string;
   to_email: string;
@@ -1919,24 +1920,67 @@ app.get(['/api/emails', '/api/emails/:emailAddress'], async (req: Request, res: 
 
     // Deduplicate matches so client NEVER sees duplicate emails
     const uniqueMatches: StoredEmail[] = [];
-    const seenMatchIds = new Set<string>();
-    const seenMatchKeys = new Set<string>();
 
     for (const m of matches) {
       if (!m || !m.id) continue;
       if (deletedEmailIds.has(m.id) || m.status === 'deleted') continue;
-      if (seenMatchIds.has(m.id)) continue;
-      seenMatchIds.add(m.id);
 
-      const msgId = (m as any).messageId || m.raw?.messageId;
-      const key = msgId
-        ? `msgid:${msgId}`
-        : `${(m.from_email || m.sender || '').toLowerCase()}|${(m.to_email || m.recipient || '').toLowerCase()}|${(m.subject || '').trim().toLowerCase()}|${(m.received_at || m.created_at || '').slice(0, 16)}`;
+      const mMsgId = ((m as any).messageId || m.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+      const mFrom = (m.from_email || m.sender || m.from || '').trim().toLowerCase();
+      const mTo = (m.to_email || m.recipient || m.to || '').trim().toLowerCase();
+      const mSub = (m.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+      const mTime = new Date(m.received_at || m.created_at || 0).getTime();
+      const mBodyLen = (m.body_text || m.text || m.body || '').replace(/<[^>]+>/g, '').trim().length;
 
-      if (key && seenMatchKeys.has(key)) continue;
-      if (key) seenMatchKeys.add(key);
+      const existingIdx = uniqueMatches.findIndex(ex => {
+        if (ex.id === m.id) return true;
 
-      uniqueMatches.push(m);
+        const exMsgId = ((ex as any).messageId || ex.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+        if (mMsgId && exMsgId && mMsgId === exMsgId) return true;
+
+        const exFrom = (ex.from_email || ex.sender || ex.from || '').trim().toLowerCase();
+        const exTo = (ex.to_email || ex.recipient || ex.to || '').trim().toLowerCase();
+        const exSub = (ex.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+
+        const sameSender = mFrom === exFrom || (mFrom && exFrom && mFrom.split('@')[0] === exFrom.split('@')[0]);
+        const sameTo = !mTo || !exTo || mTo === exTo || mTo.split('@')[0] === exTo.split('@')[0];
+
+        if (sameSender && sameTo && mSub === exSub) {
+          const exTime = new Date(ex.received_at || ex.created_at || 0).getTime();
+          const timeDiff = Math.abs(mTime - exTime);
+
+          // Within 2 hours: identical email transmission
+          if (timeDiff <= 2 * 60 * 60 * 1000) return true;
+
+          // If one has empty body and one has content within 24 hours: same email
+          const exBodyLen = (ex.body_text || ex.text || ex.body || '').replace(/<[^>]+>/g, '').trim().length;
+          if ((mBodyLen === 0 || exBodyLen === 0) && timeDiff <= 24 * 60 * 60 * 1000) return true;
+
+          // Or if body snippet is identical
+          const mSnip = (m.body_text || m.text || m.body || '').slice(0, 50).trim();
+          const exSnip = (ex.body_text || ex.text || ex.body || '').slice(0, 50).trim();
+          if (mSnip && exSnip && mSnip === exSnip) return true;
+        }
+
+        return false;
+      });
+
+      if (existingIdx !== -1) {
+        const existing = uniqueMatches[existingIdx];
+        const exBodyLen = (existing.body_text || existing.text || existing.body || '').replace(/<[^>]+>/g, '').trim().length;
+
+        // If current match has body content and existing was empty, replace with the richer version
+        if (mBodyLen >= exBodyLen) {
+          uniqueMatches[existingIdx] = {
+            ...existing,
+            ...m,
+            is_read: existing.is_read || m.is_read,
+            is_starred: existing.is_starred || m.is_starred
+          };
+        }
+      } else {
+        uniqueMatches.push(m);
+      }
     }
 
     console.log(`[EMAILS] Retrieved ${uniqueMatches.length} emails for target "${cleanTarget}" (folder="${folder}")`);
@@ -1999,19 +2043,43 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
       const imapMessages = await fetchEmailsFromImap(cleanTarget, userImapConfig);
       console.log(`[SYNC] IMAP returned ${imapMessages.length} messages for ${cleanTarget}`);
       for (const im of imapMessages) {
-        const imMsgId = im.messageId;
-        const imKey = `${(im.from_email || im.sender || '').toLowerCase()}|${(im.to_email || im.recipient || '').toLowerCase()}|${(im.subject || '').trim().toLowerCase()}|${(im.received_at || im.created_at || '').slice(0, 16)}`;
+        const imMsgId = ((im as any).messageId || im.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+        const imFrom = (im.from_email || im.sender || im.from || '').trim().toLowerCase();
+        const imTo = (im.to_email || im.recipient || im.to || '').trim().toLowerCase();
+        const imSub = (im.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+        const imTime = new Date(im.received_at || im.created_at || 0).getTime();
+        const imBodyLen = (im.body_text || im.text || im.body || '').replace(/<[^>]+>/g, '').trim().length;
 
-        if (deletedEmailIds.has(im.id) || (imMsgId && deletedEmailIds.has(imMsgId)) || (imKey && deletedEmailIds.has(imKey))) continue;
-        const already = goldEmails.some(e => {
+        if (deletedEmailIds.has(im.id) || (imMsgId && deletedEmailIds.has(imMsgId))) continue;
+
+        const existingIdx = goldEmails.findIndex(e => {
           if (e.id === im.id) return true;
-          const eMsgId = (e as any).messageId || e.raw?.messageId;
+          const eMsgId = ((e as any).messageId || e.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
           if (imMsgId && eMsgId && imMsgId === eMsgId) return true;
-          const eKey = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
-          if (imKey && eKey && imKey === eKey) return true;
+
+          const eFrom = (e.from_email || e.sender || e.from || '').trim().toLowerCase();
+          const eTo = (e.to_email || e.recipient || e.to || '').trim().toLowerCase();
+          const eSub = (e.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+          const sameSender = imFrom === eFrom || (imFrom && eFrom && imFrom.split('@')[0] === eFrom.split('@')[0]);
+          const sameTo = !imTo || !eTo || imTo === eTo || imTo.split('@')[0] === eTo.split('@')[0];
+
+          if (sameSender && sameTo && imSub === eSub) {
+            const eTime = new Date(e.received_at || e.created_at || 0).getTime();
+            if (Math.abs(imTime - eTime) <= 2 * 60 * 60 * 1000) return true;
+          }
           return false;
         });
-        if (!already) {
+
+        if (existingIdx !== -1) {
+          const existing = goldEmails[existingIdx];
+          const exBodyLen = (existing.body_text || existing.text || existing.body || '').replace(/<[^>]+>/g, '').trim().length;
+          if (imBodyLen > exBodyLen) {
+            const updated = { ...existing, ...im, id: existing.id, is_read: existing.is_read, is_starred: existing.is_starred };
+            goldEmails[existingIdx] = updated;
+            await db.insertEmail(updated);
+            broadcastNewEmail(updated);
+          }
+        } else {
           const imStored: StoredEmail = { ...im, status: 'inbox' };
           await db.insertEmail(imStored);
           goldEmails.unshift(imStored);
@@ -2050,71 +2118,94 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
                 deletedEmailIds.has(resendFingerprint)
               ) continue;
 
-              const already = goldEmails.some(e => {
+              const existingIdx = goldEmails.findIndex(e => {
                 if (e.id === String(item.id) || e.id === `msg_${item.id}`) return true;
-                const eMsgId = (e as any).messageId || e.raw?.messageId;
+                const eMsgId = ((e as any).messageId || e.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
                 if (item.id && eMsgId && String(eMsgId) === String(item.id)) return true;
-                const eKey = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
-                if (resendFingerprint && eKey && resendFingerprint === eKey) return true;
+
+                const eFrom = (e.from_email || e.sender || '').trim().toLowerCase();
+                const eTo = (e.to_email || e.recipient || '').trim().toLowerCase();
+                const eSub = (e.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+                const sameSender = resendFrom === eFrom || (resendFrom && eFrom && resendFrom.split('@')[0] === eFrom.split('@')[0]);
+                const sameTo = !itemTo || !eTo || itemTo === eTo || itemTo.split('@')[0] === eTo.split('@')[0];
+
+                if (sameSender && sameTo && resendSub === eSub) {
+                  const eTime = new Date(e.received_at || e.created_at || 0).getTime();
+                  const itemTime = new Date(item.created_at || 0).getTime();
+                  if (Math.abs(itemTime - eTime) <= 2 * 60 * 60 * 1000) return true;
+                }
                 return false;
               });
-              if (!already) {
-                let fullItem = item;
-                let html = item.html || item.body_html || '';
-                let text = item.text || item.body_text || '';
 
+              let fullItem = item;
+              let html = item.html || item.body_html || '';
+              let text = item.text || item.body_text || '';
+
+              try {
+                const fullRes = await (client.emails as any).receiving.get(item.id);
+                const detail = fullRes?.data?.data || fullRes?.data || fullRes;
+                if (detail) {
+                  fullItem = detail;
+                  html = detail.html || detail.body_html || html;
+                  text = detail.text || detail.body_text || text;
+                }
+              } catch (getErr) {
+                console.warn(`[SYNC] Resend get error for ${item.id}:`, getErr);
+              }
+
+              // If html or text is missing, check if raw download_url can be parsed
+              if ((!html || !text) && fullItem.raw?.download_url) {
                 try {
-                  const fullRes = await (client.emails as any).receiving.get(item.id);
-                  const detail = fullRes?.data?.data || fullRes?.data || fullRes;
-                  if (detail) {
-                    fullItem = detail;
-                    html = detail.html || detail.body_html || html;
-                    text = detail.text || detail.body_text || text;
+                  const rawDownload = await (client.emails as any).receiving.downloadRaw(fullItem.raw.download_url);
+                  if (rawDownload && rawDownload.content) {
+                    const parsed = await simpleParser(rawDownload.content);
+                    html = parsed.html || html;
+                    text = parsed.text || text;
                   }
-                } catch (getErr) {
-                  console.warn(`[SYNC] Resend get error for ${item.id}:`, getErr);
+                } catch (rawErr) {
+                  console.warn(`[SYNC] Resend downloadRaw error for ${item.id}:`, rawErr);
                 }
+              }
 
-                // If html or text is missing, check if raw download_url can be parsed
-                if ((!html || !text) && fullItem.raw?.download_url) {
-                  try {
-                    const rawDownload = await (client.emails as any).receiving.downloadRaw(fullItem.raw.download_url);
-                    if (rawDownload && rawDownload.content) {
-                      const parsed = await simpleParser(rawDownload.content);
-                      html = parsed.html || html;
-                      text = parsed.text || text;
-                    }
-                  } catch (rawErr) {
-                    console.warn(`[SYNC] Resend downloadRaw error for ${item.id}:`, rawErr);
-                  }
+              const finalHtml = html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`;
+              const senderAddr = extractCleanAddress(fullItem.from);
+
+              const syncedEmail: StoredEmail = {
+                id: String(item.id),
+                recipient: itemTo || cleanTarget,
+                to_email: itemTo || cleanTarget,
+                to: itemTo || cleanTarget,
+                sender: senderAddr,
+                from_email: senderAddr,
+                from: senderAddr,
+                sender_name: senderAddr.split('@')[0],
+                subject: fullItem.subject || '(No Subject)',
+                body_html: finalHtml,
+                body_text: text || '',
+                html: finalHtml,
+                text: text || '',
+                body: finalHtml || text,
+                received_at: fullItem.created_at || new Date().toISOString(),
+                created_at: fullItem.created_at || new Date().toISOString(),
+                is_read: false,
+                is_starred: false,
+                folder: 'primary',
+                category: 'primary',
+                status: 'inbox'
+              };
+
+              const newBodyLen = (syncedEmail.body_text || syncedEmail.text || syncedEmail.body || '').replace(/<[^>]+>/g, '').trim().length;
+
+              if (existingIdx !== -1) {
+                const existing = goldEmails[existingIdx];
+                const exBodyLen = (existing.body_text || existing.text || existing.body || '').replace(/<[^>]+>/g, '').trim().length;
+                if (newBodyLen > exBodyLen) {
+                  const merged = { ...existing, ...syncedEmail, id: existing.id, is_read: existing.is_read, is_starred: existing.is_starred };
+                  goldEmails[existingIdx] = merged;
+                  await db.insertEmail(merged);
+                  broadcastNewEmail(merged);
                 }
-
-                const finalHtml = html || `<pre style="font-family:inherit;white-space:pre-wrap;">${text}</pre>`;
-                const senderAddr = extractCleanAddress(fullItem.from);
-
-                const syncedEmail: StoredEmail = {
-                  id: String(item.id),
-                  recipient: itemTo || cleanTarget,
-                  to_email: itemTo || cleanTarget,
-                  to: itemTo || cleanTarget,
-                  sender: senderAddr,
-                  from_email: senderAddr,
-                  from: senderAddr,
-                  sender_name: senderAddr.split('@')[0],
-                  subject: fullItem.subject || '(No Subject)',
-                  body_html: finalHtml,
-                  body_text: text || '',
-                  html: finalHtml,
-                  text: text || '',
-                  body: finalHtml || text,
-                  received_at: fullItem.created_at || new Date().toISOString(),
-                  created_at: fullItem.created_at || new Date().toISOString(),
-                  is_read: false,
-                  is_starred: false,
-                  folder: 'primary',
-                  category: 'primary',
-                  status: 'inbox'
-                };
+              } else {
                 await db.insertEmail(syncedEmail);
                 goldEmails.unshift(syncedEmail);
                 newItemsCount++;
@@ -2684,9 +2775,12 @@ app.post(
 
       const finalRecipient = to || 'inbox@goldmailer.xyz';
       const nowIso = new Date().toISOString();
+      const inMsgId = (emailId || (data as any)?.message_id || (data as any)?.messageId || '').trim();
 
       const newEmail: StoredEmail = {
         id: 'msg_inbound_' + crypto.randomBytes(8).toString('hex'),
+        messageId: inMsgId || undefined,
+        raw: { messageId: inMsgId || undefined, emailId: emailId || undefined },
         recipient: finalRecipient,
         to_email: finalRecipient,
         to: finalRecipient,
@@ -2708,6 +2802,47 @@ app.post(
         category: 'primary',
         status: 'inbox'
       };
+
+      const inFrom = from.trim().toLowerCase();
+      const inTo = finalRecipient.trim().toLowerCase();
+      const inSub = subject.trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+      const inTime = new Date(nowIso).getTime();
+      const inBodyLen = (newEmail.body_text || newEmail.text || newEmail.body || '').replace(/<[^>]+>/g, '').trim().length;
+
+      const existingIdx = goldEmails.findIndex(e => {
+        if (e.id === newEmail.id) return true;
+        const eMsgId = ((e as any).messageId || e.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+        if (inMsgId && eMsgId && inMsgId.toLowerCase() === eMsgId) return true;
+
+        const eFrom = (e.from_email || e.sender || '').trim().toLowerCase();
+        const eTo = (e.to_email || e.recipient || '').trim().toLowerCase();
+        const eSub = (e.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+        const sameSender = inFrom === eFrom || (inFrom && eFrom && inFrom.split('@')[0] === eFrom.split('@')[0]);
+        const sameTo = !inTo || !eTo || inTo === eTo || inTo.split('@')[0] === eTo.split('@')[0];
+
+        if (sameSender && sameTo && inSub === eSub) {
+          const eTime = new Date(e.received_at || e.created_at || 0).getTime();
+          if (Math.abs(inTime - eTime) <= 2 * 60 * 60 * 1000) return true;
+        }
+        return false;
+      });
+
+      if (existingIdx !== -1) {
+        const existing = goldEmails[existingIdx];
+        const exBodyLen = (existing.body_text || existing.text || existing.body || '').replace(/<[^>]+>/g, '').trim().length;
+        if (inBodyLen >= exBodyLen) {
+          const merged = { ...existing, ...newEmail, id: existing.id, is_read: existing.is_read, is_starred: existing.is_starred };
+          goldEmails[existingIdx] = merged;
+          await db.insertEmail(merged);
+          saveData();
+          broadcastNewEmail(merged);
+          console.log(`[INBOUND WEBHOOK] Updated existing email with new inbound content: ${existing.id}`);
+          return res.json({ success: true, id: existing.id, recipient: existing.recipient, updated: true });
+        } else {
+          console.log(`[INBOUND WEBHOOK] Inbound matched existing richer email: ${existing.id}`);
+          return res.json({ success: true, id: existing.id, recipient: existing.recipient, already_exists: true });
+        }
+      }
 
       await db.insertEmail(newEmail);
       goldEmails.unshift(newEmail);

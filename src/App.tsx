@@ -39,29 +39,99 @@ import { AdminPanelModal } from './components/AdminPanelModal';
 import { AccountSwitcherSheet } from './components/AccountSwitcherSheet';
 import { HeroLegalPage } from './components/HeroLegalPage';
 import { PhoneHubView } from './components/PhoneHubView';
-import { Phone, Mail } from 'lucide-react';
+import { Phone, Mail, Bell, X } from 'lucide-react';
+import {
+  initPushNotifications,
+  getNotificationPermission,
+  requestNotificationPermission,
+  triggerPushNotification
+} from './lib/notifications';
 
 export function deduplicateEmailList(list: EmailMessage[]): EmailMessage[] {
   if (!Array.isArray(list)) return [];
-  const seenIds = new Set<string>();
-  const seenFingerprints = new Set<string>();
   const result: EmailMessage[] = [];
 
-  for (const em of list) {
-    if (!em || !em.id) continue;
-    if (seenIds.has(em.id)) continue;
-    seenIds.add(em.id);
+  for (const incoming of list) {
+    if (!incoming || !incoming.id) continue;
+    if (incoming.status === 'deleted') continue;
 
-    const msgId = (em as any).messageId || em.raw?.messageId;
-    const fingerprint = msgId
-      ? `msgid:${msgId}`
-      : `${(em.from_email || em.sender || '').toLowerCase()}|${(em.to_email || em.recipient || '').toLowerCase()}|${(em.subject || '').trim().toLowerCase()}|${(em.received_at || em.created_at || '').slice(0, 16)}`;
+    const inMsgId = ((incoming as any).messageId || incoming.raw?.messageId || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^[<]+|[>]+$/g, '');
+    const inFrom = (incoming.from_email || incoming.sender || incoming.from || '').trim().toLowerCase();
+    const inTo = (incoming.to_email || incoming.recipient || incoming.to || '').trim().toLowerCase();
+    const inSub = (incoming.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+    const inTime = new Date(incoming.received_at || incoming.created_at || 0).getTime();
+    const inBodyLen = (incoming.body_text || incoming.text || incoming.body || '')
+      .replace(/<[^>]+>/g, '')
+      .trim().length;
 
-    if (fingerprint && seenFingerprints.has(fingerprint)) continue;
-    if (fingerprint) seenFingerprints.add(fingerprint);
+    const existingIdx = result.findIndex((existing) => {
+      if (existing.id === incoming.id) return true;
 
-    result.push(em);
+      const exMsgId = ((existing as any).messageId || existing.raw?.messageId || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^[<]+|[>]+$/g, '');
+      if (inMsgId && exMsgId && inMsgId === exMsgId) return true;
+
+      const exFrom = (existing.from_email || existing.sender || existing.from || '').trim().toLowerCase();
+      const exTo = (existing.to_email || existing.recipient || existing.to || '').trim().toLowerCase();
+      const exSub = (existing.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+
+      const sameSender = inFrom === exFrom || (inFrom && exFrom && inFrom.split('@')[0] === exFrom.split('@')[0]);
+      const sameTo = !inTo || !exTo || inTo === exTo || inTo.split('@')[0] === exTo.split('@')[0];
+
+      if (sameSender && sameTo && inSub === exSub) {
+        const exTime = new Date(existing.received_at || existing.created_at || 0).getTime();
+        const timeDiff = Math.abs(inTime - exTime);
+
+        // Within 2 hours: identical email transmission
+        if (timeDiff <= 2 * 60 * 60 * 1000) return true;
+
+        // If one has empty body and one has content within 24 hours: same email
+        const exBodyLen = (existing.body_text || existing.text || existing.body || '')
+          .replace(/<[^>]+>/g, '')
+          .trim().length;
+        if ((inBodyLen === 0 || exBodyLen === 0) && timeDiff <= 24 * 60 * 60 * 1000) return true;
+
+        // Or if body snippet is identical
+        const inSnip = (incoming.body_text || incoming.text || incoming.body || '').slice(0, 50).trim();
+        const exSnip = (existing.body_text || existing.text || existing.body || '').slice(0, 50).trim();
+        if (inSnip && exSnip && inSnip === exSnip) return true;
+      }
+
+      return false;
+    });
+
+    if (existingIdx !== -1) {
+      const existing = result[existingIdx];
+      const exBodyLen = (existing.body_text || existing.text || existing.body || '')
+        .replace(/<[^>]+>/g, '')
+        .trim().length;
+
+      // Prefer the version with richer content over empty body
+      if (inBodyLen >= exBodyLen) {
+        result[existingIdx] = {
+          ...existing,
+          ...incoming,
+          // Preserve user interactions (star, read status)
+          is_read: existing.is_read || incoming.is_read,
+          is_starred: existing.is_starred || incoming.is_starred
+        };
+      } else {
+        result[existingIdx] = {
+          ...incoming,
+          ...existing,
+          messageId: (incoming as any).messageId || (existing as any).messageId
+        };
+      }
+    } else {
+      result.push(incoming);
+    }
   }
+
   return result;
 }
 
@@ -140,6 +210,40 @@ export default function App() {
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+
+  // Push Notification State
+  const [notifPermission, setNotifPermission] = useState<string>(() => getNotificationPermission());
+  const [showNotifBanner, setShowNotifBanner] = useState<boolean>(() => {
+    return localStorage.getItem('goldmail_hide_notif_banner') !== 'true' && getNotificationPermission() === 'default';
+  });
+
+  useEffect(() => {
+    initPushNotifications();
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      const handleSwMsg = (event: MessageEvent) => {
+        if (event.data?.type === 'OPEN_EMAIL' && event.data?.emailId) {
+          const target = allEmails.find((e) => e.id === event.data.emailId);
+          if (target) setSelectedEmail(target);
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', handleSwMsg);
+      return () => navigator.serviceWorker.removeEventListener('message', handleSwMsg);
+    }
+  }, [allEmails]);
+
+  const handleToggleNotifications = async () => {
+    if (notifPermission !== 'granted') {
+      const granted = await requestNotificationPermission();
+      setNotifPermission(getNotificationPermission());
+      if (granted) setShowNotifBanner(false);
+    } else {
+      triggerPushNotification({
+        title: '🔔 Push Notifications Active',
+        body: 'TempGoldMail notifications are functioning properly on your device!',
+        tag: 'test-push'
+      });
+    }
+  };
 
   // Modals
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -312,8 +416,27 @@ export default function App() {
 
               if (isForMe) {
                 setAllEmails((prev) => {
+                  const isExisting = prev.some((p) => p.id === incoming.id);
                   const updated = deduplicateEmailList([incoming, ...prev]);
                   setCachedEmails(activeEmail, updated);
+
+                  if (!isExisting && !incoming.is_read) {
+                    const senderTitle = incoming.sender_name || (typeof incoming.sender === 'string' ? incoming.sender.split('@')[0] : 'New Email');
+                    const snippet = (incoming.body_text || incoming.text || incoming.body || '')
+                      .replace(/<[^>]+>/g, '')
+                      .trim()
+                      .slice(0, 100);
+                    triggerPushNotification({
+                      title: `✉️ ${senderTitle}`,
+                      body: `${incoming.subject || '(No Subject)'}${snippet ? ' — ' + snippet : ''}`,
+                      emailId: incoming.id,
+                      sender: incoming.from_email || incoming.sender,
+                      onClick: () => {
+                        setSelectedEmail(incoming);
+                      }
+                    });
+                  }
+
                   return updated;
                 });
               }
@@ -786,7 +909,44 @@ export default function App() {
             onToggleDarkMode={toggleDarkMode}
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
             onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
+            notifPermission={notifPermission}
+            onToggleNotifications={handleToggleNotifications}
           />
+
+          {/* Push Notification Banner */}
+          {showNotifBanner && notifPermission === 'default' && (
+            <div className="mx-3 sm:mx-4 mb-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-[#FF6A00]/20 via-[#FF8C42]/15 to-transparent border border-[#FF6A00]/30 flex items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5 text-zinc-200">
+                <Bell className="w-4 h-4 text-[#FF8C42] flex-shrink-0 animate-bounce" />
+                <span>Enable <strong>Push Notifications</strong> for instant alerts on phone & desktop when new emails arrive.</span>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const granted = await requestNotificationPermission();
+                    setNotifPermission(getNotificationPermission());
+                    setShowNotifBanner(false);
+                    if (!granted) localStorage.setItem('goldmail_hide_notif_banner', 'true');
+                  }}
+                  className="px-3 py-1 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs hover:opacity-90 shadow-sm cursor-pointer"
+                >
+                  Enable
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNotifBanner(false);
+                    localStorage.setItem('goldmail_hide_notif_banner', 'true');
+                  }}
+                  className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-white/10 cursor-pointer"
+                  title="Dismiss"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Desktop Sidebar + Content Layout */}
           <div className="flex-1 flex min-h-0 overflow-hidden">

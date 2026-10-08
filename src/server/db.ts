@@ -37,6 +37,7 @@ export interface StoredGoldUser {
 
 export interface StoredEmail {
   id: string;
+  messageId?: string;
   user_id?: string;
   recipient: string;
   to_email: string;
@@ -968,20 +969,69 @@ class GoldDatabase {
 
     console.log(`✅ DB INSERT goldmailer_emails: ID=${email.id}, To=${email.recipient}, Status=${email.status}`);
 
-    // Deduplication check: Match by ID, Message-ID header, or exact content fingerprint
-    const targetFingerprint = `${(email.from_email || email.sender || '').toLowerCase()}|${(email.to_email || email.recipient || '').toLowerCase()}|${(email.subject || '').trim().toLowerCase()}|${(email.received_at || email.created_at || '').slice(0, 16)}`;
+    // Deduplication check: Match by ID, Message-ID header, or sender + subject within time window
+    const targetMsgId = ((email as any).messageId || email.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+    const targetFrom = (email.from_email || email.sender || '').trim().toLowerCase();
+    const targetTo = (email.to_email || email.recipient || '').trim().toLowerCase();
+    const targetSub = (email.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+    const targetTime = new Date(email.received_at || email.created_at || 0).getTime();
+    const targetBodyLen = (email.body_text || email.text || email.body || '').replace(/<[^>]+>/g, '').trim().length;
 
     const existingIdx = this.emails.findIndex(e => {
       if (e.id === email.id) return true;
-      const eMsgId = (e as any).messageId || e.raw?.messageId;
-      if (msgId && eMsgId && msgId === eMsgId) return true;
-      const eFingerprint = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
-      if (targetFingerprint && eFingerprint && targetFingerprint === eFingerprint) return true;
+
+      const eMsgId = ((e as any).messageId || e.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
+      if (targetMsgId && eMsgId && targetMsgId === eMsgId) return true;
+
+      const eFrom = (e.from_email || e.sender || '').trim().toLowerCase();
+      const eTo = (e.to_email || e.recipient || '').trim().toLowerCase();
+      const eSub = (e.subject || '').trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, '');
+
+      const sameSender = targetFrom === eFrom || (targetFrom && eFrom && targetFrom.split('@')[0] === eFrom.split('@')[0]);
+      const sameTo = !targetTo || !eTo || targetTo === eTo || targetTo.split('@')[0] === eTo.split('@')[0];
+
+      if (sameSender && sameTo && targetSub === eSub) {
+        const eTime = new Date(e.received_at || e.created_at || 0).getTime();
+        const timeDiff = Math.abs(targetTime - eTime);
+
+        // Within 2 hours: definitely the same incoming email transmission
+        if (timeDiff <= 2 * 60 * 60 * 1000) return true;
+
+        // If one has empty body and one has content within 24 hours: same email
+        const eBodyLen = (e.body_text || e.text || e.body || '').replace(/<[^>]+>/g, '').trim().length;
+        if ((targetBodyLen === 0 || eBodyLen === 0) && timeDiff <= 24 * 60 * 60 * 1000) return true;
+
+        // Or if body snippet is identical
+        const tSnip = (email.body_text || email.text || email.body || '').slice(0, 50).trim();
+        const eSnip = (e.body_text || e.text || e.body || '').slice(0, 50).trim();
+        if (tSnip && eSnip && tSnip === eSnip) return true;
+      }
+
       return false;
     });
 
     if (existingIdx !== -1) {
-      this.emails[existingIdx] = { ...this.emails[existingIdx], ...email };
+      const existing = this.emails[existingIdx];
+      const existingBodyLen = (existing.body_text || existing.text || existing.body || '').replace(/<[^>]+>/g, '').trim().length;
+
+      // If new email has content and existing was empty, or new has longer body, upgrade content
+      if (targetBodyLen >= existingBodyLen) {
+        this.emails[existingIdx] = {
+          ...existing,
+          ...email,
+          // Preserve read/star states if existing was marked
+          is_read: existing.is_read || email.is_read,
+          is_starred: existing.is_starred || email.is_starred
+        };
+      } else {
+        // Existing already had better content, just retain existing but merge IDs if helpful
+        this.emails[existingIdx] = {
+          ...email,
+          ...existing,
+          messageId: email.messageId || existing.messageId
+        };
+      }
+      console.log(`✅ DB DEDUPED email ${email.id} into existing entry ${existing.id}`);
     } else {
       this.emails.unshift(email);
     }

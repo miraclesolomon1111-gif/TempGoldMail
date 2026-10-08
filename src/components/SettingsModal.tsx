@@ -524,6 +524,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
               </div>
 
+              {/* Push Notifications */}
+              <div className="p-4 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-between">
+                <div>
+                  <h4 className="font-semibold text-white flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-[#FF6A00]" />
+                    Push Notifications
+                  </h4>
+                  <p className="text-xs text-zinc-400">
+                    Get instant desktop & mobile alerts whenever a new email arrives
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (typeof window !== 'undefined' && 'Notification' in window) {
+                      if (Notification.permission === 'granted') {
+                        // Trigger test notification
+                        new Notification('🔔 Push Notifications Active', {
+                          body: 'TempGoldMail notifications are working properly!',
+                          icon: '/favicon.ico'
+                        });
+                        setSuccessMsg('Test notification dispatched!');
+                      } else {
+                        const perm = await Notification.requestPermission();
+                        if (perm === 'granted') {
+                          setSuccessMsg('Push notifications enabled!');
+                        } else {
+                          setError('Notification permission was declined.');
+                        }
+                      }
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-90 text-white font-semibold text-xs transition-opacity cursor-pointer shadow-md"
+                >
+                  {typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
+                    ? 'Active (Test)'
+                    : 'Enable Push'}
+                </button>
+              </div>
+
               {/* Theme toggle */}
               <div className="p-4 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-between">
                 <div>

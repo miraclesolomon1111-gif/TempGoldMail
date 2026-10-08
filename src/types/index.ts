@@ -16,6 +16,7 @@ export type MailFolder =
 
 export interface EmailMessage {
   id: string;
+  messageId?: string;
   temp_email_id?: string;
   recipient: string;
   to_email?: string;
