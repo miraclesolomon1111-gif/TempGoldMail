@@ -11,7 +11,16 @@ import {
   AvailablePhoneNumber,
   TwilioLogItem,
   PhoneCall,
-  PhoneContact
+  PhoneContact,
+  AdminOverviewStats,
+  AdminActivityLogItem,
+  AdminSupportTicket,
+  AdminDomainItem,
+  AdminRoleStaff,
+  AdminBroadcastItem,
+  AdminPaymentItem,
+  AdminSystemHealth,
+  AdminSiteSettings
 } from '../types';
 
 // Helper: Normalize email messages
@@ -239,9 +248,42 @@ export function removeStoredAccount(email: string): void {
   }
 }
 
-export function switchActiveAccount(email: string): StoredAccount | null {
+export async function switchActiveAccount(email: string): Promise<StoredAccount | null> {
   const list = getStoredAccounts();
-  const found = list.find(a => a.email.toLowerCase() === email.toLowerCase());
+  const cleanEmail = email.toLowerCase().trim();
+
+  // 1. Call real backend to switch session without deleting any account
+  try {
+    const res = await fetch('/api/auth/switch-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetEmail: cleanEmail })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.token && data.user) {
+        setAuthToken(data.token);
+        setStoredActiveEmail(data.user.email);
+        setStoredUser(data.user);
+        const storedAcc: StoredAccount = {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.username,
+          name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+          token: data.token,
+          avatar_url: data.user.avatar_url,
+          role: data.user.role
+        };
+        addStoredAccount(storedAcc);
+        return storedAcc;
+      }
+    }
+  } catch (err) {
+    console.warn('Switch account API fallback to cache:', err);
+  }
+
+  // 2. Fallback to client stored account
+  const found = list.find(a => a.email.toLowerCase() === cleanEmail);
   if (found) {
     setAuthToken(found.token);
     setStoredActiveEmail(found.email);
@@ -931,22 +973,43 @@ export async function fetchOAuthUserInfo(accessToken: string): Promise<any> {
   return await safeJsonParse(res);
 }
 
-// ================= ADMIN APIS (/admin) =================
+// ================= ADMIN APIS (/admin - 20 FEATURES) =================
 
-export async function fetchAdminOverview(): Promise<any> {
+// 1. Overview
+export async function fetchAdminOverview(): Promise<AdminOverviewStats> {
   const res = await fetch('/api/admin/overview', { headers: getHeaders() });
   return await safeJsonParse(res);
 }
 
-export async function fetchAdminUsers(): Promise<UserProfile[]> {
-  const res = await fetch('/api/admin/users', { headers: getHeaders() });
+// 2. User Management
+export async function fetchAdminUsers(search?: string): Promise<UserProfile[]> {
+  const query = search ? `?search=${encodeURIComponent(search)}` : '';
+  const res = await fetch(`/api/admin/users${query}`, { headers: getHeaders() });
   return await safeJsonParse(res);
 }
 
-export async function toggleBanUser(id: string): Promise<any> {
-  const res = await fetch(`/api/admin/users/${id}/ban`, {
+export async function createAdminUser(data: {
+  firstName: string;
+  lastName?: string;
+  username: string;
+  email?: string;
+  password: string;
+  role?: string;
+  plan?: string;
+}): Promise<any> {
+  const res = await fetch('/api/admin/users', {
     method: 'POST',
-    headers: getHeaders()
+    headers: getHeaders(),
+    body: JSON.stringify(data)
+  });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminUser(id: string, data: any): Promise<any> {
+  const res = await fetch(`/api/admin/users/${id}`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(data)
   });
   return await safeJsonParse(res);
 }
@@ -956,6 +1019,283 @@ export async function deleteAdminUser(id: string): Promise<any> {
     method: 'DELETE',
     headers: getHeaders()
   });
+  return await safeJsonParse(res);
+}
+
+// 3. Email Accounts
+export async function fetchAdminEmailAccounts(): Promise<any[]> {
+  const res = await fetch('/api/admin/email-accounts', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+// 4. Ban / Suspend Users
+export async function toggleBanUser(id: string, isBanned?: boolean, reason?: string): Promise<any> {
+  const res = await fetch(`/api/admin/users/${id}/ban`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ is_banned: isBanned, reason })
+  });
+  return await safeJsonParse(res);
+}
+
+// 5. Email Logs
+export async function fetchAdminEmailLogs(): Promise<any[]> {
+  const res = await fetch('/api/admin/email-logs', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+// 6. Storage Management
+export async function fetchAdminStorage(): Promise<any> {
+  const res = await fetch('/api/admin/storage', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminStorageLimit(id: string, limitGb: number): Promise<any> {
+  const res = await fetch(`/api/admin/storage/${id}`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ limitGb })
+  });
+  return await safeJsonParse(res);
+}
+
+// 7. Subscriptions & Plans
+export async function fetchAdminSubscriptions(): Promise<any> {
+  const res = await fetch('/api/admin/subscriptions', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminSubscription(id: string, plan: string, status?: string): Promise<any> {
+  const res = await fetch(`/api/admin/subscriptions/${id}`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ plan, status })
+  });
+  return await safeJsonParse(res);
+}
+
+// 8. Payments & Invoices
+export async function fetchAdminPayments(): Promise<AdminPaymentItem[]> {
+  const res = await fetch('/api/admin/payments', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function recordAdminPayment(data: any): Promise<any> {
+  const res = await fetch('/api/admin/payments', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data)
+  });
+  return await safeJsonParse(res);
+}
+
+// 9. Domains Management
+export async function fetchAdminDomains(): Promise<AdminDomainItem[]> {
+  const res = await fetch('/api/admin/domains', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function addAdminDomain(domain: string): Promise<any> {
+  const res = await fetch('/api/admin/domains', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ domain })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function verifyAdminDomain(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/domains/${id}/verify`, {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+export async function deleteAdminDomain(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/domains/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+// 10. System Health
+export async function fetchAdminSystemHealth(): Promise<AdminSystemHealth> {
+  const res = await fetch('/api/admin/system-health', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+// 11. Reports & Analytics
+export async function fetchAdminAnalytics(): Promise<any> {
+  const res = await fetch('/api/admin/analytics', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+// 12. Support Tickets
+export async function fetchAdminSupportTickets(): Promise<AdminSupportTicket[]> {
+  const res = await fetch('/api/admin/support-tickets', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function replyAdminSupportTicket(id: string, content: string, status?: string): Promise<any> {
+  const res = await fetch(`/api/admin/support-tickets/${id}/reply`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ content, status })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminSupportTicketStatus(id: string, status: string): Promise<any> {
+  const res = await fetch(`/api/admin/support-tickets/${id}/status`, {
+    method: 'PATCH',
+    headers: getHeaders(),
+    body: JSON.stringify({ status })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function submitUserSupportTicket(data: {
+  userEmail: string;
+  userName?: string;
+  subject: string;
+  category?: string;
+  priority?: string;
+  message: string;
+}): Promise<any> {
+  const res = await fetch('/api/support/tickets', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data)
+  });
+  return await safeJsonParse(res);
+}
+
+// 13. Spam & Security
+export async function fetchAdminSecurity(): Promise<any> {
+  const res = await fetch('/api/admin/security', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function blockAdminIp(ip: string, reason?: string): Promise<any> {
+  const res = await fetch('/api/admin/security/block-ip', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ ip, reason })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function unblockAdminIp(ip: string): Promise<any> {
+  const res = await fetch('/api/admin/security/unblock-ip', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ ip })
+  });
+  return await safeJsonParse(res);
+}
+
+// 14. Trash Recovery
+export async function fetchAdminTrashRecovery(): Promise<any> {
+  const res = await fetch('/api/admin/trash-recovery', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function recoverAdminEmail(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/trash-recovery/recover-email/${id}`, {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+// 15. Settings
+export async function fetchAdminSiteSettings(): Promise<AdminSiteSettings> {
+  const res = await fetch('/api/admin/settings', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminSiteSettings(settings: Partial<AdminSiteSettings>): Promise<any> {
+  const res = await fetch('/api/admin/settings', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(settings)
+  });
+  return await safeJsonParse(res);
+}
+
+// 16. Admin Roles
+export async function fetchAdminRoles(): Promise<AdminRoleStaff[]> {
+  const res = await fetch('/api/admin/roles', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function addAdminRole(data: { email: string; name: string; role?: string; permissions?: string[] }): Promise<any> {
+  const res = await fetch('/api/admin/roles', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data)
+  });
+  return await safeJsonParse(res);
+}
+
+export async function deleteAdminRole(id: string): Promise<any> {
+  const res = await fetch(`/api/admin/roles/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+// 17. Broadcast Notifications
+export async function fetchAdminBroadcasts(): Promise<AdminBroadcastItem[]> {
+  const res = await fetch('/api/admin/notifications', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function sendAdminBroadcast(title: string, message: string, target?: string): Promise<any> {
+  const res = await fetch('/api/admin/notifications/broadcast', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ title, message, target })
+  });
+  return await safeJsonParse(res);
+}
+
+// 18. Backup & Restore
+export async function triggerAdminBackupDownload(): Promise<void> {
+  const token = getAuthToken();
+  window.open(`/api/admin/backup?token=${token}`, '_blank');
+}
+
+export async function restoreAdminBackup(jsonString: string): Promise<any> {
+  const res = await fetch('/api/admin/backup/restore', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ jsonString })
+  });
+  return await safeJsonParse(res);
+}
+
+// 19. API Keys
+export async function fetchAdminApiKeys(): Promise<any> {
+  const res = await fetch('/api/admin/api-keys', { headers: getHeaders() });
+  return await safeJsonParse(res);
+}
+
+export async function updateAdminApiKeys(keys: any): Promise<any> {
+  const res = await fetch('/api/admin/api-keys', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(keys)
+  });
+  return await safeJsonParse(res);
+}
+
+// 20. Activity Logs
+export async function fetchAdminActivityLogs(): Promise<AdminActivityLogItem[]> {
+  const res = await fetch('/api/admin/activity-logs', { headers: getHeaders() });
   return await safeJsonParse(res);
 }
 

@@ -510,8 +510,8 @@ export default function App() {
   };
 
   // Multi-account switch handler (Seamless, instant cache switch with no flickering)
-  const handleSwitchAccount = (email: string) => {
-    const switched = switchActiveAccount(email);
+  const handleSwitchAccount = async (email: string) => {
+    const switched = await switchActiveAccount(email);
     const targetEmail = switched ? switched.email : email;
     if (switched) {
       const newUser: UserProfile = {
@@ -973,6 +973,7 @@ export default function App() {
       <AdminPanelModal
         isOpen={isAdminOpen}
         onClose={() => setIsAdminOpen(false)}
+        currentUser={user}
       />
     </div>
   );

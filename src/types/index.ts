@@ -39,6 +39,8 @@ export interface EmailMessage {
   is_starred?: boolean;
   folder?: MailFolder;
   category?: 'primary' | 'promotions' | 'social' | 'updates';
+  status?: 'inbox' | 'trash' | 'deleted' | 'sent' | 'draft' | 'spam';
+  trashed_at?: string;
   scheduled_for?: string;
   avatar_color?: string;
 }
@@ -79,6 +81,11 @@ export interface UserProfile {
   role?: 'user' | 'admin';
   created_at?: string;
   is_banned?: boolean;
+  banned_at?: string;
+  ban_reason?: string;
+  plan?: 'free' | 'pro' | 'enterprise';
+  plan_billing?: 'monthly' | 'yearly';
+  plan_status?: 'active' | 'cancelled' | 'trial';
   two_factor_enabled?: boolean;
   two_factor_secret?: string;
   backup_codes?: string[];
@@ -230,4 +237,142 @@ export interface PhoneContact {
   notes?: string;
   createdAt: string;
 }
+
+// Admin Panel Types
+export interface AdminOverviewStats {
+  totalUsers: number;
+  totalEmails: number;
+  activeAccountsCount: number;
+  totalDrafts: number;
+  totalOAuthClients: number;
+  totalStorageUsedBytes: number;
+  totalStorageUsedMb: string;
+  totalStorageUsedGb: string;
+  blockedIpsCount: number;
+  openTicketsCount: number;
+  activeDomainsCount: number;
+  monthlyRevenueUsd: number;
+  adminPhoneNumber: string;
+  isTwilioConfigured: boolean;
+  isResendConfigured: boolean;
+  isDatabaseConnected: boolean;
+  dbType: string;
+}
+
+export interface AdminActivityLogItem {
+  id: string;
+  admin_email: string;
+  action: string;
+  target_type: 'user' | 'email' | 'system' | 'security' | 'payment' | 'domain';
+  target_id?: string;
+  details: string;
+  ip?: string;
+  created_at: string;
+}
+
+export interface AdminSupportTicket {
+  id: string;
+  user_email: string;
+  user_name?: string;
+  subject: string;
+  category: 'general' | 'billing' | 'account' | 'technical' | 'abuse';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  messages: {
+    id: string;
+    sender_email: string;
+    sender_name: string;
+    is_admin: boolean;
+    content: string;
+    created_at: string;
+  }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminDomainItem {
+  id: string;
+  domain: string;
+  is_default: boolean;
+  is_verified: boolean;
+  verification_token: string;
+  mx_record_status: 'valid' | 'missing' | 'invalid';
+  spf_record_status: 'valid' | 'missing' | 'invalid';
+  dkim_record_status: 'valid' | 'missing' | 'invalid';
+  created_at: string;
+}
+
+export interface AdminRoleStaff {
+  id: string;
+  email: string;
+  name: string;
+  role: 'super_admin' | 'support_admin' | 'security_admin' | 'billing_admin';
+  permissions: string[];
+  added_by: string;
+  created_at: string;
+}
+
+export interface AdminBroadcastItem {
+  id: string;
+  title: string;
+  message: string;
+  sender_email: string;
+  target: 'all' | 'free' | 'pro' | 'admins';
+  sent_at: string;
+  recipients_count: number;
+}
+
+export interface AdminPaymentItem {
+  id: string;
+  payment_id: string;
+  user_email: string;
+  plan_name: string;
+  amount_usd: number;
+  crypto_currency?: string;
+  crypto_amount?: number;
+  payment_status: 'waiting' | 'confirming' | 'confirmed' | 'failed' | 'refunded';
+  invoice_url?: string;
+  created_at: string;
+}
+
+export interface AdminSystemHealth {
+  serverStatus: 'healthy' | 'degraded' | 'down';
+  databaseStatus: 'connected' | 'reconnecting' | 'fallback_active';
+  databaseEngine: string;
+  apiStatus: 'optimal' | 'warning' | 'error';
+  uptimeSeconds: number;
+  memoryUsageMb: number;
+  cpuLoadPercent: number;
+  activeSockets: number;
+  smtpStatus: 'connected' | 'not_configured';
+  twilioStatus: 'connected' | 'not_configured';
+  resendStatus: 'connected' | 'not_configured';
+  lastHealthCheck: string;
+}
+
+export interface AdminSiteSettings {
+  site_name: string;
+  site_url: string;
+  support_email: string;
+  default_domain: string;
+  allow_registration: boolean;
+  default_storage_bytes: number;
+  pro_price_monthly_usd: number;
+  pro_price_yearly_usd: number;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_pass: string;
+  smtp_secure: boolean;
+  twilio_account_sid: string;
+  twilio_auth_token: string;
+  twilio_trial_number: string;
+  resend_api_key: string;
+  resend_from: string;
+  nowpayments_api_key: string;
+  nowpayments_ipn_secret: string;
+  supabase_url: string;
+  supabase_anon_key: string;
+}
+
 

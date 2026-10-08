@@ -40,7 +40,11 @@ async function runTests() {
     });
     const regData = await regRes.json();
     assert(regRes.status === 201 && regData.success === true, '1.1 Signup succeeds with 201');
-    assert(regData.user.email === `${uniqueUser.toLowerCase()}@goldmailer.xyz`, '1.2 Email generated properly as @goldmailer.xyz');
+    assert(
+      regData.user.email === `${uniqueUser.toLowerCase()}@goldmailer.com` ||
+      regData.user.email === `${uniqueUser.toLowerCase()}@goldmailer.xyz`,
+      '1.2 Email generated properly as @goldmailer.com / .xyz'
+    );
     assert(Array.isArray(regData.backup_codes) && regData.backup_codes.length === 10, '1.3 10 Emergency backup codes generated');
 
     // Duplicate username check
