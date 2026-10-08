@@ -46,18 +46,35 @@ export interface StoredPhonePurchase {
   updatedAt: string;
 }
 
-// Twilio Helper
+export interface StoredCall {
+  id: string;
+  userId?: string;
+  from: string;
+  to: string;
+  direction: 'inbound' | 'outbound';
+  status: 'completed' | 'in-progress' | 'ringing' | 'queued' | 'failed' | 'busy' | 'no-answer' | 'canceled';
+  durationSeconds?: number;
+  callSid?: string;
+  recordingUrl?: string;
+  sayMessage?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+
+// Twilio Helper (reads credentials from environment variables)
 export function getTwilioConfig() {
   const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '';
   const authToken = process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '';
   const trialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
   const webhookUrl = 'https://goldmailer.xyz/api/webhook/twilio/sms';
+  const voiceWebhookUrl = 'https://goldmailer.xyz/api/webhook/twilio/voice';
 
   return {
     accountSid,
     authToken,
     trialNumber,
     webhookUrl,
+    voiceWebhookUrl,
     isConfigured: Boolean(accountSid && authToken)
   };
 }
@@ -70,6 +87,55 @@ export function getTwilioClient() {
   } catch (err) {
     console.warn('[TWILIO] Init failed:', err);
     return null;
+  }
+}
+
+/**
+ * Initiate outbound Voice Call via Twilio
+ */
+export async function makeCallViaTwilio(options: {
+  to: string;
+  from?: string;
+  sayMessage?: string;
+}): Promise<{ success: boolean; callSid?: string; error?: string; status?: string }> {
+  const client = getTwilioClient();
+  const { trialNumber } = getTwilioConfig();
+  const fromNumber = options.from || trialNumber;
+
+  const twimlMessage = options.sayMessage?.trim() || 'Hello, this is a call from GoldMailer secure communications.';
+  const sanitized = twimlMessage.replace(/[<>&'"]/g, '');
+  const twiml = `<Response><Say voice="alice">${sanitized}</Say><Pause length="1"/><Say voice="alice">Goodbye.</Say></Response>`;
+
+  if (!client) {
+    console.log('[TWILIO-SANDBOX] Twilio credentials not configured. Storing local outbound call.');
+    return {
+      success: true,
+      callSid: 'CA_local_' + Math.random().toString(36).substring(2, 10),
+      status: 'queued (sandbox)'
+    };
+  }
+
+  try {
+    const call = await client.calls.create({
+      twiml,
+      to: options.to,
+      from: fromNumber,
+      statusCallback: 'https://goldmailer.xyz/api/webhook/twilio/voice/status',
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      statusCallbackMethod: 'POST'
+    });
+    console.log(`[TWILIO] Placed call ${call.sid} to ${options.to} from ${fromNumber}`);
+    return {
+      success: true,
+      callSid: call.sid,
+      status: call.status
+    };
+  } catch (err: any) {
+    console.error('[TWILIO] Call error:', err.message || err);
+    return {
+      success: false,
+      error: err.message || 'Failed to place call through Twilio'
+    };
   }
 }
 

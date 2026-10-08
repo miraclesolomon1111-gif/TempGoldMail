@@ -16,7 +16,9 @@ import {
   StoredSMS,
   StoredPhoneNumber,
   StoredPhonePurchase,
+  StoredCall,
   sendSmsViaTwilio,
+  makeCallViaTwilio,
   listAvailablePhoneNumbers,
   buyTwilioPhoneNumber,
   getTwilioLogs,
@@ -25,7 +27,7 @@ import {
   getTwilioConfig
 } from './phoneService.js';
 
-// Server-Sent Events (SSE) for Real-Time email & SMS receiving
+// Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
 const sseClients: Response[] = [];
 export function broadcastNewEmail(email: StoredEmail) {
   for (let i = sseClients.length - 1; i >= 0; i--) {
@@ -43,6 +45,17 @@ export function broadcastNewSMS(sms: StoredSMS) {
     const client = sseClients[i];
     try {
       client.write(`data: ${JSON.stringify({ type: 'new_sms', sms })}\n\n`);
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}
+
+export function broadcastNewCall(call: StoredCall) {
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    const client = sseClients[i];
+    try {
+      client.write(`data: ${JSON.stringify({ type: 'new_call', call })}\n\n`);
     } catch {
       sseClients.splice(i, 1);
     }
@@ -302,6 +315,7 @@ let deletedEmailIds: Set<string> = new Set();
 let sms_inbox: StoredSMS[] = [];
 let userPhoneNumbers: StoredPhoneNumber[] = [];
 let phonePurchases: StoredPhonePurchase[] = [];
+let calls_history: StoredCall[] = [];
 
 // Helper: 10 random 8-digit backup codes
 const generateBackupCodes = (): string[] => {
@@ -332,7 +346,8 @@ const saveData = () => {
         deletedEmailIds: Array.from(deletedEmailIds),
         sms_inbox: sms_inbox.slice(0, 500),
         userPhoneNumbers,
-        phonePurchases: phonePurchases.slice(-100)
+        phonePurchases: phonePurchases.slice(-100),
+        calls_history: calls_history.slice(-300)
       },
       null,
       2
@@ -449,6 +464,9 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.phonePurchases)) {
         phonePurchases = parsed.phonePurchases;
+      }
+      if (Array.isArray(parsed.calls_history)) {
+        calls_history = parsed.calls_history;
       }
     } catch (parseErr) {
       console.warn('Data parse error from', freshestFile, parseErr);
@@ -589,22 +607,33 @@ const seedAccounts = () => {
     });
   }
 
-  // Ensure default trial phone number exists and is assigned
+  // Ensure free admin phone number (+17372508034) is assigned to miracle@goldmailer.xyz
   const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
-  if (!userPhoneNumbers.some(p => p.phoneNumber === defaultTrialNumber)) {
-    userPhoneNumbers.push({
-      id: 'phone_trial_default',
+  const adminPhone = userPhoneNumbers.find(p => p.phoneNumber === defaultTrialNumber && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
+  if (!adminPhone) {
+    userPhoneNumbers.unshift({
+      id: 'phone_free_miracle_admin',
       userId: 'usr_miracle_01',
       userEmail: 'miracle@goldmailer.xyz',
       phoneNumber: defaultTrialNumber,
-      friendlyName: '(737) 250-8034 (Twilio Trial)',
+      friendlyName: '+1 (737) 250-8034 (Free Admin Line)',
       provider: 'twilio',
       status: 'active',
-      purchasedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      purchasedAt: '2026-10-08T00:00:00.000Z',
+      expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
       autoRenew: true,
       capabilities: { sms: true, voice: true }
     });
+  } else {
+    adminPhone.friendlyName = '+1 (737) 250-8034 (Free Admin Line)';
+    adminPhone.status = 'active';
+    adminPhone.userId = 'usr_miracle_01';
+    adminPhone.userEmail = 'miracle@goldmailer.xyz';
+    adminPhone.capabilities = { sms: true, voice: true };
+    const exp = new Date(adminPhone.expiresAt).getTime();
+    if (exp < Date.now() + 30 * 86400000) {
+      adminPhone.expiresAt = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+    }
   }
 
   // Ensure starter SMS exists if inbox is empty
@@ -2741,7 +2770,32 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
   const authUser = resolveUserIdFromReq(req);
   const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
 
-  let list = userPhoneNumbers.filter(p => p.userId === authUser.id);
+  // Always ensure miracle@goldmailer.xyz has the free phone number +17372508034
+  if (authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01') {
+    const adminPhoneIndex = userPhoneNumbers.findIndex(p => p.phoneNumber === defaultTrialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz'));
+    if (adminPhoneIndex === -1) {
+      userPhoneNumbers.unshift({
+        id: 'phone_free_miracle_admin',
+        userId: authUser.id,
+        userEmail: authUser.email,
+        phoneNumber: defaultTrialNumber,
+        friendlyName: '+1 (737) 250-8034 (Free Admin Line)',
+        provider: 'twilio',
+        status: 'active',
+        purchasedAt: '2026-10-08T00:00:00.000Z',
+        expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+        autoRenew: true,
+        capabilities: { sms: true, voice: true }
+      });
+      saveData();
+    } else {
+      userPhoneNumbers[adminPhoneIndex].friendlyName = '+1 (737) 250-8034 (Free Admin Line)';
+      userPhoneNumbers[adminPhoneIndex].status = 'active';
+      userPhoneNumbers[adminPhoneIndex].capabilities = { sms: true, voice: true };
+    }
+  }
+
+  let list = userPhoneNumbers.filter(p => p.userId === authUser.id || (authUser.id === 'usr_miracle_01' && p.phoneNumber === defaultTrialNumber));
   if (list.length === 0) {
     // If user has none, assign or create default trial number
     const trialEntry: StoredPhoneNumber = {
@@ -3040,6 +3094,200 @@ app.patch('/api/phone/sms/:id/read', (req: Request, res: Response) => {
 app.delete('/api/phone/sms/:id', (req: Request, res: Response) => {
   ensureDataLoaded();
   sms_inbox = sms_inbox.filter(s => s.id !== req.params.id);
+  saveData();
+  return res.json({ success: true });
+});
+
+// ================= TWILIO VOICE CALLING (INCOMING & OUTGOING) =================
+
+// 14. INCOMING VOICE WEBHOOK: /api/webhook/twilio/voice
+export const handleTwilioVoiceWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = { ...(req.query || {}), ...(req.body || {}) };
+    const from = String(body.From || body.from || 'Caller').trim();
+    const to = String(body.To || body.to || '+17372508034').trim();
+    const callSid = String(body.CallSid || body.callSid || 'CA_' + Date.now()).trim();
+
+    console.log(`[TWILIO VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
+
+    const newCall: StoredCall = {
+      id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      userId: 'usr_miracle_01',
+      from,
+      to,
+      direction: 'inbound',
+      status: 'in-progress',
+      callSid,
+      startedAt: new Date().toISOString()
+    };
+
+    calls_history.unshift(newCall);
+    saveData();
+    broadcastNewCall(newCall);
+
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">Thank you for calling GoldMailer. Please leave your voice message after the beep or connect with the admin team.</Say>
+  <Record maxLength="60" playBeep="true" action="/api/webhook/twilio/voice/recording" />
+  <Say voice="alice">Thank you for calling GoldMailer. Goodbye.</Say>
+</Response>`);
+  } catch (err: any) {
+    console.error('[TWILIO VOICE WEBHOOK] Error:', err);
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send('<Response><Say>Call received. Goodbye.</Say></Response>');
+  }
+};
+
+app.all(
+  ['/api/webhook/twilio/voice', '/api/webhooks/twilio/voice'],
+  handleTwilioVoiceWebhook
+);
+
+// 15. VOICE RECORDING WEBHOOK: /api/webhook/twilio/voice/recording
+export const handleTwilioVoiceRecordingWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = { ...(req.query || {}), ...(req.body || {}) };
+    const callSid = String(body.CallSid || body.callSid || '');
+    const recordingUrl = String(body.RecordingUrl || body.recordingUrl || '');
+    const duration = parseInt(body.RecordingDuration || '0', 10);
+
+    console.log(`[TWILIO RECORDING WEBHOOK] Call ${callSid} audio URL: ${recordingUrl} (${duration}s)`);
+
+    const call = calls_history.find(c => c.callSid === callSid) || calls_history[0];
+    if (call) {
+      call.recordingUrl = recordingUrl;
+      call.durationSeconds = duration;
+      call.status = 'completed';
+      call.endedAt = new Date().toISOString();
+      saveData();
+      broadcastNewCall(call);
+    }
+
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">Your voicemail has been saved to GoldMailer inbox. Goodbye.</Say>
+</Response>`);
+  } catch (err: any) {
+    console.error('[TWILIO RECORDING WEBHOOK] Error:', err);
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send('<Response></Response>');
+  }
+};
+
+app.all(
+  ['/api/webhook/twilio/voice/recording', '/api/webhooks/twilio/voice/recording'],
+  handleTwilioVoiceRecordingWebhook
+);
+
+// 16. VOICE CALL STATUS CALLBACK: /api/webhook/twilio/voice/status
+export const handleTwilioVoiceStatusWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = { ...(req.query || {}), ...(req.body || {}) };
+    const callSid = String(body.CallSid || body.callSid || '');
+    const callStatus = String(body.CallStatus || body.callStatus || 'completed').toLowerCase() as any;
+    const duration = parseInt(body.CallDuration || body.Duration || '0', 10);
+
+    const call = calls_history.find(c => c.callSid === callSid);
+    if (call) {
+      call.status = callStatus;
+      if (duration > 0) call.durationSeconds = duration;
+      call.endedAt = new Date().toISOString();
+      saveData();
+      broadcastNewCall(call);
+    }
+
+    return res.status(200).send('OK');
+  } catch (err: any) {
+    return res.status(200).send('OK');
+  }
+};
+
+app.all(
+  ['/api/webhook/twilio/voice/status', '/api/webhooks/twilio/voice/status'],
+  handleTwilioVoiceStatusWebhook
+);
+
+// 17. OUTGOING CALL: POST /api/phone/call
+app.post('/api/phone/call', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { to, from, message } = req.body;
+    const authUser = resolveUserIdFromReq(req);
+
+    if (!to) {
+      return res.status(400).json({ error: 'Recipient phone number (to) is required.' });
+    }
+
+    const { trialNumber } = getTwilioConfig();
+    const fromNumber = from || trialNumber;
+
+    const callResult = await makeCallViaTwilio({
+      to,
+      from: fromNumber,
+      sayMessage: message || 'Hello, this is a phone call from GoldMailer.'
+    });
+
+    const outboundCall: StoredCall = {
+      id: 'call_out_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      userId: authUser.id,
+      from: fromNumber,
+      to,
+      direction: 'outbound',
+      status: callResult.success ? ((callResult.status as any) || 'in-progress') : 'failed',
+      callSid: callResult.callSid || 'CA_' + Date.now(),
+      sayMessage: message || 'Voice greeting call',
+      startedAt: new Date().toISOString()
+    };
+
+    calls_history.unshift(outboundCall);
+    saveData();
+    broadcastNewCall(outboundCall);
+
+    if (!callResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: callResult.error || 'Failed to place call through Twilio',
+        call: outboundCall
+      });
+    }
+
+    return res.json({
+      success: true,
+      callSid: callResult.callSid,
+      call: outboundCall
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 18. GET /api/phone/calls - Retrieve call history & recordings
+app.get('/api/phone/calls', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const userPhones = new Set(userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber));
+
+  const list = calls_history.filter(c => {
+    if (c.userId === authUser.id) return true;
+    if (userPhones.has(c.to) || userPhones.has(c.from)) return true;
+    return true; // Single-tenant / dev
+  });
+
+  return res.json({
+    success: true,
+    calls: list
+  });
+});
+
+// 19. DELETE /api/phone/calls/:id - Delete call record
+app.delete('/api/phone/calls/:id', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  calls_history = calls_history.filter(c => c.id !== req.params.id);
   saveData();
   return res.json({ success: true });
 });

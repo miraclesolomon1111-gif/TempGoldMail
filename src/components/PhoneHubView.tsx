@@ -19,9 +19,15 @@ import {
   Radio,
   FileCode,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  PhoneIncoming,
+  PhoneOutgoing,
+  PhoneCall as PhoneCallIcon,
+  Volume2,
+  Mic,
+  Play
 } from 'lucide-react';
-import { SMSMessage, UserPhoneNumber, AvailablePhoneNumber, TwilioLogItem, UserProfile } from '../types';
+import { SMSMessage, UserPhoneNumber, AvailablePhoneNumber, TwilioLogItem, UserProfile, PhoneCall } from '../types';
 import {
   fetchUserPhoneNumbers,
   fetchAvailablePhoneNumbers,
@@ -32,7 +38,10 @@ import {
   extendPhoneSubscription,
   fetchTwilioVerificationLogs,
   simulateInboundSms,
-  deleteSms
+  deleteSms,
+  fetchPhoneCalls,
+  makePhoneCall,
+  deletePhoneCall
 } from '../lib/api';
 
 interface PhoneHubViewProps {
@@ -46,10 +55,11 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   darkMode,
   onOpenEmail
 }) => {
-  const [activeTab, setActiveTab] = useState<'inbox' | 'send' | 'buy' | 'logs'>('inbox');
+  const [activeTab, setActiveTab] = useState<'inbox' | 'send' | 'calls' | 'buy' | 'logs'>('inbox');
   const [phoneNumbers, setPhoneNumbers] = useState<UserPhoneNumber[]>([]);
   const [availableNumbers, setAvailableNumbers] = useState<AvailablePhoneNumber[]>([]);
   const [messages, setMessages] = useState<SMSMessage[]>([]);
+  const [calls, setCalls] = useState<PhoneCall[]>([]);
   const [twilioLogs, setTwilioLogs] = useState<TwilioLogItem[]>([]);
   const [twilioMeta, setTwilioMeta] = useState<{
     isConfigured: boolean;
@@ -74,6 +84,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Voice Call State
+  const [callRecipient, setCallRecipient] = useState('');
+  const [callMessage, setCallMessage] = useState('Hello! This is a secure voice call from GoldMailer.');
+  const [isCalling, setIsCalling] = useState(false);
+  const [callResult, setCallResult] = useState<{ success: boolean; message: string } | null>(null);
+
   // Buy Number State
   const [isBuying, setIsBuying] = useState(false);
   const [nowPaymentsInvoiceUrl, setNowPaymentsInvoiceUrl] = useState<string | null>(null);
@@ -83,11 +99,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const loadPhoneData = async () => {
     setIsLoading(true);
     try {
-      const [phonesRes, smsRes, logsRes, availRes] = await Promise.all([
+      const [phonesRes, smsRes, logsRes, availRes, callsRes] = await Promise.all([
         fetchUserPhoneNumbers(),
         fetchSmsInbox(),
         fetchTwilioVerificationLogs(),
-        fetchAvailablePhoneNumbers()
+        fetchAvailablePhoneNumbers(),
+        fetchPhoneCalls()
       ]);
 
       if (phonesRes.numbers && phonesRes.numbers.length > 0) {
@@ -98,6 +115,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       }
 
       setMessages(smsRes);
+      setCalls(callsRes);
       setAvailableNumbers(availRes);
 
       if (logsRes) {
@@ -120,7 +138,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     loadPhoneData();
   }, []);
 
-  // Real-time EventSource listener for incoming SMS
+  // Real-time EventSource listener for incoming SMS & Calls
   useEffect(() => {
     let eventSource: EventSource | null = null;
     try {
@@ -130,6 +148,8 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
           const data = JSON.parse(event.data);
           if (data.type === 'new_sms' && data.sms) {
             setMessages((prev) => [data.sms, ...prev.filter(m => m.id !== data.sms.id)]);
+          } else if (data.type === 'new_call' && data.call) {
+            setCalls((prev) => [data.call, ...prev.filter(c => c.id !== data.call.id)]);
           }
         } catch {}
       };
@@ -150,6 +170,53 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     navigator.clipboard.writeText(text);
     setCopiedText(text);
     setTimeout(() => setCopiedText(null), 2000);
+  };
+
+  // Place Voice Call Handler
+  const handleMakeCall = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!callRecipient.trim()) return;
+
+    setIsCalling(true);
+    setCallResult(null);
+
+    try {
+      const res = await makePhoneCall({
+        to: callRecipient.trim(),
+        from: selectedFromNumber || '+17372508034',
+        message: callMessage.trim()
+      });
+
+      if (res.success) {
+        setCallResult({
+          success: true,
+          message: `Voice call initiated successfully! Call SID: ${res.callSid || 'in-progress'}`
+        });
+        if (res.call) {
+          setCalls(prev => [res.call!, ...prev]);
+        }
+      } else {
+        setCallResult({
+          success: false,
+          message: res.error || 'Failed to place call'
+        });
+      }
+    } catch (err: any) {
+      setCallResult({
+        success: false,
+        message: err.message || 'Error occurred while placing voice call'
+      });
+    } finally {
+      setIsCalling(false);
+    }
+  };
+
+  const handleDeleteCall = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCalls(prev => prev.filter(c => c.id !== id));
+    try {
+      await deletePhoneCall(id);
+    } catch {}
   };
 
   // Send SMS Handler
@@ -289,10 +356,15 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             <Smartphone className="w-6 h-6 stroke-[2.2]" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-base sm:text-lg font-bold tracking-tight">
                 {activeNumber.friendlyName || activeNumber.phoneNumber}
               </span>
+              {(user?.email === 'miracle@goldmailer.xyz' || activeNumber.phoneNumber === '+17372508034') && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-gradient-to-r from-amber-500 to-yellow-400 text-black shadow-xs">
+                  Free Admin Line
+                </span>
+              )}
               <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Active ({activeNumber.daysRemaining || 30}d left)
@@ -300,10 +372,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             </div>
             <p className="text-xs text-zinc-400 flex items-center gap-1.5 mt-0.5">
               <span>Twilio Number: {activeNumber.phoneNumber}</span>
+              <span className="text-zinc-500">·</span>
+              <span className="text-emerald-400 font-medium">SMS & Voice Enabled</span>
               <button
                 type="button"
                 onClick={() => handleCopy(activeNumber.phoneNumber)}
-                className="hover:text-white transition-colors cursor-pointer text-[11px] underline"
+                className="hover:text-white transition-colors cursor-pointer text-[11px] underline ml-1"
               >
                 {copiedText === activeNumber.phoneNumber ? 'Copied!' : 'Copy'}
               </button>
@@ -324,6 +398,21 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
           <button
             type="button"
+            onClick={() => setActiveTab('calls')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+              activeTab === 'calls'
+                ? 'bg-emerald-500 text-white border-emerald-500'
+                : darkMode
+                  ? 'bg-white/5 border-white/10 hover:bg-white/10 text-emerald-400'
+                  : 'bg-emerald-50 border-emerald-200 hover:bg-emerald-100 text-emerald-800'
+            }`}
+          >
+            <PhoneCallIcon className="w-3.5 h-3.5" />
+            <span>Voice Call</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('buy')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
               darkMode ? 'bg-white/5 border-white/10 hover:bg-white/10 text-white' : 'bg-zinc-100 border-zinc-200 hover:bg-zinc-200 text-zinc-900'
@@ -340,7 +429,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             className={`p-2 rounded-xl border transition-all cursor-pointer ${
               darkMode ? 'bg-white/5 border-white/10 hover:bg-white/10 text-zinc-400 hover:text-white' : 'bg-zinc-100 border-zinc-200 hover:bg-zinc-200 text-zinc-700'
             }`}
-            title="Refresh SMS"
+            title="Refresh Phone Data"
           >
             <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6A00]' : ''}`} />
           </button>
@@ -354,6 +443,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
         {[
           { id: 'inbox', label: 'SMS Inbox', icon: MessageSquare, count: messages.length },
           { id: 'send', label: 'Send SMS', icon: Send },
+          { id: 'calls', label: 'Voice Calls', icon: PhoneCallIcon, count: calls.length },
           { id: 'buy', label: 'Buy Numbers (NOWPayments)', icon: Coins },
           { id: 'logs', label: 'Twilio Logs & Test', icon: FileCode }
         ].map(tab => {
@@ -613,6 +703,226 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <span>{isSending ? 'Transmitting SMS...' : 'Send SMS via Twilio'}</span>
                 </button>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: VOICE CALLS (INCOMING & OUTGOING) */}
+        {activeTab === 'calls' && (
+          <div className="max-w-4xl mx-auto space-y-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold flex items-center gap-2">
+                  <span>Twilio Voice Calls & Voicemail</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                    Active on {activeNumber.phoneNumber}
+                  </span>
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Make outbound calls with speech greeting & receive calls with audio voicemail recording.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-400 font-mono">
+                  Voice Webhook: https://goldmailer.xyz/api/webhook/twilio/voice
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+              {/* Left Column: Outbound Call Dialer */}
+              <div className="md:col-span-5">
+                <div className={`p-5 rounded-2xl border ${
+                  darkMode ? 'bg-[#18191e] border-white/10' : 'bg-white border-zinc-200 shadow-sm'
+                }`}>
+                  <div className="flex items-center gap-2.5 mb-4">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                      <PhoneCallIcon className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold">Make Voice Call</h3>
+                      <p className="text-[11px] text-zinc-400">Twilio Outbound Calling</p>
+                    </div>
+                  </div>
+
+                  {callResult && (
+                    <div className={`mb-4 p-3 rounded-xl text-xs flex items-start gap-2 ${
+                      callResult.success
+                        ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                        : 'bg-red-500/10 border border-red-500/20 text-red-400'
+                    }`}>
+                      {callResult.success ? <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />}
+                      <p className="font-semibold">{callResult.message}</p>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleMakeCall} className="space-y-3.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Caller ID (From)
+                      </label>
+                      <select
+                        value={selectedFromNumber}
+                        onChange={(e) => setSelectedFromNumber(e.target.value)}
+                        className={`w-full px-3 py-2 rounded-xl text-xs border outline-none cursor-pointer ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-zinc-50 border-zinc-300 text-zinc-900'
+                        }`}
+                      >
+                        {phoneNumbers.map(p => (
+                          <option key={p.id} value={p.phoneNumber} className="bg-zinc-900 text-white">
+                            {p.friendlyName || p.phoneNumber}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Phone Number to Call (To)
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="+15551234567"
+                        value={callRecipient}
+                        onChange={(e) => setCallRecipient(e.target.value)}
+                        required
+                        className={`w-full px-3 py-2 rounded-xl text-xs border outline-none ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white focus:border-emerald-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-emerald-500'
+                        }`}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Voice Message (Text-to-Speech)
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={callMessage}
+                        onChange={(e) => setCallMessage(e.target.value)}
+                        placeholder="Hello, this is a call from GoldMailer..."
+                        required
+                        className={`w-full px-3 py-2 rounded-xl text-xs border outline-none resize-none ${
+                          darkMode ? 'bg-white/5 border-white/10 text-white focus:border-emerald-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-emerald-500'
+                        }`}
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isCalling}
+                      className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <PhoneCallIcon className="w-4 h-4" />
+                      <span>{isCalling ? 'Calling Now...' : 'Call Now via Twilio'}</span>
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              {/* Right Column: Call History & Voicemails */}
+              <div className="md:col-span-7">
+                <div className={`p-5 rounded-2xl border ${
+                  darkMode ? 'bg-[#18191e] border-white/10' : 'bg-white border-zinc-200 shadow-sm'
+                }`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold flex items-center gap-2">
+                      <Volume2 className="w-4 h-4 text-emerald-400" />
+                      <span>Call Logs & Voicemails</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-zinc-300 font-mono">
+                        {calls.length}
+                      </span>
+                    </h3>
+                  </div>
+
+                  {calls.length === 0 ? (
+                    <div className="text-center py-12 px-4">
+                      <PhoneIncoming className="w-10 h-10 mx-auto text-zinc-600 mb-2 stroke-[1.5]" />
+                      <p className="text-xs font-semibold text-zinc-400">No calls recorded yet</p>
+                      <p className="text-[11px] text-zinc-500 mt-1 max-w-xs mx-auto">
+                        Inbound calls to {activeNumber.phoneNumber} and outbound calls will appear here in real-time.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {calls.map((call) => {
+                        const isInbound = call.direction === 'inbound';
+                        return (
+                          <div
+                            key={call.id}
+                            className={`p-3.5 rounded-xl border transition-all ${
+                              darkMode ? 'bg-white/[0.03] border-white/5 hover:border-white/10' : 'bg-zinc-50 border-zinc-200 hover:border-zinc-300'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2.5">
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                                  isInbound ? 'bg-emerald-500/15 text-emerald-400' : 'bg-[#FF6A00]/15 text-[#FF6A00]'
+                                }`}>
+                                  {isInbound ? <PhoneIncoming className="w-4 h-4" /> : <PhoneOutgoing className="w-4 h-4" />}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-bold">
+                                      {isInbound ? `From: ${call.from}` : `To: ${call.to}`}
+                                    </span>
+                                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold uppercase ${
+                                      call.status === 'completed'
+                                        ? 'bg-emerald-500/15 text-emerald-400'
+                                        : 'bg-amber-500/15 text-amber-400'
+                                    }`}>
+                                      {call.status}
+                                    </span>
+                                    {call.durationSeconds !== undefined && call.durationSeconds > 0 && (
+                                      <span className="text-[10px] text-zinc-400 font-mono">
+                                        {call.durationSeconds}s
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-zinc-500 mt-0.5">
+                                    {new Date(call.startedAt).toLocaleString()} · SID: {call.callSid?.substring(0, 14)}...
+                                  </p>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteCall(call.id, e)}
+                                className="text-zinc-500 hover:text-red-400 transition-colors p-1"
+                                title="Delete call log"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            {/* Voicemail Audio Player if recordingUrl exists */}
+                            {call.recordingUrl && (
+                              <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-1.5">
+                                <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                                  <Volume2 className="w-3 h-3" />
+                                  <span>Voicemail Recording Available:</span>
+                                </span>
+                                <audio
+                                  controls
+                                  src={call.recordingUrl}
+                                  className="w-full h-8 rounded-lg"
+                                />
+                              </div>
+                            )}
+
+                            {call.sayMessage && !call.recordingUrl && (
+                              <p className="text-xs text-zinc-400 mt-2 bg-black/20 p-2 rounded-lg italic">
+                                "{call.sayMessage}"
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}

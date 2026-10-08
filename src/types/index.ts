@@ -209,3 +209,18 @@ export interface TwilioLogItem {
   errorMessage?: string | null;
 }
 
+export interface PhoneCall {
+  id: string;
+  userId?: string;
+  from: string;
+  to: string;
+  direction: 'inbound' | 'outbound';
+  status: 'completed' | 'in-progress' | 'ringing' | 'queued' | 'failed' | 'busy' | 'no-answer' | 'canceled';
+  durationSeconds?: number;
+  callSid?: string;
+  recordingUrl?: string;
+  sayMessage?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+

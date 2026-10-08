@@ -9,7 +9,8 @@ import {
   SMSMessage,
   UserPhoneNumber,
   AvailablePhoneNumber,
-  TwilioLogItem
+  TwilioLogItem,
+  PhoneCall
 } from '../types';
 
 // Helper: Normalize email messages
@@ -1117,6 +1118,38 @@ export async function markSmsAsRead(id: string): Promise<void> {
 
 export async function deleteSms(id: string): Promise<void> {
   await fetch(`/api/phone/sms/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
+
+export async function fetchPhoneCalls(): Promise<PhoneCall[]> {
+  try {
+    const res = await fetch('/api/phone/calls', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    return Array.isArray(data.calls) ? data.calls : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function makePhoneCall(payload: {
+  to: string;
+  from?: string;
+  message?: string;
+}): Promise<{ success: boolean; callSid?: string; call?: PhoneCall; error?: string }> {
+  const res = await fetch('/api/phone/call', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to place phone call');
+  return data;
+}
+
+export async function deletePhoneCall(id: string): Promise<void> {
+  await fetch(`/api/phone/calls/${id}`, {
     method: 'DELETE',
     headers: getHeaders()
   });
