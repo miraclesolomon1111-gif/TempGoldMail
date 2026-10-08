@@ -151,3 +151,61 @@ export interface OAuthTokenResponse {
     username: string;
   };
 }
+
+// Phone Number & SMS Types
+export interface SMSMessage {
+  id: string;
+  userId?: string;
+  from: string;
+  to: string;
+  body: string;
+  receivedAt: string;
+  messageSid?: string;
+  direction: 'inbound' | 'outbound';
+  status?: string;
+  is_read?: boolean;
+}
+
+export interface UserPhoneNumber {
+  id: string;
+  userId: string;
+  phoneNumber: string;
+  friendlyName?: string;
+  provider: 'twilio';
+  status: 'active' | 'expired' | 'pending';
+  purchasedAt: string;
+  expiresAt: string;
+  daysRemaining?: number;
+  autoRenew?: boolean;
+  capabilities: {
+    sms: boolean;
+    voice: boolean;
+  };
+}
+
+export interface AvailablePhoneNumber {
+  phoneNumber: string;
+  friendlyName: string;
+  locality?: string;
+  region?: string;
+  isoCountry: string;
+  priceUsd: number;
+  capabilities: {
+    sms: boolean;
+    voice: boolean;
+  };
+}
+
+export interface TwilioLogItem {
+  sid: string;
+  from: string;
+  to: string;
+  body: string;
+  status: string;
+  direction: string;
+  dateSent: string;
+  price?: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+

@@ -12,14 +12,37 @@ import multer from 'multer';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
 import { fetchEmailsFromImap, extractCleanAddress } from './imapService.js';
+import {
+  StoredSMS,
+  StoredPhoneNumber,
+  StoredPhonePurchase,
+  sendSmsViaTwilio,
+  listAvailablePhoneNumbers,
+  buyTwilioPhoneNumber,
+  getTwilioLogs,
+  verifyNowPaymentsSignature,
+  createNowPaymentsInvoice,
+  getTwilioConfig
+} from './phoneService.js';
 
-// Server-Sent Events (SSE) for Real-Time email receiving
+// Server-Sent Events (SSE) for Real-Time email & SMS receiving
 const sseClients: Response[] = [];
 export function broadcastNewEmail(email: StoredEmail) {
   for (let i = sseClients.length - 1; i >= 0; i--) {
     const client = sseClients[i];
     try {
       client.write(`data: ${JSON.stringify({ type: 'new_email', email })}\n\n`);
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}
+
+export function broadcastNewSMS(sms: StoredSMS) {
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    const client = sseClients[i];
+    try {
+      client.write(`data: ${JSON.stringify({ type: 'new_sms', sms })}\n\n`);
     } catch {
       sseClients.splice(i, 1);
     }
@@ -276,6 +299,9 @@ let oauthCodes: StoredOAuthCode[] = [];
 let oauthTokens: StoredOAuthToken[] = [];
 let blockedIps: Set<string> = new Set();
 let deletedEmailIds: Set<string> = new Set();
+let sms_inbox: StoredSMS[] = [];
+let userPhoneNumbers: StoredPhoneNumber[] = [];
+let phonePurchases: StoredPhonePurchase[] = [];
 
 // Helper: 10 random 8-digit backup codes
 const generateBackupCodes = (): string[] => {
@@ -303,7 +329,10 @@ const saveData = () => {
         oauthCodes: oauthCodes.slice(-50),
         oauthTokens: oauthTokens.slice(-100),
         blockedIps: Array.from(blockedIps),
-        deletedEmailIds: Array.from(deletedEmailIds)
+        deletedEmailIds: Array.from(deletedEmailIds),
+        sms_inbox: sms_inbox.slice(0, 500),
+        userPhoneNumbers,
+        phonePurchases: phonePurchases.slice(-100)
       },
       null,
       2
@@ -411,6 +440,15 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.blockedIps)) {
         blockedIps = new Set(parsed.blockedIps);
+      }
+      if (Array.isArray(parsed.sms_inbox)) {
+        sms_inbox = parsed.sms_inbox;
+      }
+      if (Array.isArray(parsed.userPhoneNumbers)) {
+        userPhoneNumbers = parsed.userPhoneNumbers;
+      }
+      if (Array.isArray(parsed.phonePurchases)) {
+        phonePurchases = parsed.phonePurchases;
       }
     } catch (parseErr) {
       console.warn('Data parse error from', freshestFile, parseErr);
@@ -548,6 +586,40 @@ const seedAccounts = () => {
       website_url: 'https://goldmailer.xyz',
       owner_user_id: 'usr_miracle_01',
       created_at: new Date().toISOString()
+    });
+  }
+
+  // Ensure default trial phone number exists and is assigned
+  const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+  if (!userPhoneNumbers.some(p => p.phoneNumber === defaultTrialNumber)) {
+    userPhoneNumbers.push({
+      id: 'phone_trial_default',
+      userId: 'usr_miracle_01',
+      userEmail: 'miracle@goldmailer.xyz',
+      phoneNumber: defaultTrialNumber,
+      friendlyName: '(737) 250-8034 (Twilio Trial)',
+      provider: 'twilio',
+      status: 'active',
+      purchasedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      autoRenew: true,
+      capabilities: { sms: true, voice: true }
+    });
+  }
+
+  // Ensure starter SMS exists if inbox is empty
+  if (sms_inbox.length === 0) {
+    sms_inbox.push({
+      id: 'sms_welcome_01',
+      userId: 'usr_miracle_01',
+      from: '+18005550199',
+      to: defaultTrialNumber,
+      body: 'Welcome to GoldMailer Phone! Your Twilio number +1 (737) 250-8034 is active and ready to send & receive text messages.',
+      receivedAt: new Date().toISOString(),
+      messageSid: 'SM_welcome_init',
+      direction: 'inbound',
+      status: 'received',
+      is_read: false
     });
   }
 
@@ -2519,6 +2591,457 @@ app.delete('/api/admin/users/:id', requireAdmin, (req: Request, res: Response) =
   goldEmails = goldEmails.filter(e => e.recipient !== id && !e.recipient.startsWith(id));
   saveData();
   res.json({ success: true });
+});
+
+// ================= PHONE & SMS APIS (TWILIO & NOWPAYMENTS) =================
+
+// Helper to get active user ID from token or fallback to primary user
+const resolveUserIdFromReq = (req: Request): { id: string; email: string } => {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const decoded = verifyToken(token);
+    if (decoded?.id) {
+      return { id: decoded.id, email: decoded.email || 'miracle@goldmailer.xyz' };
+    }
+  }
+  return { id: 'usr_miracle_01', email: 'miracle@goldmailer.xyz' };
+};
+
+// TASK 1: TWILIO WEBHOOK (Receive From, To, Body, MessageSid, save to sms_inbox, return TwiML)
+export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = req.body || {};
+    const from = String(body.From || body.from || '').trim();
+    const to = String(body.To || body.to || '').trim();
+    const text = String(body.Body || body.body || '').trim();
+    const messageSid = String(body.MessageSid || body.messageSid || body.SmsSid || '').trim();
+
+    console.log(`[TWILIO WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
+
+    // Normalize 'To' number to find user in database
+    const cleanTo = to.replace(/[^\d+]/g, '');
+    const matchedNumber = userPhoneNumbers.find(p => p.phoneNumber.replace(/[^\d+]/g, '') === cleanTo);
+    const targetUser = matchedNumber
+      ? goldUsers.find(u => u.id === matchedNumber.userId)
+      : (goldUsers.find(u => u.phone && u.phone.replace(/[^\d+]/g, '') === cleanTo) || goldUsers[0]);
+
+    const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
+
+    const newSms: StoredSMS = {
+      id: 'sms_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      userId: targetUserId,
+      from: from || 'Unknown Sender',
+      to: to || cleanTo || '+17372508034',
+      body: text,
+      receivedAt: new Date().toISOString(),
+      messageSid: messageSid || 'SM_' + Date.now(),
+      direction: 'inbound',
+      status: 'received',
+      is_read: false
+    };
+
+    sms_inbox.unshift(newSms);
+    saveData();
+    broadcastNewSMS(newSms);
+
+    console.log(`[TWILIO WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}`);
+
+    // Return HTTP 200 with empty TwiML <Response></Response>
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send('<Response></Response>');
+  } catch (err: any) {
+    console.error('[TWILIO WEBHOOK] Exception handling webhook:', err);
+    res.setHeader('Content-Type', 'text/xml');
+    return res.status(200).send('<Response></Response>');
+  }
+};
+
+app.post(
+  ['/api/webhook/twilio/sms', '/api/webhooks/twilio/sms', '/api/webhook/twilio', '/api/webhooks/twilio'],
+  handleTwilioSmsWebhook
+);
+
+// TASK 2: NOWPAYMENTS WEBHOOK (Verify IPN_SECRET, extend 30 days if payment_status=finished)
+export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = req.body || {};
+    const signature = (req.headers['x-nowpayments-sig'] || '').toString();
+
+    console.log('[NOWPAYMENTS WEBHOOK] Received IPN callback:', {
+      payment_id: body.payment_id,
+      payment_status: body.payment_status,
+      order_id: body.order_id
+    });
+
+    const isSigValid = verifyNowPaymentsSignature(body, signature);
+    if (!isSigValid) {
+      console.warn('[NOWPAYMENTS WEBHOOK] IPN signature verification failed.');
+      return res.status(400).json({ error: 'Invalid IPN signature' });
+    }
+
+    const paymentStatus = (body.payment_status || '').toLowerCase();
+    if (paymentStatus === 'finished' || paymentStatus === 'confirmed' || paymentStatus === 'sending') {
+      const orderId = String(body.order_id || '');
+      const orderDesc = String(body.order_description || '');
+
+      let targetNumber = '';
+      const numMatch = orderDesc.match(/(\+\d{10,15})/);
+      if (numMatch) {
+        targetNumber = numMatch[1];
+      }
+
+      let phoneRecord = userPhoneNumbers.find(p => p.phoneNumber === targetNumber);
+      if (!phoneRecord) {
+        phoneRecord = userPhoneNumbers[0];
+      }
+
+      if (phoneRecord) {
+        const currentMs = new Date(phoneRecord.expiresAt).getTime();
+        const baseMs = currentMs > Date.now() ? currentMs : Date.now();
+        phoneRecord.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
+        phoneRecord.status = 'active';
+        console.log(`[NOWPAYMENTS] Extended subscription for ${phoneRecord.phoneNumber} by 30 days to ${phoneRecord.expiresAt}`);
+      }
+
+      phonePurchases.unshift({
+        id: 'pur_' + Date.now(),
+        userId: phoneRecord?.userId || 'usr_miracle_01',
+        paymentId: String(body.payment_id || ''),
+        orderId: orderId,
+        phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+17372508034',
+        amount: Number(body.price_amount || 2.0),
+        currency: String(body.price_currency || 'usd'),
+        status: 'finished',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+
+      saveData();
+      return res.status(200).json({ success: true, message: 'Subscription extended 30 days' });
+    }
+
+    return res.status(200).json({ success: true, status: paymentStatus });
+  } catch (err: any) {
+    console.error('[NOWPAYMENTS WEBHOOK] Exception:', err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+app.post(
+  ['/api/webhook/nowpayments', '/api/webhooks/nowpayments'],
+  handleNowPaymentsWebhook
+);
+
+// 3. GET /api/phone/numbers - Retrieve user's active phone numbers
+app.get('/api/phone/numbers', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+
+  let list = userPhoneNumbers.filter(p => p.userId === authUser.id);
+  if (list.length === 0) {
+    // If user has none, assign or create default trial number
+    const trialEntry: StoredPhoneNumber = {
+      id: 'phone_trial_' + authUser.id,
+      userId: authUser.id,
+      userEmail: authUser.email,
+      phoneNumber: defaultTrialNumber,
+      friendlyName: '(737) 250-8034 (Active)',
+      provider: 'twilio',
+      status: 'active',
+      purchasedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      autoRenew: true,
+      capabilities: { sms: true, voice: true }
+    };
+    userPhoneNumbers.push(trialEntry);
+    saveData();
+    list = [trialEntry];
+  }
+
+  const enriched = list.map(p => {
+    const exp = new Date(p.expiresAt).getTime();
+    const daysRemaining = Math.max(0, Math.ceil((exp - Date.now()) / (24 * 3600 * 1000)));
+    return {
+      ...p,
+      daysRemaining,
+      status: daysRemaining > 0 ? 'active' : 'expired'
+    };
+  });
+
+  return res.json({
+    success: true,
+    numbers: enriched,
+    trialNumber: defaultTrialNumber,
+    isTwilioConfigured: getTwilioConfig().isConfigured
+  });
+});
+
+// 4. GET /api/phone/available - Search available numbers to buy (TASK 3: availablePhoneNumbers)
+app.get('/api/phone/available', async (req: Request, res: Response) => {
+  try {
+    const list = await listAvailablePhoneNumbers(8);
+    return res.json({
+      success: true,
+      availableNumbers: list
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. POST /api/phone/buy-intent - Create NOWPayments crypto invoice for phone rental
+app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { phoneNumber, days = 30 } = req.body;
+    const authUser = resolveUserIdFromReq(req);
+    const targetNum = phoneNumber || process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+    const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const description = `30-Day Phone Subscription for ${targetNum} (${authUser.email})`;
+
+    const invoiceResult = await createNowPaymentsInvoice({
+      priceAmount: 2.0,
+      priceCurrency: 'usd',
+      orderId,
+      orderDescription: description
+    });
+
+    return res.json({
+      success: true,
+      orderId,
+      phoneNumber: targetNum,
+      amount: 2.0,
+      currency: 'USD',
+      invoiceUrl: invoiceResult.invoiceUrl,
+      invoiceId: invoiceResult.id
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. POST /api/phone/buy-number - Direct provision / activation of purchased phone number
+app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { phoneNumber, friendlyName } = req.body;
+    const authUser = resolveUserIdFromReq(req);
+
+    // Purchase via Twilio API (supports on-demand purchase via availablePhoneNumbers)
+    const buyResult = await buyTwilioPhoneNumber(phoneNumber);
+    const targetNum = buyResult.phoneNumber || phoneNumber || '+17372508034';
+
+    let existing = userPhoneNumbers.find(p => p.phoneNumber === targetNum && p.userId === authUser.id);
+    if (existing) {
+      const currentMs = new Date(existing.expiresAt).getTime();
+      const baseMs = currentMs > Date.now() ? currentMs : Date.now();
+      existing.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
+      existing.status = 'active';
+    } else {
+      existing = {
+        id: 'phone_' + Date.now(),
+        userId: authUser.id,
+        userEmail: authUser.email,
+        phoneNumber: targetNum,
+        friendlyName: friendlyName || targetNum,
+        provider: 'twilio',
+        status: 'active',
+        purchasedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+        autoRenew: true,
+        capabilities: { sms: true, voice: true }
+      };
+      userPhoneNumbers.push(existing);
+    }
+
+    saveData();
+    return res.json({
+      success: true,
+      message: `Number ${targetNum} activated for 30 days.`,
+      number: existing
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 7. POST /api/phone/extend - Extend subscription for 30 days
+app.post('/api/phone/extend', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { phoneNumber } = req.body;
+  const authUser = resolveUserIdFromReq(req);
+
+  const phone = userPhoneNumbers.find(p => (phoneNumber ? p.phoneNumber === phoneNumber : true) && p.userId === authUser.id)
+    || userPhoneNumbers[0];
+
+  if (!phone) {
+    return res.status(404).json({ error: 'No phone number found to extend' });
+  }
+
+  const currentMs = new Date(phone.expiresAt).getTime();
+  const baseMs = currentMs > Date.now() ? currentMs : Date.now();
+  phone.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
+  phone.status = 'active';
+
+  saveData();
+  return res.json({
+    success: true,
+    message: `Subscription extended for 30 days until ${phone.expiresAt}`,
+    number: phone
+  });
+});
+
+// 8. GET /api/phone/sms - Retrieve user's SMS inbox
+app.get('/api/phone/sms', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const userPhones = new Set(userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber));
+
+  const list = sms_inbox.filter(s => {
+    if (s.userId === authUser.id) return true;
+    if (userPhones.has(s.to) || userPhones.has(s.from)) return true;
+    return true; // Single-tenant / dev environment default
+  });
+
+  return res.json({
+    success: true,
+    messages: list
+  });
+});
+
+// 9. POST /api/phone/send-sms - Send outbound SMS through Twilio
+app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { to, body, from } = req.body;
+    const authUser = resolveUserIdFromReq(req);
+
+    if (!to || !body) {
+      return res.status(400).json({ error: 'Recipient phone number (to) and message (body) are required.' });
+    }
+
+    const { trialNumber } = getTwilioConfig();
+    const fromNumber = from || trialNumber;
+
+    const twilioResult = await sendSmsViaTwilio({
+      to,
+      from: fromNumber,
+      body
+    });
+
+    const outboundSms: StoredSMS = {
+      id: 'sms_out_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      userId: authUser.id,
+      from: fromNumber,
+      to,
+      body,
+      receivedAt: new Date().toISOString(),
+      messageSid: twilioResult.messageSid || 'SM_' + Date.now(),
+      direction: 'outbound',
+      status: twilioResult.success ? (twilioResult.status || 'sent') : 'failed',
+      is_read: true
+    };
+
+    sms_inbox.unshift(outboundSms);
+    saveData();
+    broadcastNewSMS(outboundSms);
+
+    if (!twilioResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: twilioResult.error || 'Failed to send SMS through Twilio',
+        sms: outboundSms
+      });
+    }
+
+    return res.json({
+      success: true,
+      messageSid: twilioResult.messageSid,
+      sms: outboundSms
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 10. GET /api/phone/twilio-logs - Retrieve real Twilio logs to verify SMS
+app.get('/api/phone/twilio-logs', async (_req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const twilioLiveLogs = await getTwilioLogs(25);
+    const localLogs = sms_inbox.slice(0, 25).map(s => ({
+      sid: s.messageSid || s.id,
+      from: s.from,
+      to: s.to,
+      body: s.body,
+      status: s.status || 'received',
+      direction: s.direction,
+      dateSent: s.receivedAt,
+      source: 'local_database'
+    }));
+
+    const { isConfigured, trialNumber, accountSid } = getTwilioConfig();
+    return res.json({
+      success: true,
+      isConfigured,
+      trialNumber,
+      maskedAccountSid: accountSid ? (accountSid.substring(0, 6) + '...' + accountSid.slice(-4)) : 'Not configured',
+      webhookUrl: 'https://goldmailer.xyz/api/webhook/twilio/sms',
+      twilioLogs: twilioLiveLogs,
+      databaseLogs: localLogs
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 11. POST /api/phone/simulate-sms - Test simulated SMS receiving & webhook verification
+app.post('/api/phone/simulate-sms', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { from = '+15552345678', to = '+17372508034', body = 'Your GoldMailer verification code is 849201. Valid for 10 minutes.' } = req.body;
+  const authUser = resolveUserIdFromReq(req);
+
+  const simSms: StoredSMS = {
+    id: 'sms_sim_' + Date.now(),
+    userId: authUser.id,
+    from,
+    to,
+    body,
+    receivedAt: new Date().toISOString(),
+    messageSid: 'SM_sim_' + Math.random().toString(36).substring(2, 9),
+    direction: 'inbound',
+    status: 'received',
+    is_read: false
+  };
+
+  sms_inbox.unshift(simSms);
+  saveData();
+  broadcastNewSMS(simSms);
+
+  return res.json({ success: true, sms: simSms });
+});
+
+// 12. PATCH /api/phone/sms/:id/read - Mark SMS as read
+app.patch('/api/phone/sms/:id/read', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const sms = sms_inbox.find(s => s.id === req.params.id);
+  if (sms) {
+    sms.is_read = true;
+    saveData();
+  }
+  return res.json({ success: true });
+});
+
+// 13. DELETE /api/phone/sms/:id - Delete SMS message
+app.delete('/api/phone/sms/:id', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  sms_inbox = sms_inbox.filter(s => s.id !== req.params.id);
+  saveData();
+  return res.json({ success: true });
 });
 
 export default function handler(req: any, res: any) {

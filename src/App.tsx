@@ -38,6 +38,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { AccountSwitcherSheet } from './components/AccountSwitcherSheet';
 import { HeroLegalPage } from './components/HeroLegalPage';
+import { PhoneHubView } from './components/PhoneHubView';
+import { Phone, Mail } from 'lucide-react';
 
 export default function App() {
   // Theme State
@@ -70,6 +72,28 @@ export default function App() {
     return getStoredUser() ? 'app' : 'hero';
   });
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
+
+  // Main Section Navigation: 'email' (Mailbox) or 'phone' (Phone Numbers & SMS Hub)
+  const [mainTab, setMainTab] = useState<'email' | 'phone'>(() => {
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('phone')) {
+      return 'phone';
+    }
+    return 'email';
+  });
+
+  useEffect(() => {
+    const handleHashSync = () => {
+      const hash = window.location.hash.toLowerCase();
+      if (hash.includes('phone')) {
+        setMainTab('phone');
+      } else if (hash.includes('email') || hash.includes('mail') || hash.includes('inbox')) {
+        setMainTab('email');
+      }
+    };
+    handleHashSync();
+    window.addEventListener('hashchange', handleHashSync);
+    return () => window.removeEventListener('hashchange', handleHashSync);
+  }, []);
 
   // Sync client accounts on mount
   useEffect(() => {
@@ -677,7 +701,7 @@ export default function App() {
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
           />
 
-          {/* Desktop Sidebar + Mail List Layout */}
+          {/* Desktop Sidebar + Content Layout */}
           <div className="flex-1 flex min-h-0 overflow-hidden">
             {/* Desktop Persistent Sidebar */}
             <GmailSidebar
@@ -689,38 +713,126 @@ export default function App() {
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
               darkMode={darkMode}
+              activeTab={mainTab}
+              onOpenPhone={() => {
+                setMainTab('phone');
+                window.location.hash = '#phone';
+              }}
+              onOpenEmail={() => {
+                setMainTab('email');
+                window.location.hash = '#email';
+              }}
             />
 
-            {/* Mail List & Inbox */}
-            <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              <EmailListView
-                currentFolder={currentFolder}
-                emails={filteredEmails}
-                drafts={drafts}
-                activeEmail={activeEmail}
-                isLoading={isLoadingEmails}
-                isRefreshing={isSyncing}
-                onRefresh={handleSyncEmails}
-                onSelectEmail={(m) => setSelectedEmail(m)}
-                onSelectDraft={handleSelectDraft}
-                onDeleteDraft={handleDeleteDraft}
-                onToggleStar={handleToggleStar}
-                onOpenCompose={handleOpenCompose}
-                isCopied={isCopied}
-                onCopyEmail={handleCopyEmail}
-                darkMode={darkMode}
-                onSelectFolder={(folder) => setCurrentFolder(folder)}
-                unreadCounts={unreadCounts}
-                onMoveToTrash={handleMoveToTrash}
-                onDeletePermanently={handleDeleteEmail}
-                onRestoreEmail={handleRestoreEmail}
-                onBatchMoveToTrash={handleBatchMoveToTrash}
-                onBatchDeletePermanently={handleBatchDeletePermanently}
-                onBatchRestore={handleBatchRestore}
-                onEmptyTrash={handleEmptyTrash}
-              />
-            </main>
+            {/* Main Content Area: Phone Hub or Email Inbox */}
+            {mainTab === 'phone' ? (
+              <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+                <PhoneHubView
+                  user={user}
+                  darkMode={darkMode}
+                  onOpenEmail={() => {
+                    setMainTab('email');
+                    window.location.hash = '#email';
+                  }}
+                />
+              </main>
+            ) : (
+              <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <EmailListView
+                  currentFolder={currentFolder}
+                  emails={filteredEmails}
+                  drafts={drafts}
+                  activeEmail={activeEmail}
+                  isLoading={isLoadingEmails}
+                  isRefreshing={isSyncing}
+                  onRefresh={handleSyncEmails}
+                  onSelectEmail={(m) => setSelectedEmail(m)}
+                  onSelectDraft={handleSelectDraft}
+                  onDeleteDraft={handleDeleteDraft}
+                  onToggleStar={handleToggleStar}
+                  onOpenCompose={handleOpenCompose}
+                  isCopied={isCopied}
+                  onCopyEmail={handleCopyEmail}
+                  darkMode={darkMode}
+                  onSelectFolder={(folder) => setCurrentFolder(folder)}
+                  unreadCounts={unreadCounts}
+                  onMoveToTrash={handleMoveToTrash}
+                  onDeletePermanently={handleDeleteEmail}
+                  onRestoreEmail={handleRestoreEmail}
+                  onBatchMoveToTrash={handleBatchMoveToTrash}
+                  onBatchDeletePermanently={handleBatchDeletePermanently}
+                  onBatchRestore={handleBatchRestore}
+                  onEmptyTrash={handleEmptyTrash}
+                />
+              </main>
+            )}
           </div>
+
+          {/* Down-side Navigation Bar (Email & Phone Tabs) */}
+          <nav
+            aria-label="Downside Navigation"
+            className={`sticky bottom-0 z-30 w-full border-t transition-colors ${
+              darkMode
+                ? 'bg-[#151619]/95 border-white/10 backdrop-blur-md'
+                : 'bg-white/95 border-orange-200/60 backdrop-blur-md shadow-[0_-4px_16px_rgba(0,0,0,0.04)]'
+            }`}
+          >
+            <div className="max-w-md mx-auto px-6 py-2 flex items-center justify-around">
+              {/* Email Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setMainTab('email');
+                  window.location.hash = '#email';
+                }}
+                className={`flex flex-col items-center gap-1 px-6 py-1.5 rounded-2xl transition-all cursor-pointer relative ${
+                  mainTab === 'email'
+                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-sm'
+                    : darkMode
+                      ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+                      : 'text-zinc-600 hover:text-zinc-900 hover:bg-orange-50'
+                }`}
+              >
+                <div className="relative">
+                  <Mail className="w-5 h-5 stroke-[2.2]" />
+                  {unreadCounts.primary > 0 && (
+                    <span className="absolute -top-1 -right-2.5 bg-[#FF6A00] text-white text-[10px] font-black px-1.5 min-w-[17px] h-4 rounded-full flex items-center justify-center shadow-xs">
+                      {unreadCounts.primary > 99 ? '99+' : unreadCounts.primary}
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] font-medium tracking-wide">Email</span>
+                {mainTab === 'email' && (
+                  <span className="w-5 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
+                )}
+              </button>
+
+              {/* Phone Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setMainTab('phone');
+                  window.location.hash = '#phone';
+                }}
+                className={`flex flex-col items-center gap-1 px-6 py-1.5 rounded-2xl transition-all cursor-pointer relative ${
+                  mainTab === 'phone'
+                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-sm'
+                    : darkMode
+                      ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+                      : 'text-zinc-600 hover:text-zinc-900 hover:bg-orange-50'
+                }`}
+              >
+                <div className="relative">
+                  <Phone className="w-5 h-5 stroke-[2.2]" />
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#151619] animate-pulse" />
+                </div>
+                <span className="text-[11px] font-medium tracking-wide">Phone & SMS</span>
+                {mainTab === 'phone' && (
+                  <span className="w-5 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
+                )}
+              </button>
+            </div>
+          </nav>
 
           {/* Drawer Sidebar */}
           <GmailDrawer
@@ -740,6 +852,15 @@ export default function App() {
             }}
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
             darkMode={darkMode}
+            activeTab={mainTab}
+            onOpenPhone={() => {
+              setMainTab('phone');
+              window.location.hash = '#phone';
+            }}
+            onOpenEmail={() => {
+              setMainTab('email');
+              window.location.hash = '#email';
+            }}
           />
         </div>
       )}

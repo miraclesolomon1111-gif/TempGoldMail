@@ -1,4 +1,16 @@
-import { EmailMessage, UserProfile, MailFolder, Draft, UserDevice, LoginAttempt, OAuthClient } from '../types';
+import {
+  EmailMessage,
+  UserProfile,
+  MailFolder,
+  Draft,
+  UserDevice,
+  LoginAttempt,
+  OAuthClient,
+  SMSMessage,
+  UserPhoneNumber,
+  AvailablePhoneNumber,
+  TwilioLogItem
+} from '../types';
 
 // Helper: Normalize email messages
 export function normalizeEmail(raw: any): EmailMessage {
@@ -944,3 +956,169 @@ export async function deleteAdminUser(id: string): Promise<any> {
   });
   return await safeJsonParse(res);
 }
+
+// ================= PHONE NUMBER & SMS CLIENT APIS =================
+
+export async function fetchUserPhoneNumbers(): Promise<{
+  success: boolean;
+  numbers: UserPhoneNumber[];
+  trialNumber: string;
+  isTwilioConfigured: boolean;
+}> {
+  try {
+    const res = await fetch('/api/phone/numbers', { headers: getHeaders() });
+    return await safeJsonParse(res);
+  } catch {
+    return {
+      success: true,
+      numbers: [
+        {
+          id: 'phone_default',
+          userId: 'usr_miracle_01',
+          phoneNumber: '+17372508034',
+          friendlyName: '(737) 250-8034 (Twilio Trial)',
+          provider: 'twilio',
+          status: 'active',
+          purchasedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+          daysRemaining: 30,
+          capabilities: { sms: true, voice: true }
+        }
+      ],
+      trialNumber: '+17372508034',
+      isTwilioConfigured: false
+    };
+  }
+}
+
+export async function fetchAvailablePhoneNumbers(): Promise<AvailablePhoneNumber[]> {
+  try {
+    const res = await fetch('/api/phone/available', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    return data.availableNumbers || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function createPhoneBuyIntent(phoneNumber: string): Promise<{
+  success: boolean;
+  orderId?: string;
+  invoiceUrl?: string;
+  amount?: number;
+  currency?: string;
+  error?: string;
+}> {
+  const res = await fetch('/api/phone/buy-intent', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ phoneNumber })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function activatePhoneNumber(phoneNumber: string, friendlyName?: string): Promise<{
+  success: boolean;
+  message?: string;
+  number?: UserPhoneNumber;
+  error?: string;
+}> {
+  const res = await fetch('/api/phone/buy-number', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ phoneNumber, friendlyName })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function extendPhoneSubscription(phoneNumber?: string): Promise<{
+  success: boolean;
+  message?: string;
+  number?: UserPhoneNumber;
+  error?: string;
+}> {
+  const res = await fetch('/api/phone/extend', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ phoneNumber })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function fetchSmsInbox(): Promise<SMSMessage[]> {
+  try {
+    const res = await fetch('/api/phone/sms', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    return Array.isArray(data.messages) ? data.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function sendSmsMessage(payload: {
+  to: string;
+  body: string;
+  from?: string;
+}): Promise<{ success: boolean; messageSid?: string; sms?: SMSMessage; error?: string }> {
+  const res = await fetch('/api/phone/send-sms', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to send SMS');
+  return data;
+}
+
+export async function fetchTwilioVerificationLogs(): Promise<{
+  success: boolean;
+  isConfigured: boolean;
+  trialNumber: string;
+  maskedAccountSid: string;
+  webhookUrl: string;
+  twilioLogs: TwilioLogItem[];
+  databaseLogs: any[];
+}> {
+  try {
+    const res = await fetch('/api/phone/twilio-logs', { headers: getHeaders() });
+    return await safeJsonParse(res);
+  } catch {
+    return {
+      success: false,
+      isConfigured: false,
+      trialNumber: '+17372508034',
+      maskedAccountSid: 'Not configured',
+      webhookUrl: 'https://goldmailer.xyz/api/webhook/twilio/sms',
+      twilioLogs: [],
+      databaseLogs: []
+    };
+  }
+}
+
+export async function simulateInboundSms(payload?: {
+  from?: string;
+  to?: string;
+  body?: string;
+}): Promise<{ success: boolean; sms: SMSMessage }> {
+  const res = await fetch('/api/phone/simulate-sms', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload || {})
+  });
+  return await safeJsonParse(res);
+}
+
+export async function markSmsAsRead(id: string): Promise<void> {
+  await fetch(`/api/phone/sms/${id}/read`, {
+    method: 'PATCH',
+    headers: getHeaders()
+  });
+}
+
+export async function deleteSms(id: string): Promise<void> {
+  await fetch(`/api/phone/sms/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
+

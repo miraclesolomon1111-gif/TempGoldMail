@@ -15,7 +15,8 @@ import {
   Settings,
   HelpCircle,
   HardDrive,
-  Code2
+  Code2,
+  Phone
 } from 'lucide-react';
 import { MailFolder, UserProfile } from '../types';
 
@@ -28,6 +29,9 @@ interface GmailSidebarProps {
   onOpenSettings: () => void;
   onOpenOAuthDev: () => void;
   darkMode: boolean;
+  activeTab?: 'email' | 'phone';
+  onOpenPhone?: () => void;
+  onOpenEmail?: () => void;
 }
 
 export const GmailSidebar: React.FC<GmailSidebarProps> = ({
@@ -38,9 +42,12 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
   onOpenCompose,
   onOpenSettings,
   onOpenOAuthDev,
-  darkMode
+  darkMode,
+  activeTab = 'email',
+  onOpenPhone,
+  onOpenEmail
 }) => {
-  const isSelected = (folder: string) => currentFolder === folder;
+  const isSelected = (folder: string) => activeTab === 'email' && currentFolder === folder;
 
   const renderNavButton = (
     id: MailFolder | 'all_inboxes',
@@ -52,7 +59,10 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
     return (
       <button
         type="button"
-        onClick={() => onSelectFolder(id)}
+        onClick={() => {
+          if (onOpenEmail) onOpenEmail();
+          onSelectFolder(id);
+        }}
         className={`w-full flex items-center justify-between px-4 py-2.5 text-left transition-all text-xs font-medium rounded-r-full mr-2 cursor-pointer ${
           active
             ? 'bg-[#FF6A00]/20 text-[#FF8C42] border-l-4 border-[#FF6A00] pl-3.5 font-bold shadow-sm'
@@ -99,6 +109,37 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
           <span>Compose</span>
         </button>
       </div>
+
+      {/* Phone & SMS Dedicated Navigation Button */}
+      {onOpenPhone && (
+        <div className="px-3 pb-1">
+          <button
+            type="button"
+            onClick={onOpenPhone}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+              activeTab === 'phone'
+                ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md shadow-[#FF6A00]/20'
+                : darkMode
+                  ? 'bg-white/5 text-zinc-200 hover:bg-white/10 border border-white/5'
+                  : 'bg-orange-50 text-orange-950 hover:bg-orange-100 border border-orange-200/60'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Phone className={`w-4 h-4 ${activeTab === 'phone' ? 'text-white' : 'text-[#FF6A00]'}`} />
+              <span>Phone & SMS</span>
+            </div>
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+                activeTab === 'phone'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold'
+              }`}
+            >
+              Active
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Navigation Folders List */}
       <div className="flex-1 overflow-y-auto py-2 space-y-0.5 pr-2">

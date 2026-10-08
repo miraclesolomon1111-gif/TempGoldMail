@@ -19,7 +19,8 @@ import {
   Sparkles,
   HardDrive,
   Code2,
-  KeyRound
+  KeyRound,
+  Phone
 } from 'lucide-react';
 import { MailFolder, UserProfile } from '../types';
 
@@ -37,6 +38,9 @@ interface GmailDrawerProps {
   onOpenHeroPage?: (section?: 'hero' | 'terms' | 'privacy') => void;
   onOpenOAuthDev: () => void;
   darkMode: boolean;
+  activeTab?: 'email' | 'phone';
+  onOpenPhone?: () => void;
+  onOpenEmail?: () => void;
 }
 
 export const GmailDrawer: React.FC<GmailDrawerProps> = ({
@@ -52,16 +56,20 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
   onOpenAdmin,
   onOpenHeroPage,
   onOpenOAuthDev,
-  darkMode
+  darkMode,
+  activeTab = 'email',
+  onOpenPhone,
+  onOpenEmail
 }) => {
   if (!isOpen) return null;
 
   const handleItemClick = (folder: MailFolder | 'all_inboxes') => {
+    if (onOpenEmail) onOpenEmail();
     onSelectFolder(folder);
     onClose();
   };
 
-  const isSelected = (folder: string) => currentFolder === folder;
+  const isSelected = (folder: string) => activeTab === 'email' && currentFolder === folder;
 
   const renderNavButton = (
     id: MailFolder | 'all_inboxes',
@@ -125,18 +133,41 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
         </div>
 
         {/* Compose Button */}
-        <div className="px-4 py-2">
+        <div className="px-4 py-2 space-y-2">
           <button
             type="button"
             onClick={() => {
               onOpenCompose();
               onClose();
             }}
-            className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center justify-center gap-2"
+            className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Compose Email</span>
           </button>
+
+          {onOpenPhone && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenPhone();
+                onClose();
+              }}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'phone'
+                  ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-md'
+                  : 'bg-white/5 text-zinc-200 hover:bg-white/10 border border-white/5'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Phone className={`w-4 h-4 ${activeTab === 'phone' ? 'text-white' : 'text-[#FF6A00]'}`} />
+                <span>Phone & SMS Hub</span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold">
+                Active
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Scrollable folder list */}
