@@ -62,7 +62,7 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             </div>
           </div>
 
-          {/* Section Navigation Tabs */}
+          {/* Section Navigation Tabs (Desktop) */}
           <div className="hidden md:flex items-center space-x-1 p-1 bg-white/5 rounded-2xl border border-white/10 text-xs font-semibold">
             <button
               onClick={() => setActiveTab('hero')}
@@ -90,8 +90,36 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             </button>
           </div>
 
+          {/* Section Navigation Tabs (Mobile) */}
+          <div className="flex md:hidden items-center space-x-1 p-0.5 bg-white/5 rounded-xl border border-white/10 text-[11px] font-semibold">
+            <button
+              onClick={() => setActiveTab('hero')}
+              className={`px-2 py-1 rounded-lg transition-all ${
+                activeTab === 'hero' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400'
+              }`}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => setActiveTab('terms')}
+              className={`px-2 py-1 rounded-lg transition-all ${
+                activeTab === 'terms' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400'
+              }`}
+            >
+              Terms
+            </button>
+            <button
+              onClick={() => setActiveTab('privacy')}
+              className={`px-2 py-1 rounded-lg transition-all ${
+                activeTab === 'privacy' ? 'bg-[#FF6A00] text-white shadow' : 'text-zinc-400'
+              }`}
+            >
+              Privacy
+            </button>
+          </div>
+
           {/* Actions: Theme Toggle + Login + Get Started */}
-          <div className="flex items-center space-x-2.5">
+          <div className="flex items-center space-x-2">
             <button
               type="button"
               onClick={onToggleDarkMode}
@@ -104,17 +132,19 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             <button
               type="button"
               onClick={onOpenLogin}
-              className="px-3.5 py-2 rounded-xl border border-[#FF6A00]/30 hover:border-[#FF6A00] text-xs font-bold transition-all text-[#FF8C42] hover:bg-[#FF6A00]/10 cursor-pointer"
+              className="px-2.5 sm:px-3.5 py-2 rounded-xl border border-[#FF6A00]/30 hover:border-[#FF6A00] text-xs font-bold transition-all text-[#FF8C42] hover:bg-[#FF6A00]/10 cursor-pointer whitespace-nowrap"
             >
-              Log into your GoldMailer Account
+              <span className="hidden sm:inline">Log into your GoldMailer Account</span>
+              <span className="sm:hidden">Sign In</span>
             </button>
 
             <button
               type="button"
               onClick={onOpenRegister}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center gap-1.5 cursor-pointer"
+              className="px-3 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-xs shadow-lg shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              <span>Create Account</span>
+              <span className="hidden sm:inline">Create Account</span>
+              <span className="sm:hidden">Register</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>

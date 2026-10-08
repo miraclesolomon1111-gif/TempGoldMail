@@ -149,6 +149,7 @@ export function getStoredAccounts(): StoredAccount[] {
 
 export function saveStoredAccounts(accounts: StoredAccount[]): void {
   localStorage.setItem('goldmailer_multi_accounts', JSON.stringify(accounts));
+  syncClientAccounts();
 }
 
 export function addStoredAccount(account: StoredAccount): void {
@@ -193,9 +194,24 @@ export function switchActiveAccount(email: string): StoredAccount | null {
   return null;
 }
 
+// Sync accounts that exist in localStorage to the backend to ensure they are never lost
+export async function syncClientAccounts(): Promise<void> {
+  try {
+    const accounts = getStoredAccounts();
+    if (accounts.length > 0) {
+      await fetch('/api/auth/sync-client-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts })
+      });
+    }
+  } catch {}
+}
+
 // Auto-initialize session only if token exists
 export async function initDefaultSession(): Promise<UserProfile | null> {
   try {
+    syncClientAccounts();
     const token = getAuthToken();
     if (token) {
       return await fetchCurrentUser();
@@ -371,10 +387,14 @@ export async function loginGoldUser(credentials: {
   totp_code?: string;
   backup_code?: string;
 }): Promise<any> {
+  const clientAccounts = getStoredAccounts();
   const res = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(credentials)
+    body: JSON.stringify({
+      ...credentials,
+      client_accounts: clientAccounts
+    })
   });
   const data = await safeJsonParse(res);
   if (!res.ok) {

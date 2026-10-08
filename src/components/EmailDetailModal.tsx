@@ -135,7 +135,9 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
       <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 max-w-4xl mx-auto w-full space-y-6">
         {/* Subject Header */}
         <div className="flex items-start justify-between gap-4">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white leading-snug">
+          <h1 className={`text-xl sm:text-2xl font-bold tracking-tight leading-snug ${
+            darkMode ? 'text-white' : 'text-zinc-900'
+          }`}>
             {email.subject || '(No Subject)'}
           </h1>
           <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#FF6A00]/15 text-[#FF8C42] border border-[#FF6A00]/30 uppercase tracking-wider flex-shrink-0">
@@ -151,7 +153,9 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
 
           <div className="flex-1 min-w-0">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-bold text-sm text-white truncate">
+              <span className={`font-bold text-sm truncate ${
+                darkMode ? 'text-white' : 'text-zinc-900'
+              }`}>
                 {email.sender_name || email.sender}
               </span>
               <span className="text-xs text-zinc-400 font-mono flex-shrink-0">

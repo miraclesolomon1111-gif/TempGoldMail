@@ -1,6 +1,6 @@
 {
-  "name": "GoldMailer - Fast, Secure Permanent Email",
-  "description": "Fast, secure email for everyone on goldmailer.xyz with 15GB storage, 2-step verification, Gmail-style glass orange interface, and OAuth 2.0 provider.",
+  "name": "TempGoldMail",
+  "description": "Fast, secure permanent email with 15GB storage, 2-step verification, multi-account manager, and Gmail-style experience.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

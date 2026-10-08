@@ -16,10 +16,12 @@ import {
   fetchDrafts,
   deleteDraft,
   updateEmailStatus,
-  deleteEmail
+  deleteEmail,
+  syncClientAccounts
 } from './lib/api';
 
 import { GmailHeader } from './components/GmailHeader';
+import { GmailSidebar } from './components/GmailSidebar';
 import { GmailDrawer } from './components/GmailDrawer';
 import { EmailListView } from './components/EmailListView';
 import { EmailDetailModal } from './components/EmailDetailModal';
@@ -65,6 +67,11 @@ export default function App() {
     return getStoredUser() ? 'app' : 'hero';
   });
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
+
+  // Sync client accounts on mount
+  useEffect(() => {
+    syncClientAccounts();
+  }, []);
 
   // Mailbox State: initialize with cached emails so emails never flash or disappear on load
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
@@ -598,26 +605,43 @@ export default function App() {
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
           />
 
-          {/* Mail List & Inbox */}
-          <main className="flex-1 flex flex-col min-h-0">
-            <EmailListView
+          {/* Desktop Sidebar + Mail List Layout */}
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            {/* Desktop Persistent Sidebar */}
+            <GmailSidebar
               currentFolder={currentFolder}
-              emails={filteredEmails}
-              drafts={drafts}
-              activeEmail={activeEmail}
-              isLoading={isLoadingEmails}
-              isRefreshing={isSyncing}
-              onRefresh={handleSyncEmails}
-              onSelectEmail={(m) => setSelectedEmail(m)}
-              onSelectDraft={handleSelectDraft}
-              onDeleteDraft={handleDeleteDraft}
-              onToggleStar={handleToggleStar}
+              onSelectFolder={(folder) => setCurrentFolder(folder)}
+              unreadCounts={unreadCounts}
+              user={user}
               onOpenCompose={handleOpenCompose}
-              isCopied={isCopied}
-              onCopyEmail={handleCopyEmail}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
               darkMode={darkMode}
             />
-          </main>
+
+            {/* Mail List & Inbox */}
+            <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <EmailListView
+                currentFolder={currentFolder}
+                emails={filteredEmails}
+                drafts={drafts}
+                activeEmail={activeEmail}
+                isLoading={isLoadingEmails}
+                isRefreshing={isSyncing}
+                onRefresh={handleSyncEmails}
+                onSelectEmail={(m) => setSelectedEmail(m)}
+                onSelectDraft={handleSelectDraft}
+                onDeleteDraft={handleDeleteDraft}
+                onToggleStar={handleToggleStar}
+                onOpenCompose={handleOpenCompose}
+                isCopied={isCopied}
+                onCopyEmail={handleCopyEmail}
+                darkMode={darkMode}
+                onSelectFolder={(folder) => setCurrentFolder(folder)}
+                unreadCounts={unreadCounts}
+              />
+            </main>
+          </div>
 
           {/* Drawer Sidebar */}
           <GmailDrawer

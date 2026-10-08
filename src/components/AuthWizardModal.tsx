@@ -341,8 +341,8 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md">
-      <div className="relative w-full max-w-lg bg-[#18191c]/95 text-white rounded-3xl shadow-2xl p-6 sm:p-8 border border-[#FF6A00]/25 overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md overflow-y-auto">
+      <div className="relative w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#18191c]/95 text-white rounded-3xl shadow-2xl p-5 sm:p-7 border border-[#FF6A00]/25">
         {/* Glow accent */}
         <div className="absolute -top-24 -right-24 w-56 h-56 bg-[#FF6A00]/20 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-24 -left-24 w-56 h-56 bg-[#FF8C42]/20 rounded-full blur-3xl pointer-events-none" />
@@ -378,9 +378,27 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
         </div>
 
         {error && (
-          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs flex items-center gap-2.5">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
+          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 flex-1">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+            {error.includes('No GoldMailer account found') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  if (loginIdentifier.trim()) {
+                    setUsername(loginIdentifier.replace(/@.*$/, '').trim());
+                  }
+                  setMode('register');
+                  setStep(1);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-[#FF6A00]/20 hover:bg-[#FF6A00]/30 text-[#FF8C42] font-semibold text-[11px] whitespace-nowrap cursor-pointer transition-colors"
+              >
+                Create Account Now →
+              </button>
+            )}
           </div>
         )}
 
