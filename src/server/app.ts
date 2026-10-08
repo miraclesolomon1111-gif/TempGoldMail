@@ -2743,7 +2743,7 @@ export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
         paymentId: String(body.payment_id || ''),
         orderId: orderId,
         phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+17372508034',
-        amount: Number(body.price_amount || 2.0),
+        amount: Number(body.price_amount || 6.0),
         currency: String(body.price_currency || 'usd'),
         status: 'finished',
         createdAt: new Date().toISOString(),
@@ -2854,7 +2854,7 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
     const description = `Phone Subscription for ${targetNum} (${authUser.email})`;
 
     const invoiceResult = await createNowPaymentsInvoice({
-      priceAmount: 2.0,
+      priceAmount: 6.0,
       priceCurrency: 'usd',
       orderId,
       orderDescription: description
@@ -2864,7 +2864,7 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
       success: true,
       orderId,
       phoneNumber: targetNum,
-      amount: 2.0,
+      amount: 6.0,
       currency: 'USD',
       invoiceUrl: invoiceResult.invoiceUrl,
       invoiceId: invoiceResult.id

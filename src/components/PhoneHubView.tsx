@@ -38,7 +38,6 @@ import {
   fetchSmsInbox,
   sendSmsMessage,
   createPhoneBuyIntent,
-  activatePhoneNumber,
   extendPhoneSubscription,
   deleteSms,
   clearAllSms,
@@ -117,8 +116,16 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       ]);
 
       if (phonesRes.numbers && phonesRes.numbers.length > 0) {
-        setPhoneNumbers(phonesRes.numbers);
-        setSelectedFromNumber(phonesRes.numbers[0].phoneNumber);
+        // Strictly only display numbers that were bought by the user (or admin dedicated line if admin)
+        const userBoughtNumbers = phonesRes.numbers.filter(
+          n => n.userId === user?.id || (isAdmin && n.phoneNumber === phonesRes.adminNumber)
+        );
+        setPhoneNumbers(userBoughtNumbers);
+        if (userBoughtNumbers.length > 0) {
+          setSelectedFromNumber(userBoughtNumbers[0].phoneNumber);
+        } else {
+          setSelectedFromNumber('');
+        }
       } else {
         setPhoneNumbers([]);
         setSelectedFromNumber('');
@@ -350,27 +357,13 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     setCheckoutModalOpen(true);
   };
 
-  // Initiate NOWPayments Invoice
+  // Initiate NOWPayments Invoice ($6.00 minimum required by NOWPayments)
   const handleProceedWithNowPayments = async () => {
     if (!selectedNumberToBuy) return;
     setIsGeneratingInvoice(true);
     setCheckoutNotice(null);
 
     try {
-      // If admin, complimentary activation
-      if (isAdmin) {
-        const actRes = await activatePhoneNumber(selectedNumberToBuy.phoneNumber, selectedNumberToBuy.friendlyName);
-        if (actRes.success) {
-          setCheckoutNotice(`Number ${selectedNumberToBuy.phoneNumber} activated free of charge for admin account.`);
-          await loadPhoneData();
-          setTimeout(() => {
-            setCheckoutModalOpen(false);
-            setActiveTab('inbox');
-          }, 1500);
-          return;
-        }
-      }
-
       const res = await createPhoneBuyIntent(selectedNumberToBuy.phoneNumber);
       if (res.invoiceUrl) {
         setInvoiceUrl(res.invoiceUrl);
@@ -382,21 +375,6 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       setCheckoutNotice(err.message || 'Payment intent error. Please try again.');
     } finally {
       setIsGeneratingInvoice(false);
-    }
-  };
-
-  // Admin Free Activation
-  const handleAdminFreeActivation = async (num: AvailablePhoneNumber) => {
-    try {
-      const actRes = await activatePhoneNumber(num.phoneNumber, num.friendlyName);
-      if (actRes.success) {
-        alert(`Admin privilege: ${num.phoneNumber} activated free.`);
-        await loadPhoneData();
-        setCheckoutModalOpen(false);
-        setActiveTab('inbox');
-      }
-    } catch (e: any) {
-      alert(e.message || 'Activation failed');
     }
   };
 
@@ -1097,7 +1075,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                           {num.friendlyName || num.phoneNumber}
                         </span>
                         <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-400">
-                          ${num.priceUsd}.00
+                          $6.00
                         </span>
                       </div>
 
@@ -1118,26 +1096,15 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-white/5 flex items-center gap-2">
+                    <div className="pt-3 border-t border-white/5">
                       <button
                         type="button"
                         onClick={() => handleOpenCheckout(num)}
-                        className="flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-95 cursor-pointer"
+                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-95 cursor-pointer shadow-sm"
                       >
                         <Coins className="w-3.5 h-3.5" />
-                        <span>Buy with NOWPayments</span>
+                        <span>Buy with NOWPayments ($6.00)</span>
                       </button>
-
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={() => handleAdminFreeActivation(num)}
-                          className="py-2.5 px-3 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
-                          title="Admin Direct Free Activation"
-                        >
-                          Free (Admin)
-                        </button>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -1270,7 +1237,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               <div className="flex items-center justify-between pt-2 border-t border-white/10">
                 <span className="font-semibold text-zinc-200">Total Price:</span>
                 <span className="text-base font-bold text-amber-400 font-mono">
-                  $2.00 USD
+                  $6.00 USD
                 </span>
               </div>
             </div>

@@ -197,7 +197,7 @@ export async function listAvailablePhoneNumbers(limit: number = 8): Promise<any[
           locality: n.locality || 'US',
           region: n.region || '',
           isoCountry: 'US',
-          priceUsd: 2.0,
+          priceUsd: 6.0,
           capabilities: {
             sms: Boolean(n.capabilities?.sms !== false),
             voice: Boolean(n.capabilities?.voice !== false)
