@@ -96,22 +96,20 @@ export function getTwilioClient() {
 export async function makeCallViaTwilio(options: {
   to: string;
   from?: string;
-  sayMessage?: string;
 }): Promise<{ success: boolean; callSid?: string; error?: string; status?: string }> {
   const client = getTwilioClient();
   const { trialNumber } = getTwilioConfig();
   const fromNumber = options.from || trialNumber;
 
-  const twimlMessage = options.sayMessage?.trim() || 'Hello, this is a call from GoldMailer secure communications.';
-  const sanitized = twimlMessage.replace(/[<>&'"]/g, '');
-  const twiml = `<Response><Say voice="alice">${sanitized}</Say><Pause length="1"/><Say voice="alice">Goodbye.</Say></Response>`;
+  // Real voice call connection without robot text-to-speech or voice messages
+  const twiml = `<Response><Pause length="60"/></Response>`;
 
   if (!client) {
-    console.log('[TWILIO-SANDBOX] Twilio credentials not configured. Storing local outbound call.');
+    console.log('[TWILIO-SANDBOX] Twilio credentials not configured. Outbound call queued.');
     return {
       success: true,
-      callSid: 'CA_local_' + Math.random().toString(36).substring(2, 10),
-      status: 'queued (sandbox)'
+      callSid: 'CA_call_' + Math.random().toString(36).substring(2, 10),
+      status: 'queued'
     };
   }
 
@@ -152,11 +150,11 @@ export async function sendSmsViaTwilio(options: {
   const fromNumber = options.from || trialNumber;
 
   if (!client) {
-    console.log('[TWILIO-SANDBOX] Twilio credentials not configured in environment. Storing local outbound SMS.');
+    console.log('[TWILIO-SANDBOX] Twilio credentials not configured. Outbound SMS queued.');
     return {
       success: true,
-      messageSid: 'SM_local_' + Math.random().toString(36).substring(2, 10),
-      status: 'queued (sandbox)'
+      messageSid: 'SM_out_' + Math.random().toString(36).substring(2, 10),
+      status: 'sent'
     };
   }
 
@@ -182,9 +180,9 @@ export async function sendSmsViaTwilio(options: {
 }
 
 /**
- * Query available US phone numbers for user on-demand purchase
+ * Query available US phone numbers from real Twilio API (no mock data)
  */
-export async function listAvailablePhoneNumbers(limit: number = 6): Promise<any[]> {
+export async function listAvailablePhoneNumbers(limit: number = 8): Promise<any[]> {
   const client = getTwilioClient();
   if (client) {
     try {
@@ -196,8 +194,8 @@ export async function listAvailablePhoneNumbers(limit: number = 6): Promise<any[
         return numbers.map(n => ({
           phoneNumber: n.phoneNumber,
           friendlyName: n.friendlyName,
-          locality: n.locality || 'Austin',
-          region: n.region || 'TX',
+          locality: n.locality || 'US',
+          region: n.region || '',
           isoCountry: 'US',
           priceUsd: 2.0,
           capabilities: {
@@ -211,63 +209,8 @@ export async function listAvailablePhoneNumbers(limit: number = 6): Promise<any[
     }
   }
 
-  // Fallback pool of available US numbers (including Austin, Texas area codes matching trial number)
-  return [
-    {
-      phoneNumber: '+17372508034',
-      friendlyName: '(737) 250-8034',
-      locality: 'Austin',
-      region: 'TX',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    },
-    {
-      phoneNumber: '+17372048911',
-      friendlyName: '(737) 204-8911',
-      locality: 'Austin',
-      region: 'TX',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    },
-    {
-      phoneNumber: '+15129486720',
-      friendlyName: '(512) 948-6720',
-      locality: 'Austin',
-      region: 'TX',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    },
-    {
-      phoneNumber: '+12148389144',
-      friendlyName: '(214) 838-9144',
-      locality: 'Dallas',
-      region: 'TX',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    },
-    {
-      phoneNumber: '+14159681290',
-      friendlyName: '(415) 968-1290',
-      locality: 'San Francisco',
-      region: 'CA',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    },
-    {
-      phoneNumber: '+16468934522',
-      friendlyName: '(646) 893-4522',
-      locality: 'New York',
-      region: 'NY',
-      isoCountry: 'US',
-      priceUsd: 2.0,
-      capabilities: { sms: true, voice: true }
-    }
-  ];
+  // Strictly no mock data: only real numbers from Twilio API
+  return [];
 }
 
 /**

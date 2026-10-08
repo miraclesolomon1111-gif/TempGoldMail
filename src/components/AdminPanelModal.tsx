@@ -10,7 +10,8 @@ import {
   RefreshCw,
   AlertCircle,
   Search,
-  Code2
+  Code2,
+  Phone
 } from 'lucide-react';
 import {
   fetchAdminOverview,
@@ -120,7 +121,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
 
         {/* Overview Stats Cards */}
         {overview && (
-          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 flex-shrink-0">
+          <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-3 flex-shrink-0">
             <div className="p-3.5 bg-white/5 border border-white/10 rounded-2xl">
               <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">
                 <Users className="w-3.5 h-3.5 text-[#FF6A00]" /> Total Users
@@ -132,6 +133,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <HardDrive className="w-3.5 h-3.5 text-[#FF8C42]" /> Total Storage
               </span>
               <p className="text-xl font-bold text-white mt-1">{overview.totalStorageUsedMb} MB</p>
+            </div>
+            <div className="p-3.5 bg-white/5 border border-white/10 rounded-2xl">
+              <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">
+                <Phone className="w-3.5 h-3.5 text-emerald-400" /> Admin Phone Line
+              </span>
+              <p className="text-xs font-mono font-bold text-emerald-400 mt-2 truncate" title={overview.adminPhoneNumber || '+1 (737) 250-8034'}>
+                {overview.adminPhoneNumber || '+1 (737) 250-8034'}
+              </p>
             </div>
             <div className="p-3.5 bg-white/5 border border-white/10 rounded-2xl">
               <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">

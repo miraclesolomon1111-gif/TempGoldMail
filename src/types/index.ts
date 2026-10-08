@@ -218,9 +218,16 @@ export interface PhoneCall {
   status: 'completed' | 'in-progress' | 'ringing' | 'queued' | 'failed' | 'busy' | 'no-answer' | 'canceled';
   durationSeconds?: number;
   callSid?: string;
-  recordingUrl?: string;
-  sayMessage?: string;
   startedAt: string;
   endedAt?: string;
+}
+
+export interface PhoneContact {
+  id: string;
+  userId?: string;
+  name: string;
+  phoneNumber: string;
+  notes?: string;
+  createdAt: string;
 }
 

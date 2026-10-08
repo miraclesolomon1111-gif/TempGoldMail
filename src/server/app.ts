@@ -312,10 +312,20 @@ let oauthCodes: StoredOAuthCode[] = [];
 let oauthTokens: StoredOAuthToken[] = [];
 let blockedIps: Set<string> = new Set();
 let deletedEmailIds: Set<string> = new Set();
+export interface StoredContact {
+  id: string;
+  userId: string;
+  name: string;
+  phoneNumber: string;
+  notes?: string;
+  createdAt: string;
+}
+
 let sms_inbox: StoredSMS[] = [];
 let userPhoneNumbers: StoredPhoneNumber[] = [];
 let phonePurchases: StoredPhonePurchase[] = [];
 let calls_history: StoredCall[] = [];
+let phoneContacts: StoredContact[] = [];
 
 // Helper: 10 random 8-digit backup codes
 const generateBackupCodes = (): string[] => {
@@ -347,7 +357,8 @@ const saveData = () => {
         sms_inbox: sms_inbox.slice(0, 500),
         userPhoneNumbers,
         phonePurchases: phonePurchases.slice(-100),
-        calls_history: calls_history.slice(-300)
+        calls_history: calls_history.slice(-300),
+        phoneContacts: phoneContacts.slice(-500)
       },
       null,
       2
@@ -467,6 +478,9 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.calls_history)) {
         calls_history = parsed.calls_history;
+      }
+      if (Array.isArray(parsed.phoneContacts)) {
+        phoneContacts = parsed.phoneContacts;
       }
     } catch (parseErr) {
       console.warn('Data parse error from', freshestFile, parseErr);
@@ -607,7 +621,7 @@ const seedAccounts = () => {
     });
   }
 
-  // Ensure free admin phone number (+17372508034) is assigned to miracle@goldmailer.xyz
+  // Ensure admin phone number (+17372508034) is exclusively assigned to admin (miracle@goldmailer.xyz)
   const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
   const adminPhone = userPhoneNumbers.find(p => p.phoneNumber === defaultTrialNumber && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
   if (!adminPhone) {
@@ -616,41 +630,28 @@ const seedAccounts = () => {
       userId: 'usr_miracle_01',
       userEmail: 'miracle@goldmailer.xyz',
       phoneNumber: defaultTrialNumber,
-      friendlyName: '+1 (737) 250-8034 (Free Admin Line)',
+      friendlyName: '+1 (737) 250-8034 (Admin Line)',
       provider: 'twilio',
       status: 'active',
       purchasedAt: '2026-10-08T00:00:00.000Z',
-      expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
       autoRenew: true,
       capabilities: { sms: true, voice: true }
     });
   } else {
-    adminPhone.friendlyName = '+1 (737) 250-8034 (Free Admin Line)';
+    adminPhone.friendlyName = '+1 (737) 250-8034 (Admin Line)';
     adminPhone.status = 'active';
     adminPhone.userId = 'usr_miracle_01';
     adminPhone.userEmail = 'miracle@goldmailer.xyz';
     adminPhone.capabilities = { sms: true, voice: true };
     const exp = new Date(adminPhone.expiresAt).getTime();
     if (exp < Date.now() + 30 * 86400000) {
-      adminPhone.expiresAt = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+      adminPhone.expiresAt = new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString();
     }
   }
 
-  // Ensure starter SMS exists if inbox is empty
-  if (sms_inbox.length === 0) {
-    sms_inbox.push({
-      id: 'sms_welcome_01',
-      userId: 'usr_miracle_01',
-      from: '+18005550199',
-      to: defaultTrialNumber,
-      body: 'Welcome to GoldMailer Phone! Your Twilio number +1 (737) 250-8034 is active and ready to send & receive text messages.',
-      receivedAt: new Date().toISOString(),
-      messageSid: 'SM_welcome_init',
-      direction: 'inbound',
-      status: 'received',
-      is_read: false
-    });
-  }
+  // Remove any fake starter SMS: inbox starts completely clean
+  sms_inbox = sms_inbox.filter(s => s.id !== 'sms_welcome_01');
 
   // Save changes to disk immediately
   saveData();
@@ -2597,7 +2598,8 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     totalStorageUsedBytes: totalStorage,
     totalStorageUsedMb: (totalStorage / (1024 * 1024)).toFixed(2),
     blockedIpsCount: blockedIps.size,
-    recentLogins: userDevices.slice(0, 10)
+    recentLogins: userDevices.slice(0, 10),
+    adminPhoneNumber: process.env.TWILIO_PHONE_NUMBER || '+17372508034'
   });
 });
 
@@ -2769,52 +2771,35 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+  const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
-  // Always ensure miracle@goldmailer.xyz has the free phone number +17372508034
-  if (authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01') {
-    const adminPhoneIndex = userPhoneNumbers.findIndex(p => p.phoneNumber === defaultTrialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz'));
+  // Ensure miracle@goldmailer.xyz has the free phone number
+  if (isAdmin) {
+    const adminPhoneIndex = userPhoneNumbers.findIndex(
+      p => p.phoneNumber === defaultTrialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
+    );
     if (adminPhoneIndex === -1) {
       userPhoneNumbers.unshift({
         id: 'phone_free_miracle_admin',
         userId: authUser.id,
         userEmail: authUser.email,
         phoneNumber: defaultTrialNumber,
-        friendlyName: '+1 (737) 250-8034 (Free Admin Line)',
+        friendlyName: '+1 (737) 250-8034 (Admin Line)',
         provider: 'twilio',
         status: 'active',
         purchasedAt: '2026-10-08T00:00:00.000Z',
-        expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+        expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
         autoRenew: true,
         capabilities: { sms: true, voice: true }
       });
       saveData();
-    } else {
-      userPhoneNumbers[adminPhoneIndex].friendlyName = '+1 (737) 250-8034 (Free Admin Line)';
-      userPhoneNumbers[adminPhoneIndex].status = 'active';
-      userPhoneNumbers[adminPhoneIndex].capabilities = { sms: true, voice: true };
     }
   }
 
-  let list = userPhoneNumbers.filter(p => p.userId === authUser.id || (authUser.id === 'usr_miracle_01' && p.phoneNumber === defaultTrialNumber));
-  if (list.length === 0) {
-    // If user has none, assign or create default trial number
-    const trialEntry: StoredPhoneNumber = {
-      id: 'phone_trial_' + authUser.id,
-      userId: authUser.id,
-      userEmail: authUser.email,
-      phoneNumber: defaultTrialNumber,
-      friendlyName: '(737) 250-8034 (Active)',
-      provider: 'twilio',
-      status: 'active',
-      purchasedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
-      autoRenew: true,
-      capabilities: { sms: true, voice: true }
-    };
-    userPhoneNumbers.push(trialEntry);
-    saveData();
-    list = [trialEntry];
-  }
+  // Strictly do NOT give free trial numbers to regular users until they buy!
+  const list = userPhoneNumbers.filter(
+    p => p.userId === authUser.id || (isAdmin && p.phoneNumber === defaultTrialNumber)
+  );
 
   const enriched = list.map(p => {
     const exp = new Date(p.expiresAt).getTime();
@@ -2822,20 +2807,21 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     return {
       ...p,
       daysRemaining,
-      status: daysRemaining > 0 ? 'active' : 'expired'
+      status: (daysRemaining > 0 || isAdmin) ? 'active' : 'expired'
     };
   });
 
   return res.json({
     success: true,
     numbers: enriched,
-    trialNumber: defaultTrialNumber,
+    isAdmin,
+    adminNumber: isAdmin ? defaultTrialNumber : undefined,
     isTwilioConfigured: getTwilioConfig().isConfigured
   });
 });
 
-// 4. GET /api/phone/available - Search available numbers to buy (TASK 3: availablePhoneNumbers)
-app.get('/api/phone/available', async (req: Request, res: Response) => {
+// 4. GET /api/phone/available - Search available numbers to buy directly from Twilio API
+app.get('/api/phone/available', async (_req: Request, res: Response) => {
   try {
     const list = await listAvailablePhoneNumbers(8);
     return res.json({
@@ -2851,11 +2837,21 @@ app.get('/api/phone/available', async (req: Request, res: Response) => {
 app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const { phoneNumber, days = 30 } = req.body;
+    const { phoneNumber } = req.body;
     const authUser = resolveUserIdFromReq(req);
-    const targetNum = phoneNumber || process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+
+    if (isAdmin) {
+      return res.json({
+        success: true,
+        isAdmin: true,
+        message: 'Admin account has free lifetime direct activation.'
+      });
+    }
+
+    const targetNum = phoneNumber || '+17372508034';
     const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const description = `30-Day Phone Subscription for ${targetNum} (${authUser.email})`;
+    const description = `Phone Subscription for ${targetNum} (${authUser.email})`;
 
     const invoiceResult = await createNowPaymentsInvoice({
       priceAmount: 2.0,
@@ -2884,8 +2880,9 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
     ensureDataLoaded();
     const { phoneNumber, friendlyName } = req.body;
     const authUser = resolveUserIdFromReq(req);
+    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
-    // Purchase via Twilio API (supports on-demand purchase via availablePhoneNumbers)
+    // Purchase via Twilio API
     const buyResult = await buyTwilioPhoneNumber(phoneNumber);
     const targetNum = buyResult.phoneNumber || phoneNumber || '+17372508034';
 
@@ -2893,7 +2890,7 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
     if (existing) {
       const currentMs = new Date(existing.expiresAt).getTime();
       const baseMs = currentMs > Date.now() ? currentMs : Date.now();
-      existing.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
+      existing.expiresAt = new Date(baseMs + (isAdmin ? 3650 : 30) * 24 * 3600 * 1000).toISOString();
       existing.status = 'active';
     } else {
       existing = {
@@ -2905,7 +2902,7 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
         provider: 'twilio',
         status: 'active',
         purchasedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+        expiresAt: new Date(Date.now() + (isAdmin ? 3650 : 30) * 24 * 3600 * 1000).toISOString(),
         autoRenew: true,
         capabilities: { sms: true, voice: true }
       };
@@ -2915,7 +2912,7 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
     saveData();
     return res.json({
       success: true,
-      message: `Number ${targetNum} activated for 30 days.`,
+      message: `Phone number ${targetNum} activated successfully.`,
       number: existing
     });
   } catch (err: any) {
@@ -2923,7 +2920,7 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
   }
 });
 
-// 7. POST /api/phone/extend - Extend subscription for 30 days
+// 7. POST /api/phone/extend - Extend subscription
 app.post('/api/phone/extend', (req: Request, res: Response) => {
   ensureDataLoaded();
   const { phoneNumber } = req.body;
@@ -2944,21 +2941,64 @@ app.post('/api/phone/extend', (req: Request, res: Response) => {
   saveData();
   return res.json({
     success: true,
-    message: `Subscription extended for 30 days until ${phone.expiresAt}`,
+    message: `Subscription extended until ${phone.expiresAt}`,
     number: phone
   });
 });
 
-// 8. GET /api/phone/sms - Retrieve user's SMS inbox
+// 8. CONTACTS MANAGEMENT: GET /api/phone/contacts
+app.get('/api/phone/contacts', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const contacts = phoneContacts.filter(c => c.userId === authUser.id);
+  return res.json({ success: true, contacts });
+});
+
+// 9. POST /api/phone/contacts - Save new contact
+app.post('/api/phone/contacts', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const { name, phoneNumber, notes } = req.body;
+  if (!name || !phoneNumber) {
+    return res.status(400).json({ error: 'Name and phone number are required' });
+  }
+  const newContact: StoredContact = {
+    id: 'contact_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    userId: authUser.id,
+    name: String(name).trim(),
+    phoneNumber: String(phoneNumber).trim(),
+    notes: notes ? String(notes).trim() : undefined,
+    createdAt: new Date().toISOString()
+  };
+  phoneContacts.unshift(newContact);
+  saveData();
+  return res.json({ success: true, contact: newContact });
+});
+
+// 10. DELETE /api/phone/contacts/:id - Delete a contact
+app.delete('/api/phone/contacts/:id', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  phoneContacts = phoneContacts.filter(c => !(c.id === req.params.id && c.userId === authUser.id));
+  saveData();
+  return res.json({ success: true });
+});
+
+// 11. GET /api/phone/sms - Retrieve user's SMS inbox
 app.get('/api/phone/sms', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const userPhones = new Set(userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber));
+  const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+  const userPhones = new Set(
+    userPhoneNumbers
+      .filter(p => p.userId === authUser.id || (isAdmin && p.id === 'phone_free_miracle_admin'))
+      .map(p => p.phoneNumber)
+  );
 
   const list = sms_inbox.filter(s => {
     if (s.userId === authUser.id) return true;
     if (userPhones.has(s.to) || userPhones.has(s.from)) return true;
-    return true; // Single-tenant / dev environment default
+    return false;
   });
 
   return res.json({
@@ -2967,19 +3007,25 @@ app.get('/api/phone/sms', (req: Request, res: Response) => {
   });
 });
 
-// 9. POST /api/phone/send-sms - Send outbound SMS through Twilio
+// 12. POST /api/phone/send-sms - Send outbound SMS through Twilio
 app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { to, body, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id);
+    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
     if (!to || !body) {
       return res.status(400).json({ error: 'Recipient phone number (to) and message (body) are required.' });
     }
 
     const { trialNumber } = getTwilioConfig();
-    const fromNumber = from || trialNumber;
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
+
+    if (!fromNumber) {
+      return res.status(400).json({ error: 'You must have an active phone number to send SMS.' });
+    }
 
     const twilioResult = await sendSmsViaTwilio({
       to,
@@ -3022,64 +3068,7 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
   }
 });
 
-// 10. GET /api/phone/twilio-logs - Retrieve real Twilio logs to verify SMS
-app.get('/api/phone/twilio-logs', async (_req: Request, res: Response) => {
-  try {
-    ensureDataLoaded();
-    const twilioLiveLogs = await getTwilioLogs(25);
-    const localLogs = sms_inbox.slice(0, 25).map(s => ({
-      sid: s.messageSid || s.id,
-      from: s.from,
-      to: s.to,
-      body: s.body,
-      status: s.status || 'received',
-      direction: s.direction,
-      dateSent: s.receivedAt,
-      source: 'local_database'
-    }));
-
-    const { isConfigured, trialNumber, accountSid } = getTwilioConfig();
-    return res.json({
-      success: true,
-      isConfigured,
-      trialNumber,
-      maskedAccountSid: accountSid ? (accountSid.substring(0, 6) + '...' + accountSid.slice(-4)) : 'Not configured',
-      webhookUrl: 'https://goldmailer.xyz/api/webhook/twilio/sms',
-      twilioLogs: twilioLiveLogs,
-      databaseLogs: localLogs
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// 11. POST /api/phone/simulate-sms - Test simulated SMS receiving & webhook verification
-app.post('/api/phone/simulate-sms', (req: Request, res: Response) => {
-  ensureDataLoaded();
-  const { from = '+15552345678', to = '+17372508034', body = 'Your GoldMailer verification code is 849201. Valid for 10 minutes.' } = req.body;
-  const authUser = resolveUserIdFromReq(req);
-
-  const simSms: StoredSMS = {
-    id: 'sms_sim_' + Date.now(),
-    userId: authUser.id,
-    from,
-    to,
-    body,
-    receivedAt: new Date().toISOString(),
-    messageSid: 'SM_sim_' + Math.random().toString(36).substring(2, 9),
-    direction: 'inbound',
-    status: 'received',
-    is_read: false
-  };
-
-  sms_inbox.unshift(simSms);
-  saveData();
-  broadcastNewSMS(simSms);
-
-  return res.json({ success: true, sms: simSms });
-});
-
-// 12. PATCH /api/phone/sms/:id/read - Mark SMS as read
+// 13. PATCH /api/phone/sms/:id/read - Mark SMS as read
 app.patch('/api/phone/sms/:id/read', (req: Request, res: Response) => {
   ensureDataLoaded();
   const sms = sms_inbox.find(s => s.id === req.params.id);
@@ -3090,7 +3079,7 @@ app.patch('/api/phone/sms/:id/read', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 13. DELETE /api/phone/sms/:id - Delete SMS message
+// 14. DELETE /api/phone/sms/:id - Delete single SMS
 app.delete('/api/phone/sms/:id', (req: Request, res: Response) => {
   ensureDataLoaded();
   sms_inbox = sms_inbox.filter(s => s.id !== req.params.id);
@@ -3098,9 +3087,21 @@ app.delete('/api/phone/sms/:id', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
+// 15. DELETE /api/phone/sms - Clear all SMS for user
+app.delete('/api/phone/sms', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const userPhones = new Set(
+    userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber)
+  );
+  sms_inbox = sms_inbox.filter(s => s.userId !== authUser.id && !userPhones.has(s.to) && !userPhones.has(s.from));
+  saveData();
+  return res.json({ success: true });
+});
+
 // ================= TWILIO VOICE CALLING (INCOMING & OUTGOING) =================
 
-// 14. INCOMING VOICE WEBHOOK: /api/webhook/twilio/voice
+// 16. INCOMING VOICE WEBHOOK: /api/webhook/twilio/voice
 export const handleTwilioVoiceWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -3129,14 +3130,11 @@ export const handleTwilioVoiceWebhook = async (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/xml');
     return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">Thank you for calling GoldMailer. Please leave your voice message after the beep or connect with the admin team.</Say>
-  <Record maxLength="60" playBeep="true" action="/api/webhook/twilio/voice/recording" />
-  <Say voice="alice">Thank you for calling GoldMailer. Goodbye.</Say>
+  <Pause length="30"/>
 </Response>`);
   } catch (err: any) {
-    console.error('[TWILIO VOICE WEBHOOK] Error:', err);
     res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<Response><Say>Call received. Goodbye.</Say></Response>');
+    return res.status(200).send('<Response></Response>');
   }
 };
 
@@ -3145,45 +3143,7 @@ app.all(
   handleTwilioVoiceWebhook
 );
 
-// 15. VOICE RECORDING WEBHOOK: /api/webhook/twilio/voice/recording
-export const handleTwilioVoiceRecordingWebhook = async (req: Request, res: Response) => {
-  try {
-    ensureDataLoaded();
-    const body = { ...(req.query || {}), ...(req.body || {}) };
-    const callSid = String(body.CallSid || body.callSid || '');
-    const recordingUrl = String(body.RecordingUrl || body.recordingUrl || '');
-    const duration = parseInt(body.RecordingDuration || '0', 10);
-
-    console.log(`[TWILIO RECORDING WEBHOOK] Call ${callSid} audio URL: ${recordingUrl} (${duration}s)`);
-
-    const call = calls_history.find(c => c.callSid === callSid) || calls_history[0];
-    if (call) {
-      call.recordingUrl = recordingUrl;
-      call.durationSeconds = duration;
-      call.status = 'completed';
-      call.endedAt = new Date().toISOString();
-      saveData();
-      broadcastNewCall(call);
-    }
-
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="alice">Your voicemail has been saved to GoldMailer inbox. Goodbye.</Say>
-</Response>`);
-  } catch (err: any) {
-    console.error('[TWILIO RECORDING WEBHOOK] Error:', err);
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<Response></Response>');
-  }
-};
-
-app.all(
-  ['/api/webhook/twilio/voice/recording', '/api/webhooks/twilio/voice/recording'],
-  handleTwilioVoiceRecordingWebhook
-);
-
-// 16. VOICE CALL STATUS CALLBACK: /api/webhook/twilio/voice/status
+// 17. VOICE CALL STATUS CALLBACK: /api/webhook/twilio/voice/status
 export const handleTwilioVoiceStatusWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -3212,24 +3172,29 @@ app.all(
   handleTwilioVoiceStatusWebhook
 );
 
-// 17. OUTGOING CALL: POST /api/phone/call
+// 18. OUTGOING CALL: POST /api/phone/call (Direct voice call without text-to-speech)
 app.post('/api/phone/call', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const { to, from, message } = req.body;
+    const { to, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id);
+    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
     if (!to) {
       return res.status(400).json({ error: 'Recipient phone number (to) is required.' });
     }
 
     const { trialNumber } = getTwilioConfig();
-    const fromNumber = from || trialNumber;
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
+
+    if (!fromNumber) {
+      return res.status(400).json({ error: 'You must have an active phone number to place calls.' });
+    }
 
     const callResult = await makeCallViaTwilio({
       to,
-      from: fromNumber,
-      sayMessage: message || 'Hello, this is a phone call from GoldMailer.'
+      from: fromNumber
     });
 
     const outboundCall: StoredCall = {
@@ -3240,7 +3205,6 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
       direction: 'outbound',
       status: callResult.success ? ((callResult.status as any) || 'in-progress') : 'failed',
       callSid: callResult.callSid || 'CA_' + Date.now(),
-      sayMessage: message || 'Voice greeting call',
       startedAt: new Date().toISOString()
     };
 
@@ -3266,16 +3230,21 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
   }
 });
 
-// 18. GET /api/phone/calls - Retrieve call history & recordings
+// 19. GET /api/phone/calls - Retrieve user's call history
 app.get('/api/phone/calls', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const userPhones = new Set(userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber));
+  const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+  const userPhones = new Set(
+    userPhoneNumbers
+      .filter(p => p.userId === authUser.id || (isAdmin && p.id === 'phone_free_miracle_admin'))
+      .map(p => p.phoneNumber)
+  );
 
   const list = calls_history.filter(c => {
     if (c.userId === authUser.id) return true;
     if (userPhones.has(c.to) || userPhones.has(c.from)) return true;
-    return true; // Single-tenant / dev
+    return false;
   });
 
   return res.json({
@@ -3284,10 +3253,22 @@ app.get('/api/phone/calls', (req: Request, res: Response) => {
   });
 });
 
-// 19. DELETE /api/phone/calls/:id - Delete call record
+// 20. DELETE /api/phone/calls/:id - Delete single call record
 app.delete('/api/phone/calls/:id', (req: Request, res: Response) => {
   ensureDataLoaded();
   calls_history = calls_history.filter(c => c.id !== req.params.id);
+  saveData();
+  return res.json({ success: true });
+});
+
+// 21. DELETE /api/phone/calls - Clear all calls for user
+app.delete('/api/phone/calls', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const userPhones = new Set(
+    userPhoneNumbers.filter(p => p.userId === authUser.id).map(p => p.phoneNumber)
+  );
+  calls_history = calls_history.filter(c => c.userId !== authUser.id && !userPhones.has(c.to) && !userPhones.has(c.from));
   saveData();
   return res.json({ success: true });
 });

@@ -10,7 +10,8 @@ import {
   UserPhoneNumber,
   AvailablePhoneNumber,
   TwilioLogItem,
-  PhoneCall
+  PhoneCall,
+  PhoneContact
 } from '../types';
 
 // Helper: Normalize email messages
@@ -963,7 +964,8 @@ export async function deleteAdminUser(id: string): Promise<any> {
 export async function fetchUserPhoneNumbers(): Promise<{
   success: boolean;
   numbers: UserPhoneNumber[];
-  trialNumber: string;
+  isAdmin?: boolean;
+  adminNumber?: string;
   isTwilioConfigured: boolean;
 }> {
   try {
@@ -971,22 +973,8 @@ export async function fetchUserPhoneNumbers(): Promise<{
     return await safeJsonParse(res);
   } catch {
     return {
-      success: true,
-      numbers: [
-        {
-          id: 'phone_default',
-          userId: 'usr_miracle_01',
-          phoneNumber: '+17372508034',
-          friendlyName: '(737) 250-8034 (Twilio Trial)',
-          provider: 'twilio',
-          status: 'active',
-          purchasedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
-          daysRemaining: 30,
-          capabilities: { sms: true, voice: true }
-        }
-      ],
-      trialNumber: '+17372508034',
+      success: false,
+      numbers: [],
       isTwilioConfigured: false
     };
   }
@@ -1008,6 +996,7 @@ export async function createPhoneBuyIntent(phoneNumber: string): Promise<{
   invoiceUrl?: string;
   amount?: number;
   currency?: string;
+  isAdmin?: boolean;
   error?: string;
 }> {
   const res = await fetch('/api/phone/buy-intent', {
@@ -1046,6 +1035,34 @@ export async function extendPhoneSubscription(phoneNumber?: string): Promise<{
   return await safeJsonParse(res);
 }
 
+export async function fetchPhoneContacts(): Promise<PhoneContact[]> {
+  try {
+    const res = await fetch('/api/phone/contacts', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    return Array.isArray(data.contacts) ? data.contacts : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function savePhoneContact(contact: { name: string; phoneNumber: string; notes?: string }): Promise<PhoneContact> {
+  const res = await fetch('/api/phone/contacts', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(contact)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to save contact');
+  return data.contact;
+}
+
+export async function deletePhoneContact(id: string): Promise<void> {
+  await fetch(`/api/phone/contacts/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
+
 export async function fetchSmsInbox(): Promise<SMSMessage[]> {
   try {
     const res = await fetch('/api/phone/sms', { headers: getHeaders() });
@@ -1071,44 +1088,6 @@ export async function sendSmsMessage(payload: {
   return data;
 }
 
-export async function fetchTwilioVerificationLogs(): Promise<{
-  success: boolean;
-  isConfigured: boolean;
-  trialNumber: string;
-  maskedAccountSid: string;
-  webhookUrl: string;
-  twilioLogs: TwilioLogItem[];
-  databaseLogs: any[];
-}> {
-  try {
-    const res = await fetch('/api/phone/twilio-logs', { headers: getHeaders() });
-    return await safeJsonParse(res);
-  } catch {
-    return {
-      success: false,
-      isConfigured: false,
-      trialNumber: '+17372508034',
-      maskedAccountSid: 'Not configured',
-      webhookUrl: 'https://goldmailer.xyz/api/webhook/twilio/sms',
-      twilioLogs: [],
-      databaseLogs: []
-    };
-  }
-}
-
-export async function simulateInboundSms(payload?: {
-  from?: string;
-  to?: string;
-  body?: string;
-}): Promise<{ success: boolean; sms: SMSMessage }> {
-  const res = await fetch('/api/phone/simulate-sms', {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload || {})
-  });
-  return await safeJsonParse(res);
-}
-
 export async function markSmsAsRead(id: string): Promise<void> {
   await fetch(`/api/phone/sms/${id}/read`, {
     method: 'PATCH',
@@ -1118,6 +1097,13 @@ export async function markSmsAsRead(id: string): Promise<void> {
 
 export async function deleteSms(id: string): Promise<void> {
   await fetch(`/api/phone/sms/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
+
+export async function clearAllSms(): Promise<void> {
+  await fetch('/api/phone/sms', {
     method: 'DELETE',
     headers: getHeaders()
   });
@@ -1136,7 +1122,6 @@ export async function fetchPhoneCalls(): Promise<PhoneCall[]> {
 export async function makePhoneCall(payload: {
   to: string;
   from?: string;
-  message?: string;
 }): Promise<{ success: boolean; callSid?: string; call?: PhoneCall; error?: string }> {
   const res = await fetch('/api/phone/call', {
     method: 'POST',
@@ -1150,6 +1135,13 @@ export async function makePhoneCall(payload: {
 
 export async function deletePhoneCall(id: string): Promise<void> {
   await fetch(`/api/phone/calls/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+}
+
+export async function clearAllPhoneCalls(): Promise<void> {
+  await fetch('/api/phone/calls', {
     method: 'DELETE',
     headers: getHeaders()
   });
