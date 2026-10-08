@@ -14,9 +14,12 @@ import {
   Check,
   ShieldCheck,
   Code,
-  RotateCcw
+  RotateCcw,
+  Send,
+  Maximize2
 } from 'lucide-react';
 import { EmailMessage } from '../types';
+import { sendEmail } from '../lib/api';
 
 interface EmailDetailModalProps {
   email: EmailMessage | null;
@@ -47,6 +50,10 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [activeTab, setActiveTab] = useState<'html' | 'text'>('html');
+  const [isInlineReplying, setIsInlineReplying] = useState(false);
+  const [inlineReplyBody, setInlineReplyBody] = useState('');
+  const [isSendingInline, setIsSendingInline] = useState(false);
+  const [inlineSentSuccess, setInlineSentSuccess] = useState(false);
 
   if (!email) return null;
 
@@ -272,22 +279,103 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
           )}
         </div>
 
-        {/* Reply & Forward Actions */}
-        <div className="pt-6 flex items-center gap-3 border-t border-white/10">
-          <button
-            onClick={() => onReply(email.from_email || email.sender, `Re: ${email.subject}`)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow-md hover:shadow-lg transition-all"
-          >
-            <CornerUpLeft className="w-4 h-4" />
-            <span>Reply</span>
-          </button>
-          <button
-            onClick={() => onForward(email)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold transition-colors"
-          >
-            <CornerUpRight className="w-4 h-4" />
-            <span>Forward</span>
-          </button>
+        {/* Reply & Forward Actions (Google Gmail Style) */}
+        <div className="pt-6 border-t border-white/10 space-y-4">
+          {!isInlineReplying ? (
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsInlineReplying(true)}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+              >
+                <CornerUpLeft className="w-4 h-4" />
+                <span>Reply</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onForward(email)}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold transition-colors cursor-pointer"
+              >
+                <CornerUpRight className="w-4 h-4" />
+                <span>Forward</span>
+              </button>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl bg-[#1b1c22] border border-[#FF6A00]/30 shadow-xl space-y-3">
+              <div className="flex items-center justify-between text-xs text-zinc-400">
+                <div className="flex items-center gap-2">
+                  <CornerUpLeft className="w-4 h-4 text-[#FF8C42]" />
+                  <span className="font-semibold text-white">Reply to:</span>
+                  <span className="font-mono text-[#FF8C42]">{email.from_email || email.sender}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onReply(email.from_email || email.sender, `Re: ${email.subject}`)}
+                  title="Pop out to full compose window"
+                  className="p-1 hover:text-white rounded hover:bg-white/10 flex items-center gap-1 text-[11px]"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Pop out</span>
+                </button>
+              </div>
+
+              <textarea
+                value={inlineReplyBody}
+                onChange={(e) => setInlineReplyBody(e.target.value)}
+                placeholder="Write your reply..."
+                rows={4}
+                className="w-full bg-[#141519] border border-white/10 rounded-xl p-3 text-xs text-white placeholder-zinc-500 outline-none resize-none focus:border-[#FF6A00]/50"
+              />
+
+              {inlineSentSuccess ? (
+                <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-xl flex items-center gap-2">
+                  <Check className="w-4 h-4" />
+                  <span>Reply dispatched successfully!</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isSendingInline || !inlineReplyBody.trim()}
+                      onClick={async () => {
+                        setIsSendingInline(true);
+                        try {
+                          await sendEmail({
+                            to: email.from_email || email.sender,
+                            subject: email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject}`,
+                            body: inlineReplyBody.trim(),
+                            sender: email.recipient
+                          });
+                          setInlineSentSuccess(true);
+                          setTimeout(() => {
+                            setInlineSentSuccess(false);
+                            setIsInlineReplying(false);
+                            setInlineReplyBody('');
+                          }, 1500);
+                        } catch (err: any) {
+                          alert(err.message || 'Failed to dispatch reply');
+                        } finally {
+                          setIsSendingInline(false);
+                        }
+                      }}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold flex items-center gap-2 hover:opacity-95 disabled:opacity-50 cursor-pointer shadow-md"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isSendingInline ? 'Sending...' : 'Send'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsInlineReplying(false)}
+                      className="px-3 py-2 text-zinc-400 hover:text-white text-xs cursor-pointer"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

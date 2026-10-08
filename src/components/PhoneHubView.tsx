@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Phone,
   MessageSquare,
@@ -22,7 +22,13 @@ import {
   Clock,
   ShieldCheck,
   X,
-  CreditCard
+  CreditCard,
+  ArrowLeft,
+  MoreVertical,
+  Smile,
+  Image as ImageIcon,
+  Paperclip,
+  Loader2
 } from 'lucide-react';
 import {
   SMSMessage,
@@ -56,6 +62,15 @@ interface PhoneHubViewProps {
   onOpenEmail: () => void;
 }
 
+interface ConversationThread {
+  number: string;
+  contact?: PhoneContact;
+  name: string;
+  initial: string;
+  messages: SMSMessage[];
+  lastMessage: SMSMessage;
+}
+
 export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   user,
   darkMode,
@@ -72,12 +87,17 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  // Send SMS State
-  const [recipientNumber, setRecipientNumber] = useState('');
+  // Google Messages Chat View State
+  const [activeThreadNumber, setActiveThreadNumber] = useState<string | null>(null);
+  const [isComposingNewChat, setIsComposingNewChat] = useState(false);
+  const [newChatRecipient, setNewChatRecipient] = useState('');
   const [messageBody, setMessageBody] = useState('');
   const [selectedFromNumber, setSelectedFromNumber] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showThreadMenu, setShowThreadMenu] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
 
   // Direct Voice Calling State (No Text-to-Speech)
   const [callRecipient, setCallRecipient] = useState('');
@@ -168,6 +188,13 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     };
   }, []);
 
+  // Auto-scroll chat to bottom when thread updates
+  useEffect(() => {
+    if (activeThreadNumber && chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeThreadNumber, messages]);
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await loadPhoneData();
@@ -180,10 +207,54 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     setTimeout(() => setCopiedText(null), 2000);
   };
 
+  // Group messages into Google Messages style threads
+  const conversationThreads: ConversationThread[] = React.useMemo(() => {
+    const threadMap: { [num: string]: SMSMessage[] } = {};
+
+    messages.forEach((m) => {
+      const otherNum = m.direction === 'outbound' ? m.to : m.from;
+      if (!otherNum) return;
+      if (!threadMap[otherNum]) threadMap[otherNum] = [];
+      threadMap[otherNum].push(m);
+    });
+
+    return Object.keys(threadMap).map((num) => {
+      const threadMsgs = threadMap[num].sort(
+        (a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()
+      );
+      const matchedContact = contacts.find(
+        (c) => c.phoneNumber.replace(/\D/g, '') === num.replace(/\D/g, '')
+      );
+      const displayName = matchedContact?.name || num;
+      const initial = displayName.replace(/^\+/, '').charAt(0).toUpperCase() || 'G';
+      return {
+        number: num,
+        contact: matchedContact,
+        name: displayName,
+        initial,
+        messages: threadMsgs,
+        lastMessage: threadMsgs[threadMsgs.length - 1]
+      };
+    }).sort((a, b) => new Date(b.lastMessage.receivedAt).getTime() - new Date(a.lastMessage.receivedAt).getTime());
+  }, [messages, contacts]);
+
+  const currentThread = React.useMemo(() => {
+    if (!activeThreadNumber) return null;
+    return conversationThreads.find(t => t.number === activeThreadNumber) || {
+      number: activeThreadNumber,
+      contact: contacts.find(c => c.phoneNumber.replace(/\D/g, '') === activeThreadNumber.replace(/\D/g, '')),
+      name: contacts.find(c => c.phoneNumber.replace(/\D/g, '') === activeThreadNumber.replace(/\D/g, ''))?.name || activeThreadNumber,
+      initial: (contacts.find(c => c.phoneNumber.replace(/\D/g, '') === activeThreadNumber.replace(/\D/g, ''))?.name || activeThreadNumber).replace(/^\+/, '').charAt(0).toUpperCase() || 'G',
+      messages: messages.filter(m => (m.direction === 'outbound' ? m.to : m.from) === activeThreadNumber).sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()),
+      lastMessage: messages.filter(m => (m.direction === 'outbound' ? m.to : m.from) === activeThreadNumber)[0]
+    };
+  }, [activeThreadNumber, conversationThreads, contacts, messages]);
+
   // Place Call Handler (Direct Twilio Voice Calling, No TTS)
-  const handleMakeCall = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!callRecipient.trim()) return;
+  const handleMakeCall = async (e?: React.FormEvent, directNumber?: string) => {
+    if (e) e.preventDefault();
+    const target = directNumber || callRecipient.trim();
+    if (!target) return;
 
     if (!activeNumber && !isAdmin) {
       setActiveTab('buy');
@@ -195,14 +266,14 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
     try {
       const res = await makePhoneCall({
-        to: callRecipient.trim(),
+        to: target,
         from: selectedFromNumber || activeNumber?.phoneNumber || ''
       });
 
       if (res.success) {
         setCallResult({
           success: true,
-          message: `Direct voice call dispatched to ${callRecipient.trim()}. Connecting...`
+          message: `Direct voice call dispatched to ${target}. Connecting...`
         });
         if (res.call) {
           setCalls(prev => [res.call!, ...prev]);
@@ -241,10 +312,11 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     } catch {}
   };
 
-  // Send SMS Handler
-  const handleSendSms = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!recipientNumber.trim() || !messageBody.trim()) return;
+  // Send SMS Handler (Google Messages Style)
+  const handleSendSms = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const target = activeThreadNumber || newChatRecipient.trim();
+    if (!target || !messageBody.trim()) return;
 
     if (!activeNumber && !isAdmin) {
       setActiveTab('buy');
@@ -257,18 +329,19 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     try {
       const res = await sendSmsMessage({
         from: selectedFromNumber || activeNumber?.phoneNumber || '',
-        to: recipientNumber.trim(),
+        to: target,
         body: messageBody.trim()
       });
 
       if (res.success) {
-        setSendResult({
-          success: true,
-          message: `SMS sent successfully to ${recipientNumber.trim()}!`
-        });
         setMessageBody('');
+        setShowEmojiPicker(false);
         if (res.sms) {
           setMessages(prev => [res.sms!, ...prev]);
+        }
+        if (!activeThreadNumber) {
+          setActiveThreadNumber(target);
+          setIsComposingNewChat(false);
         }
       } else {
         setSendResult({
@@ -299,6 +372,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const handleClearAllMessages = async () => {
     if (!confirm('Are you sure you want to clear all SMS messages?')) return;
     setMessages([]);
+    setActiveThreadNumber(null);
     try {
       await clearAllSms();
     } catch {}
@@ -335,17 +409,6 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     try {
       await deletePhoneContact(id);
     } catch {}
-  };
-
-  // Quick Action from Contact
-  const handleContactAction = (contact: PhoneContact, action: 'call' | 'sms') => {
-    if (action === 'sms') {
-      setRecipientNumber(contact.phoneNumber);
-      setActiveTab('inbox');
-    } else {
-      setCallRecipient(contact.phoneNumber);
-      setActiveTab('calls');
-    }
   };
 
   // Open Checkout Modal
@@ -392,21 +455,21 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
   return (
     <div className={`flex-1 flex flex-col min-h-0 relative select-none ${
-      darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'
+      darkMode ? 'bg-[#101114] text-white' : 'bg-[#faf8f6] text-zinc-900'
     }`}>
       {/* Top Header Banner: Active Phone Number & Controls */}
-      <div className={`px-4 sm:px-6 py-4 border-b flex flex-wrap items-center justify-between gap-4 ${
-        darkMode ? 'bg-[#16171b] border-white/10' : 'bg-white border-zinc-200'
+      <div className={`px-4 sm:px-6 py-3.5 border-b flex flex-wrap items-center justify-between gap-4 ${
+        darkMode ? 'bg-[#15161a] border-white/10' : 'bg-white border-zinc-200'
       }`}>
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white shadow-lg shadow-[#FF6A00]/25">
-            <Smartphone className="w-6 h-6 stroke-[2.2]" />
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white shadow-md shadow-[#FF6A00]/25">
+            <Smartphone className="w-5 h-5 stroke-[2.2]" />
           </div>
           <div>
             {activeNumber ? (
               <>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-base sm:text-lg font-bold tracking-tight">
+                  <span className="text-sm sm:text-base font-bold tracking-tight">
                     {activeNumber.friendlyName || activeNumber.phoneNumber}
                   </span>
                   {isAdmin && (
@@ -414,12 +477,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                       Free Admin Line
                     </span>
                   )}
-                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                     Active
                   </span>
                 </div>
-                <p className="text-xs text-zinc-400 flex items-center gap-1.5 mt-0.5">
+                <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 mt-0.5">
                   <span>Number: {activeNumber.phoneNumber}</span>
                   <span className="text-zinc-500">·</span>
                   <span className="text-emerald-400 font-medium">SMS & Voice Enabled</span>
@@ -435,15 +498,15 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             ) : (
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-base font-bold text-zinc-300">
+                  <span className="text-sm font-bold text-zinc-300">
                     No Active Phone Number
                   </span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
                     Inactive
                   </span>
                 </div>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  Rent a dedicated phone number to send & receive texts and calls.
+                <p className="text-[11px] text-zinc-400 mt-0.5">
+                  Rent a dedicated phone number ($6.00) to send & receive texts and calls.
                 </p>
               </div>
             )}
@@ -459,7 +522,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white text-xs font-bold shadow-md hover:opacity-95 transition-all cursor-pointer"
             >
               <Coins className="w-3.5 h-3.5" />
-              <span>Buy Phone Number</span>
+              <span>Buy Phone Number ($6.00)</span>
             </button>
           )}
 
@@ -479,7 +542,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
       {/* Navigation Sub-Tabs */}
       <div className={`px-4 sm:px-6 flex items-center gap-2 border-b overflow-x-auto ${
-        darkMode ? 'bg-[#141518] border-white/10' : 'bg-zinc-50 border-zinc-200'
+        darkMode ? 'bg-[#131417] border-white/10' : 'bg-zinc-50 border-zinc-200'
       }`}>
         {[
           { id: 'inbox', label: 'Inbox', icon: MessageSquare, count: messages.length },
@@ -494,7 +557,13 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => {
+                setActiveTab(tab.id as any);
+                if (tab.id !== 'inbox') {
+                  setActiveThreadNumber(null);
+                  setIsComposingNewChat(false);
+                }
+              }}
               className={`flex items-center gap-2 py-3 px-3 text-xs font-semibold border-b-2 whitespace-nowrap transition-all cursor-pointer ${
                 isActive
                   ? 'border-[#FF6A00] text-[#FF6A00] font-bold'
@@ -516,201 +585,434 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-        {/* ================= TAB 1: CLEAR INBOX (SMS) ================= */}
+      <div className="flex-1 overflow-y-auto p-0 sm:p-4 flex flex-col min-h-0">
+        {/* ================= TAB 1: GOOGLE MESSAGES FEATURE (PICTURE MATCH) ================= */}
         {activeTab === 'inbox' && (
-          <div className="max-w-4xl mx-auto space-y-6">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-base font-bold flex items-center gap-2">
-                  <span>SMS Messages</span>
-                  <span className="text-xs text-zinc-400 font-normal">
-                    ({messages.length} message{messages.length === 1 ? '' : 's'})
-                  </span>
-                </h2>
-                <p className="text-xs text-zinc-400">
-                  Real texts received and sent. Everything is 100% deletable.
-                </p>
-              </div>
-
-              {messages.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearAllMessages}
-                  className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear Inbox</span>
-                </button>
-              )}
-            </div>
-
-            {/* Quick Compose Box */}
-            <div className={`p-4 rounded-2xl border ${
-              darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200 shadow-xs'
-            }`}>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-1.5">
-                <Send className="w-3.5 h-3.5 text-[#FF6A00]" /> Send Text Message
-              </h3>
-
-              {sendResult && (
-                <div className={`mb-3 p-3 rounded-xl text-xs flex items-start gap-2 ${
-                  sendResult.success
-                    ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                    : 'bg-red-500/10 border border-red-500/20 text-red-400'
-                }`}>
-                  {sendResult.success ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
-                  <p className="font-semibold">{sendResult.message}</p>
-                </div>
-              )}
-
-              <form onSubmit={handleSendSms} className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
-                      Recipient Phone (E.164 e.g. +1...)
-                    </label>
-                    <input
-                      type="tel"
-                      placeholder="+1 (555) 123-4567"
-                      value={recipientNumber}
-                      onChange={(e) => setRecipientNumber(e.target.value)}
-                      required
-                      className={`w-full px-3 py-2 rounded-xl text-xs font-mono border outline-none ${
-                        darkMode ? 'bg-white/5 border-white/10 text-white focus:border-[#FF6A00]' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-[#FF6A00]'
-                      }`}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
-                      Sender Line
-                    </label>
-                    <input
-                      type="text"
-                      readOnly
-                      value={activeNumber?.phoneNumber || (isAdmin ? '+1 (737) 250-8034 (Admin)' : 'No active number')}
-                      className={`w-full px-3 py-2 rounded-xl text-xs font-mono border outline-none opacity-80 ${
-                        darkMode ? 'bg-white/5 border-white/10 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'
-                      }`}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <textarea
-                    rows={2}
-                    placeholder="Type your message..."
-                    value={messageBody}
-                    onChange={(e) => setMessageBody(e.target.value)}
-                    required
-                    className={`w-full px-3 py-2 rounded-xl text-xs border outline-none resize-none ${
-                      darkMode ? 'bg-white/5 border-white/10 text-white focus:border-[#FF6A00]' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-[#FF6A00]'
-                    }`}
-                  />
-                </div>
-
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={isSending || (!activeNumber && !isAdmin)}
-                    className="py-2 px-4 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white font-bold text-xs shadow-md shadow-[#FF6A00]/25 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{isSending ? 'Sending...' : 'Send SMS'}</span>
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            {/* Messages List or Clear Empty State */}
-            {messages.length === 0 ? (
-              <div className={`p-12 text-center rounded-2xl border ${
-                darkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white border-zinc-200'
+          <div className="flex-1 flex flex-col min-h-0 max-w-4xl mx-auto w-full">
+            {/* Thread Active View (Screenshot Match) */}
+            {activeThreadNumber || isComposingNewChat ? (
+              <div className={`flex-1 flex flex-col min-h-[580px] rounded-none sm:rounded-3xl border border-white/10 overflow-hidden shadow-2xl ${
+                darkMode ? 'bg-[#0f1013]' : 'bg-[#18191d] text-white'
               }`}>
-                <div className="w-14 h-14 mx-auto rounded-2xl bg-[#FF6A00]/10 text-[#FF6A00] flex items-center justify-center mb-3">
-                  <MessageSquare className="w-7 h-7" />
-                </div>
-                <h3 className="text-sm font-bold">Clear Inbox</h3>
-                <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto">
-                  No SMS messages received or sent yet. Only real messages from your carrier line will display here.
-                </p>
-              </div>
-            ) : (
-              <div className="divide-y divide-white/5 border rounded-2xl overflow-hidden shadow-xs">
-                {messages.map(msg => {
-                  const code = extractCode(msg.body);
-                  const isOutbound = msg.direction === 'outbound';
-                  return (
-                    <div
-                      key={msg.id}
-                      className={`p-4 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
-                        darkMode ? 'bg-white/[0.02] hover:bg-white/[0.04]' : 'bg-white hover:bg-zinc-50'
-                      }`}
+                {/* Top Header matching Picture (← , [G], Name, 📞, 👤+, ⋮) */}
+                <div className="px-4 py-3 bg-[#16171b] border-b border-white/10 flex items-center justify-between gap-3 flex-shrink-0">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveThreadNumber(null);
+                        setIsComposingNewChat(false);
+                      }}
+                      className="p-1.5 text-zinc-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Back to conversation list"
                     >
-                      <div className="flex items-start gap-3 min-w-0 flex-1">
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                          isOutbound
-                            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                            : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        }`}>
-                          {isOutbound ? 'OUT' : 'IN'}
-                        </div>
+                      <ArrowLeft className="w-5 h-5 stroke-[2.2]" />
+                    </button>
 
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-xs font-bold">
-                              {isOutbound ? `To: ${msg.to}` : `From: ${msg.from}`}
-                            </span>
-                            <span className="text-[10px] text-zinc-500 font-mono">
-                              {new Date(msg.receivedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })}
-                            </span>
+                    {/* Circular Initial Avatar (Orange with G / Initial) matching picture */}
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] text-white font-bold text-base flex items-center justify-center shadow-md flex-shrink-0">
+                      {currentThread?.initial || 'G'}
+                    </div>
+
+                    <div className="min-w-0">
+                      {isComposingNewChat && !activeThreadNumber ? (
+                        <div className="relative">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-zinc-400 font-semibold">To:</span>
+                            <input
+                              type="tel"
+                              placeholder="+1 (555) 123-4567 or contact name"
+                              value={newChatRecipient}
+                              onChange={(e) => setNewChatRecipient(e.target.value)}
+                              className="bg-transparent text-sm font-bold text-white outline-none placeholder-zinc-500 font-mono w-48 sm:w-72"
+                              autoFocus
+                            />
                           </div>
-
-                          <p className={`text-xs break-words ${darkMode ? 'text-zinc-200' : 'text-zinc-800'}`}>
-                            {msg.body}
-                          </p>
-
-                          {/* 1-Click Code Copy */}
-                          {code && (
-                            <div className="inline-flex items-center gap-1.5 pt-1">
-                              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                                Code: {code}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleCopy(code)}
-                                className="text-[11px] font-semibold text-[#FF8C42] hover:underline cursor-pointer flex items-center gap-0.5"
-                              >
-                                {copiedText === code ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                                <span>Copy Code</span>
-                              </button>
+                          {/* Matching Contacts Autocomplete Dropdown */}
+                          {newChatRecipient && contacts.filter(c => 
+                            c.name.toLowerCase().includes(newChatRecipient.toLowerCase()) || 
+                            c.phoneNumber.includes(newChatRecipient)
+                          ).length > 0 && (
+                            <div className="absolute left-0 top-8 w-72 bg-[#1f2026] border border-white/10 rounded-xl shadow-2xl py-1 z-40 max-h-48 overflow-y-auto">
+                              {contacts
+                                .filter(c => 
+                                  c.name.toLowerCase().includes(newChatRecipient.toLowerCase()) || 
+                                  c.phoneNumber.includes(newChatRecipient)
+                                )
+                                .map(c => (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveThreadNumber(c.phoneNumber);
+                                      setIsComposingNewChat(false);
+                                      setNewChatRecipient('');
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-white/10 flex items-center justify-between text-xs cursor-pointer"
+                                  >
+                                    <span className="font-bold text-white truncate">{c.name}</span>
+                                    <span className="font-mono text-zinc-400 text-[11px]">{c.phoneNumber}</span>
+                                  </button>
+                                ))}
                             </div>
                           )}
                         </div>
-                      </div>
+                      ) : (
+                        <>
+                          <h3 className="text-sm font-bold text-white truncate leading-tight">
+                            {currentThread?.name || activeThreadNumber}
+                          </h3>
+                          <p className="text-[11px] text-zinc-400 font-mono truncate">
+                            {activeThreadNumber}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
 
-                      {/* Deletable Actions */}
-                      <div className="flex items-center gap-2 self-end sm:self-center flex-shrink-0">
+                  {/* Header Actions: 📞, 👤+, ⋮ */}
+                  <div className="flex items-center gap-1 flex-shrink-0 relative">
+                    <button
+                      type="button"
+                      onClick={() => handleMakeCall(undefined, activeThreadNumber || newChatRecipient)}
+                      className="p-2 text-zinc-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Voice Call"
+                    >
+                      <Phone className="w-5 h-5 stroke-[2]" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewContactPhone(activeThreadNumber || newChatRecipient);
+                        setShowAddContactModal(true);
+                      }}
+                      className="p-2 text-zinc-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Add to contacts"
+                    >
+                      <UserPlus className="w-5 h-5 stroke-[2]" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowThreadMenu(!showThreadMenu)}
+                      className="p-2 text-zinc-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                      title="More options"
+                    >
+                      <MoreVertical className="w-5 h-5 stroke-[2]" />
+                    </button>
+
+                    {showThreadMenu && (
+                      <div className="absolute right-0 top-12 w-48 bg-[#1f2026] border border-white/10 rounded-2xl shadow-2xl py-1 z-30 text-xs">
                         <button
                           type="button"
-                          onClick={() => handleCopy(msg.body)}
-                          title="Copy text"
-                          className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                          onClick={() => {
+                            if (activeThreadNumber) handleCopy(activeThreadNumber);
+                            setShowThreadMenu(false);
+                          }}
+                          className="w-full text-left px-3.5 py-2 hover:bg-white/10 flex items-center gap-2 text-zinc-200"
                         >
-                          {copiedText === msg.body ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy phone number</span>
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => handleDeleteMessage(msg.id, e)}
-                          title="Delete message"
-                          className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                          onClick={() => {
+                            if (confirm('Delete all messages in this thread?')) {
+                              currentThread?.messages.forEach(m => deleteSms(m.id));
+                              setMessages(prev => prev.filter(m => (m.direction === 'outbound' ? m.to : m.from) !== activeThreadNumber));
+                              setActiveThreadNumber(null);
+                            }
+                            setShowThreadMenu(false);
+                          }}
+                          className="w-full text-left px-3.5 py-2 hover:bg-red-500/10 flex items-center gap-2 text-red-400"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete conversation</span>
                         </button>
                       </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Center Chat Message Body */}
+                <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 bg-[#0d0e12]">
+                  {currentThread?.messages.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-400">
+                      <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#FF6A00]/20 to-amber-500/20 text-[#FF6A00] flex items-center justify-center mb-3">
+                        <MessageSquare className="w-6 h-6" />
+                      </div>
+                      <p className="text-xs font-semibold text-zinc-300">Start of conversation</p>
+                      <p className="text-[11px] text-zinc-500 mt-1 max-w-xs">
+                        Messages sent with {activeNumber?.phoneNumber || 'carrier line'} to {activeThreadNumber || newChatRecipient} will display here.
+                      </p>
                     </div>
-                  );
-                })}
+                  ) : (
+                    currentThread?.messages.map((msg) => {
+                      const isOutbound = msg.direction === 'outbound';
+                      const code = extractCode(msg.body);
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex flex-col ${isOutbound ? 'items-end' : 'items-start'} group`}
+                        >
+                          <div className={`max-w-[85%] sm:max-w-[70%] px-4 py-2.5 rounded-2xl relative shadow-md transition-all ${
+                            isOutbound
+                              ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white rounded-br-xs'
+                              : 'bg-[#22232a] text-zinc-100 rounded-bl-xs border border-white/5'
+                          }`}>
+                            <p className="text-xs break-words leading-relaxed">{msg.body}</p>
+
+                            {/* 1-Click Code Detection */}
+                            {code && (
+                              <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between gap-2">
+                                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-black/30 text-amber-300">
+                                  {code}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(code)}
+                                  className="text-[11px] font-semibold text-white hover:underline flex items-center gap-1 cursor-pointer"
+                                >
+                                  {copiedText === code ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                                  <span>{copiedText === code ? 'Copied' : 'Copy code'}</span>
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Timestamp & Delete hover */}
+                            <div className="flex items-center justify-end gap-1.5 mt-1 text-[10px] opacity-70">
+                              <span>
+                                {new Date(msg.receivedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteMessage(msg.id, e)}
+                                className="opacity-0 group-hover:opacity-100 hover:text-red-300 p-0.5 transition-opacity"
+                                title="Delete message"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                {/* Send Result / Diagnostic Feedback */}
+                {sendResult && !sendResult.success && (
+                  <div className="px-4 py-2 bg-red-500/15 border-t border-red-500/20 text-red-400 text-xs flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span>{sendResult.message}</span>
+                    </div>
+                    <button type="button" onClick={() => setSendResult(null)} className="text-red-300 hover:text-white">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Quick Smart Replies (Google Messages Feature) */}
+                <div className="px-3 py-1.5 bg-[#141519] border-t border-white/5 flex items-center gap-1.5 overflow-x-auto select-none">
+                  {['👍 Sounds good!', '⏰ Call you back shortly', '✅ Received, thank you', '📍 On my way', '👋 Hi!'].map((quickText) => (
+                    <button
+                      key={quickText}
+                      type="button"
+                      onClick={() => setMessageBody(prev => (prev ? `${prev} ${quickText}` : quickText))}
+                      className="px-2.5 py-1 rounded-full bg-white/5 hover:bg-white/10 text-[11px] text-zinc-300 border border-white/5 whitespace-nowrap transition-colors cursor-pointer flex-shrink-0"
+                    >
+                      {quickText}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Carrier Line Info & Segment Counter */}
+                <div className="px-4 py-1 bg-[#121317] border-t border-white/5 flex items-center justify-between text-[10px] text-zinc-500">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span className="font-mono">
+                      Carrier Line: {selectedFromNumber || activeNumber?.phoneNumber || (isAdmin ? '+1 (737) 250-8034' : 'Direct Twilio Line')}
+                    </span>
+                  </div>
+                  <div className="font-mono">
+                    {messageBody.length}/160 {messageBody.length > 160 ? `(${Math.ceil(messageBody.length / 160)} SMS)` : '(1 SMS)'}
+                  </div>
+                </div>
+
+                {/* Quick Emoji Reaction Pill (when toggled) */}
+                {showEmojiPicker && (
+                  <div className="px-4 py-2 bg-[#17181d] border-t border-white/10 flex items-center gap-3 overflow-x-auto">
+                    {['👍', '❤️', '😂', '🔥', '🎉', '👋', '🙏', '💯', '✨', '🚀', '✅', '💼'].map((em) => (
+                      <button
+                        key={em}
+                        type="button"
+                        onClick={() => {
+                          setMessageBody((prev) => prev + em);
+                          setShowEmojiPicker(false);
+                        }}
+                        className="text-lg hover:scale-125 transition-transform cursor-pointer p-1"
+                      >
+                        {em}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Bottom Input Bar (Pill input + Circular FAB) */}
+                <div className="p-3 bg-[#16171b] border-t border-white/10 flex items-center gap-2.5 flex-shrink-0">
+                  {/* Rounded Pill Container with input, Smile, Gallery */}
+                  <form
+                    onSubmit={handleSendSms}
+                    className="flex-1 flex items-center bg-[#202127] border border-white/10 rounded-full px-4 py-2 gap-2 shadow-inner focus-within:border-[#FF6A00]/50 transition-colors"
+                  >
+                    <input
+                      type="text"
+                      placeholder="Text message (SMS)"
+                      value={messageBody}
+                      onChange={(e) => setMessageBody(e.target.value)}
+                      className="flex-1 bg-transparent text-xs text-white placeholder-zinc-500 outline-none"
+                    />
+
+                    {/* Emoji Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                      className="text-zinc-400 hover:text-white transition-colors cursor-pointer p-1"
+                      title="Insert emoji"
+                    >
+                      <Smile className="w-5 h-5" />
+                    </button>
+
+                    {/* Image / Gallery Button */}
+                    <button
+                      type="button"
+                      onClick={() => alert('Attachments can be dispatched over carrier MMS when configured.')}
+                      className="text-zinc-400 hover:text-white transition-colors cursor-pointer p-1"
+                      title="Attach image (MMS)"
+                    >
+                      <ImageIcon className="w-5 h-5" />
+                    </button>
+                  </form>
+
+                  {/* Circular Send FAB */}
+                  <button
+                    type="button"
+                    disabled={isSending || !messageBody.trim() || (!activeNumber && !isAdmin)}
+                    onClick={handleSendSms}
+                    className={`w-11 h-11 rounded-full flex items-center justify-center text-white shadow-lg transition-all active:scale-95 cursor-pointer flex-shrink-0 ${
+                      messageBody.trim() && !isSending
+                        ? 'bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] shadow-[#FF6A00]/30 hover:opacity-95'
+                        : 'bg-[#2a2b34] text-zinc-500 cursor-not-allowed shadow-none'
+                    }`}
+                    title={messageBody.trim() ? 'Send SMS' : 'Enter text to send'}
+                  >
+                    {isSending ? (
+                      <Loader2 className="w-5 h-5 animate-spin text-white" />
+                    ) : (
+                      <Send className="w-4 h-4 translate-x-0.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Threads Overview List */
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-base font-bold flex items-center gap-2">
+                      <span>SMS Conversations</span>
+                      <span className="text-xs text-zinc-400 font-normal">
+                        ({conversationThreads.length} conversation{conversationThreads.length === 1 ? '' : 's'})
+                      </span>
+                    </h2>
+                    <p className="text-xs text-zinc-400">
+                      Google Messages styled SMS communication. All threads are deletable.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsComposingNewChat(true);
+                        setActiveThreadNumber(null);
+                        setNewChatRecipient('');
+                      }}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow-md hover:opacity-95 transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Start chat</span>
+                    </button>
+
+                    {messages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleClearAllMessages}
+                        className="px-3 py-2 rounded-xl text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Clear All</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {conversationThreads.length === 0 ? (
+                  <div className={`p-12 text-center rounded-2xl border ${
+                    darkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white border-zinc-200'
+                  }`}>
+                    <div className="w-14 h-14 mx-auto rounded-full bg-gradient-to-tr from-[#FF6A00]/20 to-amber-500/20 text-[#FF6A00] flex items-center justify-center mb-3">
+                      <MessageSquare className="w-7 h-7" />
+                    </div>
+                    <h3 className="text-sm font-bold">No conversations yet</h3>
+                    <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto">
+                      Click "Start chat" above to text any phone number, or receive incoming texts on your carrier line.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/5 border border-white/10 rounded-2xl overflow-hidden shadow-xs bg-[#16171b]">
+                    {conversationThreads.map((thread) => (
+                      <div
+                        key={thread.number}
+                        onClick={() => {
+                          setActiveThreadNumber(thread.number);
+                          setIsComposingNewChat(false);
+                        }}
+                        className="p-4 transition-colors flex items-center justify-between gap-3 hover:bg-white/5 cursor-pointer"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          {/* Circular Orange Avatar (Matching Picture) */}
+                          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] text-white font-bold text-base flex items-center justify-center shadow-md flex-shrink-0">
+                            {thread.initial}
+                          </div>
+
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-bold text-white truncate">
+                              {thread.name}
+                            </h4>
+                            <p className="text-[11px] text-zinc-400 truncate mt-0.5">
+                              {thread.lastMessage?.body || 'No messages'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="text-right flex-shrink-0 space-y-1">
+                          <span className="text-[10px] text-zinc-500 font-mono">
+                            {new Date(thread.lastMessage.receivedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                          </span>
+                          <div className="flex items-center justify-end gap-1">
+                            <span className="text-[10px] text-[#FF8C42] font-semibold">
+                              Open chat →
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -718,7 +1020,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
         {/* ================= TAB 2: CONTACTS ================= */}
         {activeTab === 'contacts' && (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6 w-full">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold flex items-center gap-2">
@@ -728,7 +1030,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Save, search, dial, and manage your phonebook contacts.
+                  Save, search, dial, and text your phonebook contacts in 1 click.
                 </p>
               </div>
 
@@ -777,7 +1079,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#FF6A00]/20 to-amber-500/20 text-[#FF6A00] flex items-center justify-center font-bold text-sm flex-shrink-0">
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] text-white flex items-center justify-center font-bold text-sm flex-shrink-0 shadow-md">
                         {contact.name.charAt(0).toUpperCase()}
                       </div>
                       <div className="min-w-0">
@@ -792,27 +1094,30 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
                         type="button"
-                        onClick={() => handleContactAction(contact, 'sms')}
-                        title="Send SMS"
-                        className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-[#FF8C42] transition-colors cursor-pointer"
+                        onClick={() => {
+                          setActiveThreadNumber(contact.phoneNumber);
+                          setActiveTab('inbox');
+                        }}
+                        title="Open Chat in Google Messages"
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-[#FF8C42] transition-colors cursor-pointer"
                       >
-                        <Send className="w-3.5 h-3.5" />
+                        <MessageSquare className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleContactAction(contact, 'call')}
+                        onClick={() => handleMakeCall(undefined, contact.phoneNumber)}
                         title="Voice Call"
-                        className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors cursor-pointer"
+                        className="p-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors cursor-pointer"
                       >
-                        <PhoneCallIcon className="w-3.5 h-3.5" />
+                        <PhoneCallIcon className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
                         onClick={(e) => handleDeleteContact(contact.id, e)}
                         title="Delete contact"
-                        className="p-1.5 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+                        className="p-2 rounded-xl hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -824,7 +1129,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
         {/* ================= TAB 3: CALL'S (DIALER) ================= */}
         {activeTab === 'calls' && (
-          <div className="max-w-xl mx-auto space-y-6">
+          <div className="max-w-xl mx-auto space-y-6 w-full">
             <div className={`p-6 rounded-2xl border ${
               darkMode ? 'bg-[#18191e] border-white/10' : 'bg-white border-zinc-200 shadow-sm'
             }`}>
@@ -882,7 +1187,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   />
                 </div>
 
-                {/* Number Keypad Helpers */}
+                {/* Number Keypad */}
                 <div className="grid grid-cols-3 gap-2 pt-2">
                   {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map(digit => (
                     <button
@@ -913,7 +1218,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
         {/* ================= TAB 4: HISTORY ================= */}
         {activeTab === 'history' && (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6 w-full">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold flex items-center gap-2">
@@ -946,7 +1251,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                 <PhoneIncoming className="w-10 h-10 mx-auto text-zinc-500 mb-2 stroke-[1.5]" />
                 <h3 className="text-sm font-bold">No call history recorded</h3>
                 <p className="text-xs text-zinc-400 mt-1 max-w-xs mx-auto">
-                  Inbound and outbound calls placed with your carrier number will display here in real-time.
+                  Inbound and outbound calls placed with your carrier line will display here in real-time.
                 </p>
               </div>
             ) : (
@@ -1006,9 +1311,9 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
           </div>
         )}
 
-        {/* ================= TAB 5: BUY PHONE NUMBER (NOWPAYMENTS) ================= */}
+        {/* ================= TAB 5: BUY PHONE NUMBER (NOWPAYMENTS $6) ================= */}
         {activeTab === 'buy' && (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6 w-full">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold flex items-center gap-2">
@@ -1018,7 +1323,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Real US numbers for verification, SMS & voice. No free numbers provided until purchased.
+                  Real US numbers for verification, SMS & voice. No free numbers provided until purchased ($6.00).
                 </p>
               </div>
 
@@ -1044,7 +1349,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between gap-3 text-amber-300">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 flex-shrink-0" />
-                  <span>Admin Privilege: miracle@goldmailer.xyz has complimentary access to all phone lines.</span>
+                  <span>Admin Account: miracle@goldmailer.xyz has exclusive access to the dedicated admin line.</span>
                 </div>
               </div>
             )}
@@ -1195,7 +1500,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
         </div>
       )}
 
-      {/* ================= MODAL: NOWPAYMENTS CHECKOUT ================= */}
+      {/* ================= MODAL: NOWPAYMENTS CHECKOUT ($6.00) ================= */}
       {checkoutModalOpen && selectedNumberToBuy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
           <div className="relative w-full max-w-lg bg-[#18191c] border-2 border-amber-500/30 text-white rounded-3xl shadow-2xl p-6 sm:p-7">
@@ -1267,7 +1572,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               <div className="mt-5 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-3">
                 <div className="flex items-center gap-2 text-emerald-400 font-bold">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Invoice Ready on NOWPayments</span>
+                  <span>Invoice Ready on NOWPayments ($6.00)</span>
                 </div>
                 <p className="text-zinc-300">
                   Click the button below to complete payment via NOWPayments. Once payment is confirmed on the blockchain, your number activates automatically.
@@ -1279,7 +1584,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                     rel="noreferrer"
                     className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold text-center flex items-center justify-center gap-1.5 hover:opacity-95 shadow-md"
                   >
-                    <span>Proceed to NOWPayments</span>
+                    <span>Proceed to NOWPayments ($6.00)</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                   <button
@@ -1308,7 +1613,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   className="flex-1 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white hover:opacity-95 cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20 disabled:opacity-50"
                 >
                   <Coins className="w-3.5 h-3.5" />
-                  <span>{isGeneratingInvoice ? 'Creating Invoice...' : 'Generate Crypto Invoice'}</span>
+                  <span>{isGeneratingInvoice ? 'Creating Invoice...' : 'Generate Crypto Invoice ($6)'}</span>
                 </button>
               </div>
             )}
