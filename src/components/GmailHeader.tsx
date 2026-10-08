@@ -14,6 +14,7 @@ interface GmailHeaderProps {
   darkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenOAuthDev: () => void;
+  onOpenAdmin?: () => void;
 }
 
 export const GmailHeader: React.FC<GmailHeaderProps> = ({
@@ -27,7 +28,8 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
   onSyncEmails,
   darkMode,
   onToggleDarkMode,
-  onOpenOAuthDev
+  onOpenOAuthDev,
+  onOpenAdmin
 }) => {
   const avatarLetter = (user?.first_name || user?.name || activeEmail || 'M').charAt(0).toUpperCase();
 
@@ -89,6 +91,19 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
         >
           {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </button>
+
+        {/* Admin Panel Quick Action (Mobile & Desktop) */}
+        {onOpenAdmin && (
+          <button
+            type="button"
+            onClick={onOpenAdmin}
+            title="Admin Control Panel"
+            className="flex items-center gap-1 px-2 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 text-xs font-bold transition-all flex-shrink-0"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Admin</span>
+          </button>
+        )}
 
         {/* OAuth 2.0 Dev Portal Quick Action */}
         <button

@@ -16,7 +16,8 @@ import {
   HelpCircle,
   HardDrive,
   Code2,
-  Phone
+  Phone,
+  ShieldCheck
 } from 'lucide-react';
 import { MailFolder, UserProfile } from '../types';
 
@@ -28,6 +29,7 @@ interface GmailSidebarProps {
   onOpenCompose: () => void;
   onOpenSettings: () => void;
   onOpenOAuthDev: () => void;
+  onOpenAdmin?: () => void;
   darkMode: boolean;
   activeTab?: 'email' | 'phone';
   onOpenPhone?: () => void;
@@ -42,6 +44,7 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
   onOpenCompose,
   onOpenSettings,
   onOpenOAuthDev,
+  onOpenAdmin,
   darkMode,
   activeTab = 'email',
   onOpenPhone,
@@ -174,10 +177,13 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
               <HardDrive className="w-3.5 h-3.5 text-[#FF6A00]" />
               <span>Storage</span>
             </span>
-            <span>0.42 GB / 15 GB</span>
+            <span>{(user?.storage_used_gb ?? 0).toFixed(2)} GB / {user?.storage_quota_gb || 15} GB</span>
           </div>
           <div className={`w-full h-1.5 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-zinc-200'}`}>
-            <div className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42]" style={{ width: '2.8%' }} />
+            <div
+              className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42]"
+              style={{ width: `${Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100)}%` }}
+            />
           </div>
         </div>
 
@@ -192,6 +198,17 @@ export const GmailSidebar: React.FC<GmailSidebarProps> = ({
             <Settings className="w-3.5 h-3.5" />
             <span>Security</span>
           </button>
+          {onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 transition-colors cursor-pointer font-semibold"
+              title="Open Admin Control Panel"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Admin</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onOpenOAuthDev}

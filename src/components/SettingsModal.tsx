@@ -509,13 +509,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <HardDrive className="w-4 h-4 text-[#FF6A00]" />
                     Storage Allocated
                   </span>
-                  <span className="text-zinc-400 font-mono">0.42 GB of 15.00 GB (2.8%)</span>
+                  <span className="text-zinc-400 font-mono">
+                    {(user?.storage_used_gb ?? 0).toFixed(2)} GB of {(user?.storage_quota_gb || 15).toFixed(2)} GB ({Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100).toFixed(1)}%)
+                  </span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-black/40 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] rounded-full" style={{ width: '2.8%' }} />
+                  <div
+                    className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] rounded-full"
+                    style={{ width: `${Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100)}%` }}
+                  />
                 </div>
                 <p className="text-[11px] text-zinc-500">
-                  Permanent 15GB complimentary cloud storage included with every GoldMailer account.
+                  Permanent {user?.storage_quota_gb || 15}GB complimentary cloud storage included with every GoldMailer account.
                 </p>
               </div>
 

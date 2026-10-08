@@ -41,21 +41,26 @@ export interface FetchedImapEmail {
 export function extractCleanAddress(input: any): string {
   if (!input) return '';
   if (Array.isArray(input)) {
-    for (const item of input) {
-      const addr = extractCleanAddress(item);
-      if (addr) return addr;
-    }
-    return '';
+    const extracted = input.map(item => extractCleanAddress(item)).filter(Boolean);
+    const goldXyz = extracted.find(a => a.endsWith('@goldmailer.xyz'));
+    return goldXyz || extracted[0] || '';
   }
   if (typeof input === 'object') {
     return (input.address || input.email || input.text || '').toLowerCase().trim();
   }
   const str = String(input);
-  const match = str.match(/<([^>]+)>/) || str.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-  if (match && match[1]) {
-    return match[1].toLowerCase().trim();
+  const parts = str.split(/[,;]+/);
+  const candidates: string[] = [];
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>/) || part.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    if (match && match[1]) {
+      candidates.push(match[1].toLowerCase().trim());
+    } else if (part.trim()) {
+      candidates.push(part.toLowerCase().trim());
+    }
   }
-  return str.toLowerCase().trim();
+  const goldXyz = candidates.find(a => a.endsWith('@goldmailer.xyz'));
+  return goldXyz || candidates[0] || '';
 }
 
 /**

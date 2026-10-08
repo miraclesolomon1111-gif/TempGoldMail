@@ -31,7 +31,7 @@ async function runBugsVerification() {
     const bug3Username = `persistence_user_${Date.now()}`;
     const bug3Pass = 'GoldPassword2026!';
     
-    // Create new email account xxx@goldmailer.com
+    // Create new email account xxx@goldmailer.xyz
     const createRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -54,7 +54,7 @@ async function runBugsVerification() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        identifier: `${bug3Username}@goldmailer.com`,
+        identifier: `${bug3Username}@goldmailer.xyz`,
         password: bug3Pass
       })
     });
@@ -106,7 +106,7 @@ async function runBugsVerification() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        identifier: `${bug3Username}@goldmailer.com`,
+        identifier: `${bug3Username}@goldmailer.xyz`,
         password: bug3Pass
       })
     });
@@ -132,7 +132,7 @@ async function runBugsVerification() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        identifier: `${bug3Username}@goldmailer.com`,
+        identifier: `${bug3Username}@goldmailer.xyz`,
         password: bug3Pass
       })
     });
@@ -154,7 +154,7 @@ async function runBugsVerification() {
         Authorization: `Bearer ${userAuthToken}`
       },
       body: JSON.stringify({
-        to: `${bug3Username}@goldmailer.com`,
+        to: `${bug3Username}@goldmailer.xyz`,
         subject: 'Important Test Invoice #1024',
         bodyText: 'This is a test email to verify trash persistence.'
       })
@@ -237,7 +237,7 @@ async function runBugsVerification() {
         Authorization: `Bearer ${userAuthToken}`
       },
       body: JSON.stringify({
-        targetEmail: `${bug4SecondUser}@goldmailer.com`
+        targetEmail: `${bug4SecondUser}@goldmailer.xyz`
       })
     });
     const switchData = await switchRes.json();
@@ -252,7 +252,7 @@ async function runBugsVerification() {
         Authorization: `Bearer ${switchData.token}`
       },
       body: JSON.stringify({
-        targetEmail: `${bug3Username}@goldmailer.com`
+        targetEmail: `${bug3Username}@goldmailer.xyz`
       })
     });
     const switchBackData = await switchBackRes.json();
@@ -282,7 +282,7 @@ async function runBugsVerification() {
 
     // 3. Email Accounts
     const f3 = await fetch(`${baseUrl}/api/admin/email-accounts`, { headers: adminHeaders });
-    assert(f3.status === 200, 'Feature 3: Email Accounts (@goldmailer.com accounts)');
+    assert(f3.status === 200, 'Feature 3: Email Accounts (@goldmailer.xyz accounts)');
 
     // 4. Ban/Suspend Users (already tested in Bug 1)
     assert(true, 'Feature 4: Ban/Suspend Users (ban with reason, permanent DB)');
@@ -305,7 +305,7 @@ async function runBugsVerification() {
 
     // 9. Domains
     const f9 = await fetch(`${baseUrl}/api/admin/domains`, { headers: adminHeaders });
-    assert(f9.status === 200, 'Feature 9: Domains (goldmailer.com and custom domains)');
+    assert(f9.status === 200, 'Feature 9: Domains (goldmailer.xyz and custom domains)');
 
     // 10. System Health
     const f10 = await fetch(`${baseUrl}/api/admin/system-health`, { headers: adminHeaders });
@@ -350,6 +350,70 @@ async function runBugsVerification() {
     // 20. Activity Logs
     const f20 = await fetch(`${baseUrl}/api/admin/activity-logs`, { headers: adminHeaders });
     assert(f20.status === 200, 'Feature 20: Activity Logs (who banned who, when, with IP)');
+
+    // =========================================================================
+    // TEST 5: INBOUND EMAIL RECEPTION & GOLDMAILER.XYZ DOMAIN / SMTP VERIFICATION
+    // =========================================================================
+    console.log('\n--- TEST 5: Inbound Email Reception & goldmailer.xyz Exclusive Domain ---');
+    const targetXyzEmail = `${bug3Username}@goldmailer.xyz`;
+
+    // 5.1 Test Resend / Generic Webhook Inbound Email
+    const wh1 = await fetch(`${baseUrl}/api/webhook/inbound`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'email.received',
+        data: {
+          from: 'sender@gmail.com',
+          to: [targetXyzEmail],
+          subject: 'Webhook Inbound Delivery Test #1',
+          text: 'Hello GoldMailer.xyz inbox via Resend webhook!',
+          html: '<p>Hello <b>GoldMailer.xyz</b> inbox via Resend webhook!</p>'
+        }
+      })
+    });
+    const wh1Data = await wh1.json();
+    assert(wh1.status === 200 && wh1Data.success === true, '5.1 /api/webhook/inbound receives email for @goldmailer.xyz');
+
+    // 5.2 Test Cloudflare Email Routing / Raw MIME Webhook
+    const wh2 = await fetch(`${baseUrl}/api/webhook/cloudflare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'cloudflare-test@example.org',
+        to: targetXyzEmail,
+        subject: 'Cloudflare Routing Test #2',
+        raw: `From: "Cloudflare Test" <cloudflare-test@example.org>\r\nTo: ${targetXyzEmail}\r\nSubject: Cloudflare Routing Test #2\r\nContent-Type: text/plain; charset="utf-8"\r\n\r\nRaw MIME body delivered to ${targetXyzEmail}`
+      })
+    });
+    const wh2Data = await wh2.json();
+    assert(wh2.status === 200 && wh2Data.success === true, '5.2 /api/webhook/cloudflare receives raw MIME email for @goldmailer.xyz');
+
+    // 5.3 Verify both inbound emails appear in GET /api/emails/:email and GET /api/emails?folder=primary
+    const checkInboxRes = await fetch(`${baseUrl}/api/emails/${encodeURIComponent(targetXyzEmail)}?folder=primary`, {
+      headers: { Authorization: `Bearer ${userAuthToken}` }
+    });
+    const checkInboxEmails = await checkInboxRes.json();
+    assert(
+      Array.isArray(checkInboxEmails) &&
+      checkInboxEmails.some((e: any) => e.subject === 'Webhook Inbound Delivery Test #1') &&
+      checkInboxEmails.some((e: any) => e.subject === 'Cloudflare Routing Test #2'),
+      '5.3 Received webhook emails are persisted and returned in user @goldmailer.xyz inbox'
+    );
+
+    // 5.4 Verify SMTP & Domain settings use goldmailer.xyz exclusively
+    const apiKeysData = await f19.json();
+    assert(
+      apiKeysData.smtp_domain === 'goldmailer.xyz' &&
+      String(apiKeysData.smtp_host).includes('goldmailer.xyz'),
+      '5.4 SMTP configuration exclusively uses goldmailer.xyz'
+    );
+
+    const overviewStats = await f1.json();
+    assert(
+      Number(overviewStats.monthlyRevenueUsd) === 0,
+      '5.5 No mock balance in Admin Overview (monthlyRevenueUsd is 0 when no real payments)'
+    );
 
     console.log(`\n=============================================================`);
     console.log(`🎉 ALL TESTS COMPLETED: ${passed} PASSED, ${failed} FAILED`);

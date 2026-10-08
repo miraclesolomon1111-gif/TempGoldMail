@@ -40,7 +40,8 @@ import {
   ExternalLink,
   Sliders,
   DollarSign,
-  UserPlus
+  UserPlus,
+  Menu
 } from 'lucide-react';
 import {
   fetchAdminOverview,
@@ -132,6 +133,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const [darkMode, setDarkMode] = useState(true);
   const [globalSearch, setGlobalSearch] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [feedbackNotice, setFeedbackNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Data states
@@ -166,12 +168,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const [storageEditModal, setStorageEditModal] = useState<{ open: boolean; user: any | null; limitGb: number }>({ open: false, user: null, limitGb: 15 });
   const [newRoleForm, setNewRoleForm] = useState({ email: '', name: '', role: 'support_admin' });
 
-  // Twilio Settings state
+  // Twilio & SMTP Settings state
   const [twilioAccountSid, setTwilioAccountSid] = useState('');
   const [twilioAuthToken, setTwilioAuthToken] = useState('');
   const [twilioTrialNumber, setTwilioTrialNumber] = useState('+1 (267) 230-1662');
   const [showAuthToken, setShowAuthToken] = useState(false);
   const [isTestingTwilio, setIsTestingTwilio] = useState(false);
+  const [smtpHost, setSmtpHost] = useState('smtp.goldmailer.xyz');
+  const [smtpPort, setSmtpPort] = useState('587');
+  const [smtpUser, setSmtpUser] = useState('postmaster@goldmailer.xyz');
+  const [smtpPass, setSmtpPass] = useState('');
 
   // Clear notice after 4 seconds
   useEffect(() => {
@@ -242,6 +248,9 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       } else if (tab === 'api_keys') {
         const ak = await fetchAdminApiKeys();
         setApiKeysStatus(ak);
+        if (ak?.smtp_host) setSmtpHost(ak.smtp_host);
+        if (ak?.smtp_port) setSmtpPort(String(ak.smtp_port));
+        if (ak?.smtp_user) setSmtpUser(ak.smtp_user);
         const tw = await fetchAdminTwilioStatus().catch(() => null);
         if (tw?.trialNumber) setTwilioTrialNumber(tw.trialNumber);
       } else if (tab === 'activity_logs') {
@@ -454,13 +463,21 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const handleSaveApiKeys = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await updateAdminTwilioConfig({
-        accountSid: twilioAccountSid.trim() || undefined,
-        authToken: twilioAuthToken.trim() || undefined,
-        trialNumber: twilioTrialNumber.trim() || undefined
-      });
+      await Promise.all([
+        updateAdminTwilioConfig({
+          accountSid: twilioAccountSid.trim() || undefined,
+          authToken: twilioAuthToken.trim() || undefined,
+          trialNumber: twilioTrialNumber.trim() || undefined
+        }),
+        updateAdminApiKeys({
+          smtp_host: smtpHost.trim() || 'smtp.goldmailer.xyz',
+          smtp_port: Number(smtpPort) || 587,
+          smtp_user: smtpUser.trim() || 'postmaster@goldmailer.xyz',
+          ...(smtpPass.trim() ? { smtp_pass: smtpPass.trim() } : {})
+        })
+      ]);
       loadTabContent('api_keys');
-      setFeedbackNotice({ type: 'success', message: 'Twilio & API keys saved successfully.' });
+      setFeedbackNotice({ type: 'success', message: 'SMTP (goldmailer.xyz), Twilio & API keys saved successfully.' });
     } catch (err: any) {
       setFeedbackNotice({ type: 'error', message: err.message });
     }
@@ -494,28 +511,43 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     >
       {/* ================= TOP WORKSPACE HEADER ================= */}
       <header
-        className={`h-16 border-b flex-shrink-0 flex items-center justify-between px-4 sm:px-6 z-20 ${
+        className={`h-14 sm:h-16 border-b flex-shrink-0 flex items-center justify-between px-3 sm:px-6 z-20 ${
           darkMode ? 'bg-[#121316] border-zinc-800' : 'bg-white border-zinc-200'
         }`}
       >
-        {/* Left: Branding & Google Workspace badge */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white font-extrabold text-xl shadow-md shadow-[#FF6A00]/25">
+        {/* Left: Mobile Menu Button + Branding & Workspace badge */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <button
+            type="button"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            aria-label="Toggle Admin Navigation Menu"
+            className={`lg:hidden p-2 rounded-xl border transition-colors flex-shrink-0 ${
+              darkMode
+                ? 'bg-zinc-800/80 border-zinc-700 text-zinc-200 hover:text-[#FF8C42]'
+                : 'bg-zinc-100 border-zinc-300 text-zinc-700'
+            }`}
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white font-extrabold text-base sm:text-xl shadow-md shadow-[#FF6A00]/25 flex-shrink-0">
             G
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-extrabold text-base tracking-tight text-white">GoldMailer</span>
-              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#FF6A00]/20 text-[#FF8C42] border border-[#FF6A00]/30 uppercase tracking-wider">
-                Workspace Admin
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="font-extrabold text-sm sm:text-base tracking-tight text-white truncate">GoldMailer</span>
+              <span className="px-1.5 sm:px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-bold bg-[#FF6A00]/20 text-[#FF8C42] border border-[#FF6A00]/30 uppercase tracking-wider whitespace-nowrap">
+                Admin
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400 font-medium">Enterprise Email Control Panel (cPanel)</p>
+            <p className="hidden sm:block text-[11px] text-zinc-400 font-medium truncate">
+              Enterprise Email Control Panel (goldmailer.xyz)
+            </p>
           </div>
         </div>
 
         {/* Center: Global Search Bar */}
-        <div className="hidden md:flex items-center flex-1 max-w-md mx-8">
+        <div className="hidden md:flex items-center flex-1 max-w-md mx-4 lg:mx-8">
           <div
             className={`w-full flex items-center gap-2 px-3.5 py-1.5 rounded-xl border text-sm transition-all ${
               darkMode
@@ -526,7 +558,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             <Search className="w-4 h-4 text-zinc-400" />
             <input
               type="text"
-              placeholder="Search users, @goldmailer.com emails, tickets, domains..."
+              placeholder="Search users, @goldmailer.xyz emails, tickets, domains..."
               value={globalSearch}
               onChange={(e) => setGlobalSearch(e.target.value)}
               className="w-full bg-transparent outline-none text-xs"
@@ -540,11 +572,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         </div>
 
         {/* Right: DB Status, Dark Mode Toggle, Profile & Close */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
           {/* Real-time DB Status badge */}
-          <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+          <div className="hidden xl:flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Database Live (Supabase + File DB)</span>
+            <span>Database Live (goldmailer.xyz)</span>
           </div>
 
           {/* Dark / Light Toggle */}
@@ -576,13 +608,137 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
           {/* Close Full Screen Admin & Return to Webmail */}
           <button
             onClick={onClose}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-bold transition-all"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-bold transition-all"
           >
             <X className="w-4 h-4" />
             <span className="hidden sm:inline">Exit Admin</span>
           </button>
         </div>
       </header>
+
+      {/* ================= MOBILE HORIZONTAL QUICK-TAB BAR ================= */}
+      <div
+        className={`lg:hidden flex items-center gap-1.5 overflow-x-auto px-3 py-2 border-b flex-shrink-0 z-10 ${
+          darkMode ? 'bg-[#0f1013] border-zinc-800' : 'bg-white border-zinc-200'
+        }`}
+      >
+        {navGroups.flatMap((g) => g.items).map((item) => {
+          const Icon = item.icon;
+          const isActive = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                setActiveTab(item.id);
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap flex-shrink-0 transition-all ${
+                isActive
+                  ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-xs'
+                  : darkMode
+                  ? 'bg-zinc-900 text-zinc-400 border border-zinc-800'
+                  : 'bg-zinc-100 text-zinc-700 border border-zinc-200'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ================= MOBILE SLIDE-OVER NAVIGATION DRAWER ================= */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          <div
+            className="fixed inset-0 bg-black/75 backdrop-blur-xs"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+          <aside
+            className={`relative w-72 max-w-[85vw] h-full z-10 flex flex-col justify-between overflow-y-auto border-r shadow-2xl ${
+              darkMode ? 'bg-[#0f1013] border-zinc-800 text-white' : 'bg-white border-zinc-200 text-zinc-900'
+            }`}
+          >
+            <div>
+              <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white font-bold text-xs">
+                    G
+                  </div>
+                  <span className="font-bold text-sm">Admin Navigation</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="p-1.5 rounded-lg text-zinc-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Mobile Search Input */}
+              <div className="p-3 border-b border-zinc-800/80">
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs">
+                  <Search className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
+                  <input
+                    type="text"
+                    placeholder="Search @goldmailer.xyz..."
+                    value={globalSearch}
+                    onChange={(e) => setGlobalSearch(e.target.value)}
+                    className="w-full bg-transparent outline-none text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 space-y-4">
+                {navGroups.map((group) => (
+                  <div key={group.group}>
+                    <h4 className="px-3 mb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                      {group.group}
+                    </h4>
+                    <div className="space-y-0.5">
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const isActive = activeTab === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => {
+                              setActiveTab(item.id);
+                              setIsMobileMenuOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                              isActive
+                                ? 'bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-sm font-semibold'
+                                : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 truncate">
+                              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-zinc-400'}`} />
+                              <span className="truncate">{item.label}</span>
+                            </div>
+                            {item.badge !== undefined && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                  isActive ? 'bg-white/20 text-white' : 'bg-[#FF6A00]/15 text-[#FF8C42]'
+                                }`}
+                              >
+                                {item.badge}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {/* Floating Notice Bar */}
       {feedbackNotice && (
@@ -599,10 +755,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       )}
 
       {/* ================= MAIN FULL-SCREEN WORKSPACE BODY ================= */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* ----------------- LEFT SIDEBAR NAVIGATION ----------------- */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* ----------------- LEFT SIDEBAR NAVIGATION (DESKTOP) ----------------- */}
         <aside
-          className={`w-64 flex-shrink-0 border-r flex flex-col justify-between overflow-y-auto ${
+          className={`hidden lg:flex w-64 flex-shrink-0 border-r flex-col justify-between overflow-y-auto ${
             darkMode ? 'bg-[#0f1013] border-zinc-800/80' : 'bg-white border-zinc-200'
           }`}
         >
@@ -668,12 +824,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
 
         {/* ----------------- MAIN VIEW CONTENT CONTAINER ----------------- */}
         <main
-          className={`flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 ${
+          className={`flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3 sm:p-6 md:p-8 ${
             darkMode ? 'bg-[#0b0c0e]' : 'bg-slate-50'
           }`}
         >
           {/* Header of the active tab */}
-          <div className="flex items-center justify-between pb-5 border-b border-zinc-800/60 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 sm:pb-5 border-b border-zinc-800/60 mb-5 sm:mb-6">
             <div>
               <div className="flex items-center gap-2 text-xs font-semibold text-zinc-400 mb-1">
                 <span>GoldMailer Admin</span>
@@ -751,7 +907,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
                   <div>
                     <p className="text-xs text-zinc-400 font-medium">Cloud Storage Allocated</p>
-                    <p className="text-2xl font-black text-white mt-1">{overview?.totalStorageUsedGb || '0.70'} GB</p>
+                    <p className="text-2xl font-black text-white mt-1">{overview?.totalStorageUsedGb ?? '0.00'} GB</p>
                     <p className="text-[11px] text-zinc-400 mt-1">across all users</p>
                   </div>
                   <div className="w-12 h-12 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
@@ -762,7 +918,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
                   <div>
                     <p className="text-xs text-zinc-400 font-medium">Monthly Revenue</p>
-                    <p className="text-2xl font-black text-emerald-400 mt-1">${overview?.monthlyRevenueUsd || '149.99'}</p>
+                    <p className="text-2xl font-black text-emerald-400 mt-1">${overview?.monthlyRevenueUsd ?? '0.00'}</p>
                     <p className="text-[11px] text-zinc-400 mt-1">NOWPayments + Crypto</p>
                   </div>
                   <div className="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
@@ -947,16 +1103,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
-                  <p className="text-xs text-zinc-400">Total @goldmailer.com Accounts</p>
+                  <p className="text-xs text-zinc-400">Total @goldmailer.xyz Accounts</p>
                   <p className="text-xl font-bold text-white mt-1">{emailAccounts.length}</p>
                 </div>
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
                   <p className="text-xs text-zinc-400">Primary Domain</p>
-                  <p className="text-xl font-bold text-[#FF8C42] mt-1">goldmailer.com</p>
+                  <p className="text-xl font-bold text-[#FF8C42] mt-1">goldmailer.xyz</p>
                 </div>
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
-                  <p className="text-xs text-zinc-400">Backup Domain</p>
-                  <p className="text-xl font-bold text-zinc-300 mt-1">goldmailer.xyz</p>
+                  <p className="text-xs text-zinc-400">SMTP Domain</p>
+                  <p className="text-xl font-bold text-zinc-300 mt-1">smtp.goldmailer.xyz</p>
                 </div>
               </div>
 
@@ -1106,15 +1262,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
                   <p className="text-xs text-zinc-400">Total Cloud Allocated</p>
-                  <p className="text-2xl font-bold text-white mt-1">{storageData?.totalAllocatedGb || 30} GB</p>
+                  <p className="text-2xl font-bold text-white mt-1">{storageData?.totalAllocatedGb ?? 0} GB</p>
                 </div>
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
                   <p className="text-xs text-zinc-400">Total Storage Consumed</p>
-                  <p className="text-2xl font-bold text-[#FF8C42] mt-1">{storageData?.totalUsedMb || 700} MB</p>
+                  <p className="text-2xl font-bold text-[#FF8C42] mt-1">{storageData?.totalUsedMb ?? 0} MB</p>
                 </div>
                 <div className="p-4 rounded-2xl bg-zinc-900 border border-zinc-800">
                   <p className="text-xs text-zinc-400">Consumption Rate</p>
-                  <p className="text-2xl font-bold text-emerald-400 mt-1">{storageData?.percentUsed || 2.3}%</p>
+                  <p className="text-2xl font-bold text-emerald-400 mt-1">{storageData?.percentUsed ?? '0.0'}%</p>
                 </div>
               </div>
 
@@ -1562,7 +1718,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     <label className="text-zinc-400 block mb-1">Default Domain</label>
                     <input
                       type="text"
-                      defaultValue={siteSettings?.default_domain || 'goldmailer.com'}
+                      defaultValue={siteSettings?.default_domain || 'goldmailer.xyz'}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white outline-none"
                     />
                   </div>
@@ -1708,6 +1864,54 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     />
                   </div>
 
+                  <div className="pt-3 border-t border-zinc-800 space-y-3">
+                    <h4 className="font-bold text-xs text-[#FF8C42] uppercase tracking-wider">
+                      Primary Domain SMTP Configuration (goldmailer.xyz)
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-zinc-400 block mb-1">SMTP Host</label>
+                        <input
+                          type="text"
+                          value={smtpHost}
+                          onChange={(e) => setSmtpHost(e.target.value)}
+                          placeholder="smtp.goldmailer.xyz"
+                          className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-zinc-400 block mb-1">SMTP Port</label>
+                        <input
+                          type="text"
+                          value={smtpPort}
+                          onChange={(e) => setSmtpPort(e.target.value)}
+                          placeholder="587"
+                          className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-zinc-400 block mb-1">SMTP User (@goldmailer.xyz)</label>
+                        <input
+                          type="text"
+                          value={smtpUser}
+                          onChange={(e) => setSmtpUser(e.target.value)}
+                          placeholder="postmaster@goldmailer.xyz"
+                          className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-zinc-400 block mb-1">SMTP Password</label>
+                        <input
+                          type="password"
+                          value={smtpPass}
+                          onChange={(e) => setSmtpPass(e.target.value)}
+                          placeholder="••••••••••••"
+                          className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex gap-2 pt-2">
                     <button
                       type="submit"
@@ -1834,7 +2038,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
               </div>
 
               <div>
-                <label className="text-zinc-400 block mb-1">Username (@goldmailer.com)</label>
+                <label className="text-zinc-400 block mb-1">Username (@goldmailer.xyz)</label>
                 <input
                   type="text"
                   required

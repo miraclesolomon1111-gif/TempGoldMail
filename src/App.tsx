@@ -699,6 +699,7 @@ export default function App() {
             darkMode={darkMode}
             onToggleDarkMode={toggleDarkMode}
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+            onOpenAdmin={() => setIsAdminOpen(true)}
           />
 
           {/* Desktop Sidebar + Content Layout */}
@@ -712,6 +713,7 @@ export default function App() {
               onOpenCompose={handleOpenCompose}
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+              onOpenAdmin={() => setIsAdminOpen(true)}
               darkMode={darkMode}
               activeTab={mainTab}
               onOpenPhone={() => {
@@ -942,6 +944,7 @@ export default function App() {
         onSwitchAccount={handleSwitchAccount}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
+        onOpenAdmin={() => setIsAdminOpen(true)}
         onOpenHeroPage={(section) => {
           setViewMode('hero');
           setHeroInitialSection(section);

@@ -201,11 +201,11 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
             <span>OAuth 2.0 Developer Portal</span>
           </button>
 
-          {/* Admin link if user is admin */}
-          {(user?.role === 'admin' || user?.email?.toLowerCase().includes('admin')) && (
+          {/* Admin Panel Link (Mobile & Desktop accessible) */}
+          {onOpenAdmin && (
             <button
               onClick={() => {
-                if (onOpenAdmin) onOpenAdmin();
+                onOpenAdmin();
                 onClose();
               }}
               className="w-full flex items-center gap-3 px-5 py-2.5 text-left text-xs text-amber-400 hover:bg-amber-500/10 rounded-r-full font-bold transition-colors"
@@ -244,12 +244,17 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
         <div className="p-4 border-t border-white/10 space-y-2 bg-black/20 text-xs">
           <div className="flex items-center justify-between text-[11px] text-zinc-400">
             <span className="flex items-center gap-1 font-semibold text-white">
-              <HardDrive className="w-3.5 h-3.5 text-[#FF6A00]" /> 15 GB Storage
+              <HardDrive className="w-3.5 h-3.5 text-[#FF6A00]" /> {user?.storage_quota_gb || 15} GB Storage
             </span>
-            <span className="font-mono">0.42 GB (2.8%)</span>
+            <span className="font-mono">
+              {(user?.storage_used_gb ?? 0).toFixed(2)} GB ({Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100).toFixed(1)}%)
+            </span>
           </div>
           <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] rounded-full" style={{ width: '2.8%' }} />
+            <div
+              className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] rounded-full"
+              style={{ width: `${Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100)}%` }}
+            />
           </div>
 
           <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1">

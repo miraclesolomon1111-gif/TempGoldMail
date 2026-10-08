@@ -29,6 +29,7 @@ interface AccountSwitcherSheetProps {
   onSwitchAccount: (email: string) => void;
   onOpenSettings: () => void;
   onOpenOAuthDev: () => void;
+  onOpenAdmin?: () => void;
   onOpenHeroPage?: (section: 'hero' | 'terms' | 'privacy') => void;
   onOpenAuth: (mode?: 'login' | 'register') => void;
   onLogout: () => void;
@@ -44,6 +45,7 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
   onSwitchAccount,
   onOpenSettings,
   onOpenOAuthDev,
+  onOpenAdmin,
   onOpenHeroPage,
   onOpenAuth,
   onLogout,
@@ -133,10 +135,15 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
             <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
               <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono">
                 <span>Storage used</span>
-                <span>0.42 GB of 15 GB (2.8%)</span>
+                <span>
+                  {(user?.storage_used_gb ?? 0).toFixed(2)} GB of {user?.storage_quota_gb || 15} GB ({Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100).toFixed(1)}%)
+                </span>
               </div>
               <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42]" style={{ width: '2.8%' }} />
+                <div
+                  className="h-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42]"
+                  style={{ width: `${Math.min(100, ((user?.storage_used_gb ?? 0) / (user?.storage_quota_gb || 15)) * 100)}%` }}
+                />
               </div>
             </div>
           </div>
@@ -270,6 +277,20 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
               <Code2 className="w-4 h-4 text-[#FF8C42]" />
               <span className="font-medium">OAuth 2.0 Developer Portal</span>
             </button>
+
+            {onOpenAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenAdmin();
+                  onClose();
+                }}
+                className="w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-amber-500/10 text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4 text-amber-400" />
+                <span className="font-semibold">Admin Control Panel (/admin)</span>
+              </button>
+            )}
           </div>
         </div>
 

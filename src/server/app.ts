@@ -153,20 +153,21 @@ if (resendApiKey) {
   }
 }
 
-// SMTP Transporter initialization (for password reset and outbound emails)
-const smtpHost = process.env.SMTP_HOST || '';
-const smtpUser = process.env.SMTP_USER || '';
+// SMTP Transporter initialization (exclusively using goldmailer.xyz domain)
+const smtpHost = process.env.SMTP_HOST || 'smtp.goldmailer.xyz';
+const smtpUser = process.env.SMTP_USER || 'postmaster@goldmailer.xyz';
 const smtpPass = process.env.SMTP_PASS || '';
 const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
 const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
 
 let smtpTransporter: any = null;
-if (smtpHost && smtpUser) {
+if (smtpHost && smtpUser && smtpPass) {
   try {
     smtpTransporter = nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
       secure: smtpSecure,
+      name: 'goldmailer.xyz',
       auth: {
         user: smtpUser,
         pass: smtpPass
@@ -176,6 +177,28 @@ if (smtpHost && smtpUser) {
     console.warn('⚠️ SMTP Transporter init error:', smtpErr);
   }
 }
+
+const getActiveSmtpTransporter = () => {
+  if (smtpTransporter) return smtpTransporter;
+  const cfg = db.getSettings();
+  if (cfg.smtp_host && cfg.smtp_user && cfg.smtp_pass) {
+    try {
+      return nodemailer.createTransport({
+        host: cfg.smtp_host,
+        port: cfg.smtp_port || 587,
+        secure: Boolean(cfg.smtp_secure || cfg.smtp_port === 465),
+        name: 'goldmailer.xyz',
+        auth: {
+          user: cfg.smtp_user,
+          pass: cfg.smtp_pass
+        }
+      });
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
 
 // Type definitions for server storage
 export interface StoredGoldUser {
@@ -356,7 +379,9 @@ const saveData = () => {
   try {
     const payload = JSON.stringify(
       {
+        users: goldUsers,
         goldUsers,
+        emails: goldEmails,
         goldEmails,
         goldDrafts,
         userDevices,
@@ -371,6 +396,13 @@ const saveData = () => {
         phonePurchases: phonePurchases.slice(-100),
         calls_history: calls_history.slice(-300),
         phoneContacts: phoneContacts.slice(-500),
+        tickets: db.getTickets(),
+        activityLogs: db.getActivityLogs(500),
+        domains: db.getDomains(),
+        adminRoles: db.getAdminRoles(),
+        broadcasts: db.getBroadcasts(),
+        payments: db.getPayments(),
+        settings: db.getSettings(),
         twilioConfig: {
           accountSid: getTwilioConfig().accountSid,
           authToken: getTwilioConfig().authToken,
@@ -431,8 +463,16 @@ export const ensureDataLoaded = () => {
           deletedEmailIds.add(did);
         }
       }
-      if (Array.isArray(parsed.goldUsers)) {
-        for (const u of parsed.goldUsers) {
+      const loadedUsers = Array.isArray(parsed.goldUsers) && parsed.goldUsers.length > 0
+        ? parsed.goldUsers
+        : (Array.isArray(parsed.users) ? parsed.users : []);
+      if (loadedUsers.length > 0) {
+        for (const rawU of loadedUsers) {
+          const cleanUser = (rawU.username || (rawU.email || '').split('@')[0] || '').toLowerCase().trim();
+          const u = {
+            ...rawU,
+            email: cleanUser ? `${cleanUser}@goldmailer.xyz` : rawU.email
+          };
           const idx = goldUsers.findIndex(gu => gu.id === u.id || (gu.email && u.email && gu.email.toLowerCase() === u.email.toLowerCase()));
           if (idx === -1) {
             goldUsers.push(u);
@@ -441,9 +481,12 @@ export const ensureDataLoaded = () => {
           }
         }
       }
-      if (Array.isArray(parsed.goldEmails)) {
-        for (const em of parsed.goldEmails) {
-          if (deletedEmailIds.has(em.id)) continue;
+      const loadedEmails = Array.isArray(parsed.goldEmails) && parsed.goldEmails.length > 0
+        ? parsed.goldEmails
+        : (Array.isArray(parsed.emails) ? parsed.emails : []);
+      if (loadedEmails.length > 0) {
+        for (const em of loadedEmails) {
+          if (deletedEmailIds.has(em.id) || em.status === 'deleted') continue;
           const idx = goldEmails.findIndex(ge => ge.id === em.id);
           if (idx === -1) {
             goldEmails.push(em);
@@ -456,10 +499,18 @@ export const ensureDataLoaded = () => {
             };
           }
         }
-        // Purge any deleted emails from memory
-        if (deletedEmailIds.size > 0) {
-          goldEmails = goldEmails.filter(ge => !deletedEmailIds.has(ge.id));
+      }
+      // Also sync any emails from db engine into goldEmails
+      for (const dbEm of db.getAllEmails()) {
+        if (deletedEmailIds.has(dbEm.id) || dbEm.status === 'deleted') continue;
+        const idx = goldEmails.findIndex(ge => ge.id === dbEm.id);
+        if (idx === -1) {
+          goldEmails.push(dbEm);
         }
+      }
+      // Purge any deleted emails from memory
+      if (deletedEmailIds.size > 0) {
+        goldEmails = goldEmails.filter(ge => !deletedEmailIds.has(ge.id) && ge.status !== 'deleted');
       }
       if (Array.isArray(parsed.goldDrafts)) {
         for (const d of parsed.goldDrafts) {
@@ -476,6 +527,7 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.oauthClients)) {
         for (const c of parsed.oauthClients) {
+          if (c.client_id === 'client_goldmailer_demo_app') continue;
           if (!oauthClients.some(oc => oc.client_id === c.client_id)) {
             oauthClients.push(c);
           }
@@ -522,9 +574,10 @@ const seedAccounts = () => {
   const miracleUsername = 'miracle';
   const miracleEmail = 'miracle@goldmailer.xyz';
   const existingMiracle = goldUsers.find(
-    u => u.username.toLowerCase() === miracleUsername || u.email.toLowerCase() === miracleEmail || u.email.toLowerCase() === 'miracle@goldmailer.com'
+    u => u.username.toLowerCase() === miracleUsername || u.email.toLowerCase() === miracleEmail
   );
   if (existingMiracle) {
+    existingMiracle.email = miracleEmail;
     existingMiracle.password_hash = defaultPasswordHash;
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingMiracle.is_banned === undefined) {
@@ -548,7 +601,7 @@ const seedAccounts = () => {
       role: 'admin',
       created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
       is_banned: false,
-      storage_used_bytes: 420 * 1024 * 1024,
+      storage_used_bytes: 0,
       storage_limit_bytes: 15 * 1024 * 1024 * 1024,
       avatar_url: ''
     });
@@ -558,9 +611,10 @@ const seedAccounts = () => {
   const dorisUsername = 'dorisokoh109';
   const dorisEmail = 'dorisokoh109@goldmailer.xyz';
   const existingDoris = goldUsers.find(
-    u => u.username.toLowerCase() === dorisUsername || u.email.toLowerCase() === dorisEmail || u.email.toLowerCase() === 'dorisokoh109@goldmailer.com' || (u.backup_email && u.backup_email.toLowerCase() === 'dorisokoh109@gmail.com')
+    u => u.username.toLowerCase() === dorisUsername || u.email.toLowerCase() === dorisEmail || (u.backup_email && u.backup_email.toLowerCase() === 'dorisokoh109@gmail.com')
   );
   if (existingDoris) {
+    existingDoris.email = dorisEmail;
     existingDoris.password_hash = defaultPasswordHash;
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingDoris.is_banned === undefined) {
@@ -585,7 +639,7 @@ const seedAccounts = () => {
       role: 'admin',
       created_at: new Date(Date.now() - 25 * 86400000).toISOString(),
       is_banned: false,
-      storage_used_bytes: 280 * 1024 * 1024,
+      storage_used_bytes: 0,
       storage_limit_bytes: 15 * 1024 * 1024 * 1024,
       avatar_url: ''
     });
@@ -633,23 +687,15 @@ const seedAccounts = () => {
         is_read: true,
         is_starred: true,
         folder: 'primary',
-        category: 'primary'
+        category: 'primary',
+        status: 'inbox'
       });
+      void db.insertEmail(goldEmails[goldEmails.length - 1]);
     }
   }
 
-  // Ensure default OAuth demo app exists
-  if (oauthClients.length === 0) {
-    oauthClients.push({
-      client_id: 'client_goldmailer_demo_app',
-      client_secret: 'sec_' + crypto.randomBytes(16).toString('hex'),
-      app_name: 'DevPortal Showcase',
-      redirect_uri: 'https://goldmailer.xyz/oauth/callback',
-      website_url: 'https://goldmailer.xyz',
-      owner_user_id: 'usr_miracle_01',
-      created_at: new Date().toISOString()
-    });
-  }
+  // Remove any mock OAuth demo app
+  oauthClients = oauthClients.filter(c => c.client_id !== 'client_goldmailer_demo_app');
 
   // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz)
   const defaultTrialNumber = getTwilioConfig().trialNumber || '+12672301662';
@@ -850,7 +896,6 @@ export function normalizeUserIdentifier(raw: string) {
   const usernameNoDots = usernamePart.replace(/\./g, '');
   const cleanNoDots = clean.replace(/\./g, '');
   const asGoldXyz = `${usernamePart}@goldmailer.xyz`;
-  const asGoldCom = `${usernamePart}@goldmailer.com`;
   const asGoldXyzNoDots = `${usernameNoDots}@goldmailer.xyz`;
 
   return {
@@ -859,14 +904,13 @@ export function normalizeUserIdentifier(raw: string) {
     usernameNoDots,
     cleanNoDots,
     asGoldXyz,
-    asGoldCom,
     asGoldXyzNoDots
   };
 }
 
 export function matchesUserIdentifier(user: StoredGoldUser, rawInput: string): boolean {
   if (!user || !rawInput) return false;
-  const { clean, usernamePart, usernameNoDots, cleanNoDots, asGoldXyz, asGoldCom, asGoldXyzNoDots } =
+  const { clean, usernamePart, usernameNoDots, cleanNoDots, asGoldXyz, asGoldXyzNoDots } =
     normalizeUserIdentifier(rawInput);
 
   const uEmail = (user.email || '').toLowerCase().trim();
@@ -881,7 +925,6 @@ export function matchesUserIdentifier(user: StoredGoldUser, rawInput: string): b
     uEmail === clean ||
     uEmail === usernamePart ||
     uEmail === asGoldXyz ||
-    uEmail === asGoldCom ||
     uUsername === clean ||
     uUsername === usernamePart ||
     (Boolean(uBackup) && uBackup === clean) ||
@@ -945,13 +988,13 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'First name, username, and password are required' });
     }
 
-    const { usernamePart, asGoldXyz, asGoldCom } = normalizeUserIdentifier(username);
+    const { usernamePart, asGoldXyz } = normalizeUserIdentifier(username);
     if (!usernamePart || usernamePart.length < 2) {
       return res.status(400).json({ error: 'Username must be at least 2 characters long' });
     }
 
-    // Default domain is goldmailer.com, also compatible with goldmailer.xyz
-    const cleanEmail = username.includes('@') ? username.trim().toLowerCase() : asGoldCom;
+    // Default and primary domain is exclusively goldmailer.xyz
+    const cleanEmail = asGoldXyz;
 
     // Check DB for existing account
     const existing = await db.findAccount(usernamePart);
@@ -994,9 +1037,9 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       recipient: cleanEmail,
       to_email: cleanEmail,
       to: cleanEmail,
-      sender: 'GoldMailer Team <team@goldmailer.com>',
-      from_email: 'team@goldmailer.com',
-      from: 'team@goldmailer.com',
+      sender: 'GoldMailer Team <team@goldmailer.xyz>',
+      from_email: 'team@goldmailer.xyz',
+      from: 'team@goldmailer.xyz',
       sender_name: 'GoldMailer Team',
       subject: `Welcome to GoldMailer, ${firstName}! Your 15GB permanent mailbox is active 🚀`,
       body_html: `
@@ -1125,11 +1168,9 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     const isSpecialDefaultAccount =
       user.username.toLowerCase() === 'miracle' ||
       user.email.toLowerCase() === 'miracle@goldmailer.xyz' ||
-      user.email.toLowerCase() === 'miracle@goldmailer.com' ||
       user.username.toLowerCase() === 'dorisokoh109' ||
       user.username.toLowerCase() === 'doris' ||
-      user.email.toLowerCase() === 'dorisokoh109@goldmailer.xyz' ||
-      user.email.toLowerCase() === 'dorisokoh109@goldmailer.com';
+      user.email.toLowerCase() === 'dorisokoh109@goldmailer.xyz';
 
     let passwordMatch = false;
     if (isSpecialDefaultAccount && (inputPass === '@654413Mm' || inputPass === 'Password123!')) {
@@ -1430,10 +1471,11 @@ app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
 
     let sentVia = 'in-memory-queue';
 
-    // A. Send via SMTP if transporter configured
-    if (smtpTransporter) {
+    // A. Send via SMTP if transporter configured (exclusively goldmailer.xyz)
+    const activeSmtp = getActiveSmtpTransporter();
+    if (activeSmtp) {
       try {
-        await smtpTransporter.sendMail({
+        await activeSmtp.sendMail({
           from: fromAddress,
           to: recoveryEmail,
           subject: emailSubject,
@@ -1772,9 +1814,11 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
         if (deletedEmailIds.has(im.id) || (im.messageId && deletedEmailIds.has(im.messageId))) continue;
         const already = goldEmails.some(e => e.id === im.id || (im.messageId && e.raw?.messageId === im.messageId));
         if (!already) {
-          goldEmails.unshift(im);
+          const imStored: StoredEmail = { ...im, status: 'inbox' };
+          await db.insertEmail(imStored);
+          goldEmails.unshift(imStored);
           newItemsCount++;
-          broadcastNewEmail(im);
+          broadcastNewEmail(imStored);
         }
       }
     } catch (imapErr: any) {
@@ -1853,8 +1897,10 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
                   is_read: false,
                   is_starred: false,
                   folder: 'primary',
-                  category: 'primary'
+                  category: 'primary',
+                  status: 'inbox'
                 };
+                await db.insertEmail(syncedEmail);
                 goldEmails.unshift(syncedEmail);
                 newItemsCount++;
                 broadcastNewEmail(syncedEmail);
@@ -1904,14 +1950,16 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
       }
     }
 
-    // CRITICAL: Sender must be the authenticated user's primary GoldMailer address (e.g. user@goldmailer.xyz)
-    const userMainEmail = (authUser?.email || sender || '').toLowerCase().trim();
-    if (!userMainEmail) {
+    // CRITICAL: Sender must be the authenticated user's primary GoldMailer address (exclusively @goldmailer.xyz)
+    const rawSender = (authUser?.email || sender || '').toLowerCase().trim();
+    if (!rawSender) {
       return res.status(400).json({ error: 'Sender email address is required' });
     }
+    const senderPrefix = rawSender.replace(/@.*$/, '').trim();
+    const userMainEmail = `${senderPrefix}@goldmailer.xyz`;
     const senderDisplayName = authUser?.first_name
       ? `${authUser.first_name} ${authUser.last_name || ''}`.trim()
-      : userMainEmail.split('@')[0];
+      : senderPrefix;
     const fromHeader = `${senderDisplayName} <${userMainEmail}>`;
 
     const cleanToAddresses = getAllEmailAddresses(to);
@@ -1921,7 +1969,25 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
     let liveSent = false;
     let liveError: string | null = null;
 
-    if (!isScheduled && resendApiKey) {
+    const activeSmtp = getActiveSmtpTransporter();
+    if (!isScheduled && activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: fromHeader,
+          to: cleanToAddresses.length > 0 ? cleanToAddresses : [toFormatted],
+          replyTo: userMainEmail,
+          cc: cc ? getAllEmailAddresses(cc) : undefined,
+          bcc: bcc ? getAllEmailAddresses(bcc) : undefined,
+          subject: subject || '(No Subject)',
+          html: body || '<p></p>'
+        });
+        liveSent = true;
+      } catch (smtpErr: any) {
+        liveError = smtpErr.message;
+      }
+    }
+
+    if (!isScheduled && !liveSent && resendApiKey) {
       try {
         const client = resendClient || new Resend(resendApiKey);
         const sendRes = await client.emails.send({
@@ -1971,9 +2037,11 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
       is_starred: false,
       folder: isScheduled ? 'scheduled' : 'sent',
       category: 'primary',
+      status: 'sent',
       scheduled_for: isScheduled ? scheduled_for : undefined
     };
 
+    await db.insertEmail(sentEmail);
     goldEmails.unshift(sentEmail);
     broadcastNewEmail(sentEmail);
 
@@ -2002,8 +2070,10 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
           is_read: false,
           is_starred: false,
           folder: 'primary',
-          category: 'primary'
+          category: 'primary',
+          status: 'inbox'
         };
+        await db.insertEmail(recvEmail);
         goldEmails.unshift(recvEmail);
         broadcastNewEmail(recvEmail);
       }
@@ -2028,7 +2098,7 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
 });
 
 // 5. Simulate Inbound Email (QA & Testing helper for real-time inbound mail verification)
-app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
+app.post('/api/emails/simulate-inbound', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { to, from, sender_name, subject, body_html, body_text } = req.body;
@@ -2074,9 +2144,11 @@ app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
       is_read: false,
       is_starred: false,
       folder: 'primary',
-      category: 'primary'
+      category: 'primary',
+      status: 'inbox'
     };
 
+    await db.insertEmail(incoming);
     goldEmails.unshift(incoming);
     saveData();
     broadcastNewEmail(incoming);
@@ -2278,8 +2350,17 @@ app.post(
     '/api/emails/inbound',
     '/api/emails/receive',
     '/api/webhook',
+    '/api/webhook/inbound',
+    '/api/webhook/email',
+    '/api/webhook/cloudflare',
+    '/api/webhook/resend',
+    '/api/webhooks/inbound',
+    '/api/webhooks/email',
+    '/api/webhooks/cloudflare',
     '/api/webhooks/resend',
-    '/api/inbound-webhook'
+    '/api/inbound-webhook',
+    '/api/mail/inbound',
+    '/api/smtp/inbound'
   ],
   upload.any(),
   async (req: Request, res: Response) => {
@@ -2290,9 +2371,9 @@ app.post(
       console.log('[INBOUND WEBHOOK] Received webhook request. Path:', req.path, 'Content-Type:', req.headers['content-type']);
 
       let to = extractCleanEmail(
-        data.to || data.recipient || data.to_email || data.envelope?.to ||
-        body.to || body.recipient || body.to_email || body.envelope?.to || body['to'] ||
-        req.headers['x-forwarded-to'] || req.headers['delivered-to'] || ''
+        data.to || data.recipient || data.recipients || data.to_email || data.OriginalRecipient || data.envelope?.to || data.headers?.to ||
+        body.to || body.recipient || body.recipients || body.to_email || body.OriginalRecipient || body.envelope?.to || body.headers?.to || body['to'] ||
+        req.headers['x-forwarded-to'] || req.headers['delivered-to'] || req.headers['x-original-to'] || ''
       );
       let from = extractCleanSender(
         data.from || data.sender || data.from_email || data.envelope?.from ||
@@ -2391,9 +2472,11 @@ app.post(
         is_read: false,
         is_starred: false,
         folder: 'primary',
-        category: 'primary'
+        category: 'primary',
+        status: 'inbox'
       };
 
+      await db.insertEmail(newEmail);
       goldEmails.unshift(newEmail);
       saveData();
       broadcastNewEmail(newEmail);
@@ -2825,9 +2908,7 @@ const requireAdmin = (req: Request, res: Response, next: express.NextFunction) =
     decoded.role === 'admin' ||
     email.includes('admin') ||
     email === 'miracle@goldmailer.xyz' ||
-    email === 'miracle@goldmailer.com' ||
-    email === 'dorisokoh109@goldmailer.xyz' ||
-    email === 'dorisokoh109@goldmailer.com';
+    email === 'dorisokoh109@goldmailer.xyz';
 
   if (!isAdmin) {
     return res.status(403).json({ error: 'Admin access required. Your account lacks administrative privileges.' });
@@ -2841,7 +2922,8 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
   ensureDataLoaded();
   const accounts = db.listAccounts();
   const allEmails = db.getAllEmails();
-  const totalStorage = accounts.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0);
+  const emailBytes = allEmails.reduce((acc, e) => acc + Buffer.byteLength((e.body_html || '') + (e.body_text || '') + (e.subject || ''), 'utf8'), 0);
+  const totalStorage = accounts.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0) + emailBytes;
   const twilioCfg = getTwilioConfig();
   const activeAccounts = accounts.filter(u => !u.is_banned);
   const openTickets = db.getTickets().filter(t => t.status === 'open' || t.status === 'in_progress');
@@ -2864,7 +2946,7 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     blockedIpsCount: db.getBlockedIps().length,
     openTicketsCount: openTickets.length,
     activeDomainsCount: domains.filter(d => d.is_verified).length,
-    monthlyRevenueUsd: revenueTotal > 0 ? revenueTotal : 149.99,
+    monthlyRevenueUsd: Number(revenueTotal.toFixed(2)),
     recentLogins: userDevices.slice(0, 10),
     adminPhoneNumber: twilioCfg.trialNumber || '+1 (267) 230-1662',
     isTwilioConfigured: twilioCfg.isConfigured,
@@ -2897,7 +2979,7 @@ app.post('/api/admin/users', requireAdmin, async (req: Request, res: Response) =
       return res.status(400).json({ error: 'firstName, username, and password required' });
     }
     const cleanUser = username.toLowerCase().replace(/@.*$/, '').trim();
-    const finalEmail = email || `${cleanUser}@goldmailer.com`;
+    const finalEmail = `${cleanUser}@goldmailer.xyz`;
 
     const newUser: StoredGoldUser = {
       id: 'usr_' + crypto.randomBytes(8).toString('hex'),
@@ -2925,7 +3007,7 @@ app.post('/api/admin/users', requireAdmin, async (req: Request, res: Response) =
     goldUsers.unshift(newUser);
     saveData();
 
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'CREATE_USER', 'user', newUser.id, `Created account ${newUser.email}`);
 
     return res.status(201).json({ success: true, user: sanitizeUser(newUser) });
@@ -2954,7 +3036,7 @@ app.put('/api/admin/users/:id', requireAdmin, async (req: Request, res: Response
     if (idx !== -1) goldUsers[idx] = { ...goldUsers[idx], ...updates };
     saveData();
 
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'UPDATE_USER', 'user', id, `Updated account ${updated.email}`);
 
     return res.json({ success: true, user: sanitizeUser(updated) });
@@ -2965,7 +3047,7 @@ app.put('/api/admin/users/:id', requireAdmin, async (req: Request, res: Response
 
 app.delete('/api/admin/users/:id', requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
   const ok = await db.deleteAccount(id, adminEmail);
   if (!ok) return res.status(404).json({ error: 'User not found' });
 
@@ -2976,7 +3058,7 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req: Request, res: Respo
   res.json({ success: true, message: 'User deleted permanently' });
 });
 
-// 3. Email Accounts (@goldmailer.com & @goldmailer.xyz list)
+// 3. Email Accounts (@goldmailer.xyz list)
 app.get('/api/admin/email-accounts', requireAdmin, (_req: Request, res: Response) => {
   ensureDataLoaded();
   const accounts = db.listAccounts().map(u => {
@@ -2987,7 +3069,7 @@ app.get('/api/admin/email-accounts', requireAdmin, (_req: Request, res: Response
       email: u.email,
       username: u.username,
       displayName: `${u.first_name} ${u.last_name}`.trim(),
-      domain: u.email.split('@')[1] || 'goldmailer.com',
+      domain: u.email.split('@')[1] || 'goldmailer.xyz',
       storageUsedMb: ((u.storage_used_bytes || 0) / (1024 * 1024)).toFixed(1),
       storageLimitGb: ((u.storage_limit_bytes || 15 * 1024 * 1024 * 1024) / (1024 * 1024 * 1024)).toFixed(0),
       totalEmails: userEmails.length,
@@ -3007,7 +3089,7 @@ app.post(['/api/admin/users/:id/ban', '/api/admin/ban-user'], requireAdmin, asyn
     if (!id) return res.status(400).json({ error: 'userId or id is required' });
     const { is_banned, banned, reason } = req.body || {};
     const finalBan = is_banned !== undefined ? is_banned : banned;
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
 
     const user = await db.findAccount(id);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -3093,7 +3175,7 @@ app.put('/api/admin/storage/:id', requireAdmin, async (req: Request, res: Respon
     const updated = await db.updateAccount(id, { storage_limit_bytes: limitBytes });
     if (!updated) return res.status(404).json({ error: 'User not found' });
 
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'UPDATE_STORAGE_LIMIT', 'user', id, `Updated storage for ${updated.email} to ${limitGb} GB`);
 
     return res.json({ success: true, user: sanitizeUser(updated) });
@@ -3151,7 +3233,7 @@ app.post('/api/admin/payments', requireAdmin, async (req: Request, res: Response
     const p = await db.recordPayment({
       id: 'pay_' + crypto.randomBytes(5).toString('hex'),
       payment_id: 'now_' + Date.now(),
-      user_email: userEmail || 'client@goldmailer.com',
+      user_email: userEmail || 'client@goldmailer.xyz',
       plan_name: planName || 'Pro 100GB',
       amount_usd: Number(amountUsd || 4.99),
       crypto_currency: cryptoCurrency || 'USDT',
@@ -3174,7 +3256,7 @@ app.post('/api/admin/domains', requireAdmin, async (req: Request, res: Response)
     const { domain } = req.body;
     if (!domain) return res.status(400).json({ error: 'domain name required' });
     const dom = await db.addDomain(domain);
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'ADD_DOMAIN', 'domain', dom.id, `Added domain ${dom.domain}`);
     return res.status(201).json({ success: true, domain: dom });
   } catch (err: any) {
@@ -3208,7 +3290,7 @@ app.get('/api/admin/system-health', requireAdmin, (_req: Request, res: Response)
     memoryUsageMb: Math.round(mem.rss / (1024 * 1024)),
     cpuLoadPercent: 4.2,
     activeSockets: sseClients.length,
-    smtpStatus: process.env.SMTP_HOST ? 'connected' : 'not_configured',
+    smtpStatus: (process.env.SMTP_HOST || db.getSettings().smtp_host) ? 'connected' : 'not_configured',
     twilioStatus: getTwilioConfig().isConfigured ? 'connected' : 'not_configured',
     resendStatus: process.env.RESEND_API_KEY ? 'connected' : 'not_configured',
     lastHealthCheck: new Date().toISOString()
@@ -3220,20 +3302,24 @@ app.get(['/api/admin/analytics', '/api/admin/reports'], requireAdmin, (_req: Req
   ensureDataLoaded();
   const accounts = db.listAccounts();
   const allEmails = db.getAllEmails();
+  const payments = db.getPayments();
 
-  // 7-day registration curve
+  // 7-day registration curve (strictly real database metrics, no mock numbers)
   const days: { date: string; users: number; emails: number; revenue: number }[] = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split('T')[0];
     const uCount = accounts.filter(u => (u.created_at || '').startsWith(dateStr)).length;
-    const eCount = allEmails.filter(e => (e.received_at || e.created_at || '').startsWith(dateStr)).length;
+    const eCount = allEmails.filter(e => e.status !== 'deleted' && (e.received_at || e.created_at || '').startsWith(dateStr)).length;
+    const dayRevenue = payments
+      .filter(p => p.payment_status === 'confirmed' && (p.created_at || '').startsWith(dateStr))
+      .reduce((sum, p) => sum + (p.amount_usd || 0), 0);
     days.push({
       date: dateStr,
-      users: uCount + (i === 0 ? 1 : 0),
-      emails: eCount + Math.floor(Math.random() * 5 + 3),
-      revenue: Math.floor(Math.random() * 20 + 5)
+      users: uCount,
+      emails: eCount,
+      revenue: Number(dayRevenue.toFixed(2))
     });
   }
 
@@ -3255,7 +3341,7 @@ app.post('/api/admin/support-tickets/:id/reply', requireAdmin, async (req: Reque
     const { content, status } = req.body;
     if (!content) return res.status(400).json({ error: 'content required' });
 
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     const updated = await db.replyToTicket(id, adminEmail, 'GoldMailer Support', true, content, status);
     if (!updated) return res.status(404).json({ error: 'Ticket not found' });
 
@@ -3306,7 +3392,7 @@ app.get('/api/admin/security', requireAdmin, (_req: Request, res: Response) => {
 app.post('/api/admin/security/block-ip', requireAdmin, async (req: Request, res: Response) => {
   const { ip, reason } = req.body;
   if (!ip) return res.status(400).json({ error: 'ip required' });
-  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
   await db.blockIp(ip, reason, adminEmail);
   return res.json({ success: true, blockedIps: db.getBlockedIps() });
 });
@@ -3314,7 +3400,7 @@ app.post('/api/admin/security/block-ip', requireAdmin, async (req: Request, res:
 app.post('/api/admin/security/unblock-ip', requireAdmin, async (req: Request, res: Response) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'ip required' });
-  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
   await db.unblockIp(ip, adminEmail);
   return res.json({ success: true, blockedIps: db.getBlockedIps() });
 });
@@ -3340,7 +3426,7 @@ app.post('/api/admin/trash-recovery/recover-email/:id', requireAdmin, async (req
   const { id } = req.params;
   const restored = await db.updateEmailStatus(id, 'inbox', 'primary');
   if (!restored) return res.status(404).json({ error: 'Email not found' });
-  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+  const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
   await db.logAdminActivity(adminEmail, 'RECOVER_EMAIL', 'email', id, `Recovered email "${restored.subject}" to inbox`);
   return res.json({ success: true, email: restored });
 });
@@ -3353,7 +3439,7 @@ app.get('/api/admin/settings', requireAdmin, (_req: Request, res: Response) => {
 app.post('/api/admin/settings', requireAdmin, async (req: Request, res: Response) => {
   try {
     const updated = await db.updateSettings(req.body);
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'UPDATE_SETTINGS', 'system', undefined, 'Updated global system settings');
     return res.json({ success: true, settings: updated });
   } catch (err: any) {
@@ -3370,7 +3456,7 @@ app.post('/api/admin/roles', requireAdmin, async (req: Request, res: Response) =
   try {
     const { email, name, role, permissions } = req.body;
     if (!email || !name) return res.status(400).json({ error: 'email and name required' });
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     const newRole = await db.addAdminRole(email, name, role || 'support_admin', permissions || ['manage_tickets', 'view_users'], adminEmail);
     return res.status(201).json({ success: true, role: newRole });
   } catch (err: any) {
@@ -3393,7 +3479,7 @@ app.post('/api/admin/notifications/broadcast', requireAdmin, async (req: Request
   try {
     const { title, message, target } = req.body;
     if (!title || !message) return res.status(400).json({ error: 'title and message required' });
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     const broadcast = await db.createBroadcast(title, message, adminEmail, target || 'all');
     return res.status(201).json({ success: true, broadcast });
   } catch (err: any) {
@@ -3414,7 +3500,7 @@ app.post('/api/admin/backup/restore', requireAdmin, async (req: Request, res: Re
     const { jsonString } = req.body;
     if (!jsonString) return res.status(400).json({ error: 'jsonString required' });
     const result = await db.restoreFromBackupPayload(jsonString);
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'RESTORE_DATABASE', 'system', undefined, `Restored database from backup: ${result.usersCount} users`);
     return res.json({ success: true, result });
   } catch (err: any) {
@@ -3433,13 +3519,18 @@ app.get('/api/admin/api-keys', requireAdmin, (_req: Request, res: Response) => {
     resendApiKeyConfigured: Boolean(settings.resend_api_key || process.env.RESEND_API_KEY),
     nowpaymentsKeyConfigured: Boolean(settings.nowpayments_api_key),
     supabaseUrl: settings.supabase_url || '',
-    supabaseConfigured: Boolean(settings.supabase_url && settings.supabase_anon_key)
+    supabaseConfigured: Boolean(settings.supabase_url && settings.supabase_anon_key),
+    smtp_domain: 'goldmailer.xyz',
+    smtp_host: settings.smtp_host || 'smtp.goldmailer.xyz',
+    smtp_port: settings.smtp_port || 587,
+    smtp_user: settings.smtp_user || 'postmaster@goldmailer.xyz',
+    smtp_configured: Boolean(settings.smtp_host && settings.smtp_user)
   });
 });
 
 app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { twilioSid, twilioToken, twilioPhone, resendKey, nowpaymentsKey, nowpaymentsIpn, supabaseUrl, supabaseKey } = req.body;
+    const { twilioSid, twilioToken, twilioPhone, resendKey, nowpaymentsKey, nowpaymentsIpn, supabaseUrl, supabaseKey, smtpHost, smtpPort, smtpUser, smtpPass } = req.body;
     const updates: Partial<StoredSettings> = {};
     if (twilioSid !== undefined) updates.twilio_account_sid = twilioSid;
     if (twilioToken !== undefined) updates.twilio_auth_token = twilioToken;
@@ -3449,13 +3540,17 @@ app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response
     if (nowpaymentsIpn !== undefined) updates.nowpayments_ipn_secret = nowpaymentsIpn;
     if (supabaseUrl !== undefined) updates.supabase_url = supabaseUrl;
     if (supabaseKey !== undefined) updates.supabase_anon_key = supabaseKey;
+    if (smtpHost !== undefined) updates.smtp_host = smtpHost;
+    if (smtpPort !== undefined) updates.smtp_port = Number(smtpPort) || 587;
+    if (smtpUser !== undefined) updates.smtp_user = smtpUser;
+    if (smtpPass !== undefined) updates.smtp_pass = smtpPass;
 
     await db.updateSettings(updates);
     if (twilioSid || twilioToken || twilioPhone) {
       setTwilioCredentials(twilioSid, twilioToken, twilioPhone);
     }
 
-    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.com';
+    const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
     await db.logAdminActivity(adminEmail, 'UPDATE_API_KEYS', 'system', undefined, 'Updated third-party integration API keys');
 
     return res.json({ success: true, message: 'API Keys updated securely.' });

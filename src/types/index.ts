@@ -91,6 +91,8 @@ export interface UserProfile {
   backup_codes?: string[];
   storage_used_bytes?: number;
   storage_limit_bytes?: number;
+  storage_used_gb?: number;
+  storage_quota_gb?: number;
 }
 
 export interface Draft {

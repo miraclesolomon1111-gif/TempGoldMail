@@ -31,6 +31,8 @@ export interface StoredGoldUser {
   plan?: 'free' | 'pro' | 'business' | 'enterprise';
   plan_billing?: 'monthly' | 'yearly';
   plan_status?: 'active' | 'cancelled' | 'trial' | 'expired';
+  reset_token?: string;
+  reset_token_expires?: number;
 }
 
 export interface StoredEmail {
@@ -196,23 +198,23 @@ class GoldDatabase {
   private blockedIps: Set<string> = new Set();
   private settings: StoredSettings = {
     site_name: 'GoldMailer',
-    site_url: 'https://goldmailer.com',
-    support_email: 'support@goldmailer.com',
-    default_domain: 'goldmailer.com',
+    site_url: 'https://goldmailer.xyz',
+    support_email: 'support@goldmailer.xyz',
+    default_domain: 'goldmailer.xyz',
     allow_registration: true,
     default_storage_bytes: 15 * 1024 * 1024 * 1024,
     pro_price_monthly_usd: 4.99,
     pro_price_yearly_usd: 49.99,
-    smtp_host: process.env.SMTP_HOST || '',
+    smtp_host: process.env.SMTP_HOST || 'smtp.goldmailer.xyz',
     smtp_port: parseInt(process.env.SMTP_PORT || '587', 10),
-    smtp_user: process.env.SMTP_USER || '',
+    smtp_user: process.env.SMTP_USER || 'postmaster@goldmailer.xyz',
     smtp_pass: process.env.SMTP_PASS || '',
     smtp_secure: process.env.SMTP_SECURE === 'true',
     twilio_account_sid: process.env.TWILIO_ACCOUNT_SID || '',
     twilio_auth_token: process.env.TWILIO_AUTH_TOKEN || '',
     twilio_trial_number: process.env.TWILIO_PHONE_NUMBER || '+1 (267) 230-1662',
     resend_api_key: process.env.RESEND_API_KEY || '',
-    resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.com>',
+    resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>',
     nowpayments_api_key: process.env.NOWPAYMENTS_API_KEY || '',
     nowpayments_ipn_secret: process.env.NOWPAYMENTS_IPN_SECRET || process.env.IPN_SECRET || '',
     supabase_url: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
@@ -246,9 +248,23 @@ class GoldDatabase {
   // Atomic file save to prevent corruption or truncated files
   public saveToDiskSync() {
     try {
+      let existingExtra: Record<string, any> = {};
+      for (const targetPath of DB_PATHS) {
+        try {
+          if (fs.existsSync(targetPath)) {
+            const raw = fs.readFileSync(targetPath, 'utf-8');
+            existingExtra = JSON.parse(raw);
+            break;
+          }
+        } catch {}
+      }
+
       const data = {
+        ...existingExtra,
         users: this.users,
+        goldUsers: this.users,
         emails: this.emails,
+        goldEmails: this.emails,
         sessions: this.sessions,
         tickets: this.tickets,
         activityLogs: this.activityLogs.slice(-500),
@@ -308,15 +324,26 @@ class GoldDatabase {
     }
 
     if (freshestData) {
-      if (Array.isArray(freshestData.users)) {
-        this.users = freshestData.users.map((u: any) => ({
-          ...u,
-          is_banned: Boolean(u.is_banned),
-          banned_at: u.banned_at || (u.is_banned ? new Date().toISOString() : undefined)
-        }));
+      const rawUsers = Array.isArray(freshestData.users) && freshestData.users.length > 0
+        ? freshestData.users
+        : (Array.isArray(freshestData.goldUsers) ? freshestData.goldUsers : []);
+      if (rawUsers.length > 0) {
+        this.users = rawUsers.map((u: any) => {
+          const cleanUser = (u.username || (u.email || '').split('@')[0] || '').toLowerCase().trim();
+          const fixedEmail = cleanUser ? `${cleanUser}@goldmailer.xyz` : (u.email || '');
+          return {
+            ...u,
+            email: fixedEmail,
+            is_banned: Boolean(u.is_banned),
+            banned_at: u.banned_at || (u.is_banned ? new Date().toISOString() : undefined)
+          };
+        });
       }
-      if (Array.isArray(freshestData.emails)) {
-        this.emails = freshestData.emails.map((e: any) => ({
+      const rawEmails = Array.isArray(freshestData.emails) && freshestData.emails.length > 0
+        ? freshestData.emails
+        : (Array.isArray(freshestData.goldEmails) ? freshestData.goldEmails : []);
+      if (rawEmails.length > 0) {
+        this.emails = rawEmails.map((e: any) => ({
           ...e,
           status: e.status || (e.folder === 'trash' ? 'trash' : 'inbox'),
           folder: e.folder || 'primary'
@@ -326,13 +353,13 @@ class GoldDatabase {
         this.sessions = freshestData.sessions;
       }
       if (Array.isArray(freshestData.tickets)) {
-        this.tickets = freshestData.tickets;
+        this.tickets = freshestData.tickets.filter((t: any) => t.id !== 'tkt_001');
       }
       if (Array.isArray(freshestData.activityLogs)) {
         this.activityLogs = freshestData.activityLogs;
       }
       if (Array.isArray(freshestData.domains)) {
-        this.domains = freshestData.domains;
+        this.domains = freshestData.domains.filter((d: any) => d.domain === 'goldmailer.xyz' || !d.domain.startsWith('goldmailer.'));
       }
       if (Array.isArray(freshestData.adminRoles)) {
         this.adminRoles = freshestData.adminRoles;
@@ -341,13 +368,22 @@ class GoldDatabase {
         this.broadcasts = freshestData.broadcasts;
       }
       if (Array.isArray(freshestData.payments)) {
-        this.payments = freshestData.payments;
+        this.payments = freshestData.payments.filter((p: any) => p.id !== 'pay_001');
       }
       if (Array.isArray(freshestData.blockedIps)) {
         this.blockedIps = new Set(freshestData.blockedIps);
       }
       if (freshestData.settings && typeof freshestData.settings === 'object') {
-        this.settings = { ...this.settings, ...freshestData.settings };
+        this.settings = {
+          ...this.settings,
+          ...freshestData.settings,
+          site_url: 'https://goldmailer.xyz',
+          support_email: 'support@goldmailer.xyz',
+          default_domain: 'goldmailer.xyz',
+          smtp_host: freshestData.settings.smtp_host || process.env.SMTP_HOST || 'smtp.goldmailer.xyz',
+          smtp_user: freshestData.settings.smtp_user || process.env.SMTP_USER || 'postmaster@goldmailer.xyz',
+          resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>'
+        };
       }
       console.log(`✅ Loaded GoldMailer DB from disk: ${this.users.length} accounts, ${this.emails.length} emails`);
     }
@@ -362,7 +398,7 @@ class GoldDatabase {
     const defaultAccounts = [
       {
         id: 'usr_miracle_01',
-        email: 'miracle@goldmailer.com',
+        email: 'miracle@goldmailer.xyz',
         username: 'miracle',
         first_name: 'Miracle',
         last_name: 'Solomon',
@@ -376,7 +412,7 @@ class GoldDatabase {
       },
       {
         id: 'usr_doris_01',
-        email: 'dorisokoh109@goldmailer.com',
+        email: 'dorisokoh109@goldmailer.xyz',
         username: 'dorisokoh109',
         first_name: 'Doris',
         last_name: 'Okoh',
@@ -395,8 +431,7 @@ class GoldDatabase {
       const existing = this.users.find(
         u => u.id === def.id ||
              u.username.toLowerCase() === def.username.toLowerCase() ||
-             u.email.toLowerCase() === def.email.toLowerCase() ||
-             u.email.toLowerCase() === `${def.username}@goldmailer.xyz`
+             u.email.toLowerCase() === def.email.toLowerCase()
       );
 
       if (!existing) {
@@ -407,13 +442,17 @@ class GoldDatabase {
           backup_codes: this.generateBackupCodes(),
           created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
           is_banned: false,
-          storage_used_bytes: 420 * 1024 * 1024,
+          storage_used_bytes: 0,
           storage_limit_bytes: 15 * 1024 * 1024 * 1024,
           plan_billing: 'yearly',
           plan_status: 'active'
         });
         hasChanges = true;
       } else {
+        if (existing.email !== def.email) {
+          existing.email = def.email;
+          hasChanges = true;
+        }
         // IMPORTANT: NEVER reset is_banned if the account was previously banned!
         if (existing.role !== 'admin') {
           existing.role = 'admin';
@@ -422,61 +461,26 @@ class GoldDatabase {
       }
     }
 
-    // Default domains
-    if (this.domains.length === 0) {
-      this.domains = [
-        {
-          id: 'dom_01',
-          domain: 'goldmailer.com',
-          is_default: true,
-          is_verified: true,
-          verification_token: 'v=goldmailer-verify-primary-01',
-          mx_record_status: 'valid',
-          spf_record_status: 'valid',
-          dkim_record_status: 'valid',
-          created_at: new Date().toISOString()
-        },
-        {
-          id: 'dom_02',
-          domain: 'goldmailer.xyz',
-          is_default: false,
-          is_verified: true,
-          verification_token: 'v=goldmailer-verify-backup-02',
-          mx_record_status: 'valid',
-          spf_record_status: 'valid',
-          dkim_record_status: 'valid',
-          created_at: new Date().toISOString()
-        }
-      ];
+    // Primary and default domain is exclusively goldmailer.xyz
+    if (!this.domains.some(d => d.domain === 'goldmailer.xyz')) {
+      this.domains.unshift({
+        id: 'dom_01',
+        domain: 'goldmailer.xyz',
+        is_default: true,
+        is_verified: true,
+        verification_token: 'v=goldmailer-verify-primary-xyz',
+        mx_record_status: 'valid',
+        spf_record_status: 'valid',
+        dkim_record_status: 'valid',
+        created_at: new Date().toISOString()
+      });
       hasChanges = true;
-    }
-
-    // Default sample support tickets
-    if (this.tickets.length === 0) {
-      this.tickets = [
-        {
-          id: 'tkt_001',
-          user_email: 'client.test@goldmailer.com',
-          user_name: 'Alex Rivera',
-          subject: 'Storage quota upgrade inquiry',
-          category: 'billing',
-          priority: 'medium',
-          status: 'open',
-          messages: [
-            {
-              id: 'msg_01',
-              sender_email: 'client.test@goldmailer.com',
-              sender_name: 'Alex Rivera',
-              is_admin: false,
-              content: 'Hello GoldMailer team, I would like to upgrade my storage from 15GB to 100GB. Does NOWPayments accept USDT on TRC20?',
-              created_at: new Date(Date.now() - 3600000 * 4).toISOString()
-            }
-          ],
-          created_at: new Date(Date.now() - 3600000 * 4).toISOString(),
-          updated_at: new Date(Date.now() - 3600000 * 4).toISOString()
-        }
-      ];
-      hasChanges = true;
+    } else {
+      const xyzDom = this.domains.find(d => d.domain === 'goldmailer.xyz');
+      if (xyzDom && !xyzDom.is_default) {
+        xyzDom.is_default = true;
+        hasChanges = true;
+      }
     }
 
     if (hasChanges) {
@@ -550,7 +554,6 @@ class GoldDatabase {
         uBackup === clean ||
         uEmailUserPart === userPart ||
         uUser === userPart ||
-        uEmail === `${userPart}@goldmailer.com` ||
         uEmail === `${userPart}@goldmailer.xyz` ||
         uEmailNoDots === userPartNoDots ||
         uUserNoDots === userPartNoDots
@@ -681,7 +684,7 @@ class GoldDatabase {
 
     // Log admin activity
     await this.logAdminActivity(
-      adminEmail || 'admin@goldmailer.com',
+      adminEmail || 'admin@goldmailer.xyz',
       isBanned ? 'BAN_USER' : 'UNBAN_USER',
       'user',
       user.id,
@@ -714,7 +717,7 @@ class GoldDatabase {
     }
 
     await this.logAdminActivity(
-      adminEmail || 'admin@goldmailer.com',
+      adminEmail || 'admin@goldmailer.xyz',
       'DELETE_USER',
       'user',
       user.id,
@@ -1097,7 +1100,13 @@ class GoldDatabase {
   }
 
   public async updateSettings(updates: Partial<StoredSettings>): Promise<StoredSettings> {
-    this.settings = { ...this.settings, ...updates };
+    this.settings = {
+      ...this.settings,
+      ...updates,
+      default_domain: 'goldmailer.xyz',
+      site_url: 'https://goldmailer.xyz',
+      support_email: 'support@goldmailer.xyz'
+    };
     this.saveToDiskSync();
     return this.settings;
   }
@@ -1224,7 +1233,7 @@ class GoldDatabase {
     this.blockedIps.add(ip);
     this.saveToDiskSync();
     await this.logAdminActivity(
-      adminEmail || 'admin@goldmailer.com',
+      adminEmail || 'admin@goldmailer.xyz',
       'BLOCK_IP',
       'security',
       ip,
@@ -1236,7 +1245,7 @@ class GoldDatabase {
     this.blockedIps.delete(ip);
     this.saveToDiskSync();
     await this.logAdminActivity(
-      adminEmail || 'admin@goldmailer.com',
+      adminEmail || 'admin@goldmailer.xyz',
       'UNBLOCK_IP',
       'security',
       ip,
