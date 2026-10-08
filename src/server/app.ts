@@ -25,6 +25,7 @@ import {
   verifyNowPaymentsSignature,
   createNowPaymentsInvoice,
   getTwilioConfig,
+  getTwilioClient,
   setTwilioCredentials,
   testTwilioConnection,
   normalizePhoneNumber
@@ -3105,11 +3106,47 @@ app.delete('/api/phone/contacts/:id', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 11. GET /api/phone/sms - Retrieve user's SMS inbox
-app.get('/api/phone/sms', (req: Request, res: Response) => {
+// 11. GET /api/phone/sms - Retrieve user's SMS inbox (with live Twilio sync for admin)
+app.get('/api/phone/sms', async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+  const isAdmin = isReqAdmin(authUser);
+  const { trialNumber } = getTwilioConfig();
+
+  // Active sync from live Twilio API for admin to guarantee incoming SMS is immediately displayed
+  if (isAdmin) {
+    const client = getTwilioClient();
+    if (client) {
+      try {
+        const liveMessages = await client.messages.list({ limit: 30 });
+        let hasNew = false;
+        for (const tm of liveMessages) {
+          if (!sms_inbox.some(s => s.messageSid === tm.sid)) {
+            const newLiveSms: StoredSMS = {
+              id: 'sms_live_' + tm.sid,
+              userId: authUser.id || 'usr_miracle_01',
+              from: tm.from || 'Unknown',
+              to: tm.to || trialNumber || '+17372508034',
+              body: tm.body || '',
+              receivedAt: tm.dateSent ? tm.dateSent.toISOString() : (tm.dateCreated ? tm.dateCreated.toISOString() : new Date().toISOString()),
+              messageSid: tm.sid,
+              direction: (tm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
+              status: tm.status,
+              is_read: false
+            };
+            sms_inbox.unshift(newLiveSms);
+            hasNew = true;
+          }
+        }
+        if (hasNew) {
+          saveData();
+        }
+      } catch (syncErr: any) {
+        console.warn('[TWILIO ACTIVE SYNC] Note:', syncErr.message || syncErr);
+      }
+    }
+  }
+
   const userPhones = new Set(
     userPhoneNumbers
       .filter(p => p.userId === authUser.id || (isAdmin && p.id === 'phone_free_miracle_admin'))
@@ -3117,6 +3154,8 @@ app.get('/api/phone/sms', (req: Request, res: Response) => {
   );
 
   const list = sms_inbox.filter(s => {
+    // Admin inbox displays all platform and Twilio trial SMS
+    if (isAdmin) return true;
     if (s.userId === authUser.id) return true;
     if (userPhones.has(s.to) || userPhones.has(s.from)) return true;
     return false;
