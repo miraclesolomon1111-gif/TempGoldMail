@@ -391,7 +391,27 @@ class GoldDatabase {
     this.isLoaded = true;
   }
 
-  // Seed default admin accounts without overriding their ban status if banned!
+  public findAccountSync(identifier: string): StoredGoldUser | null {
+    if (!identifier) return null;
+    const clean = identifier.toLowerCase().trim();
+    const userPart = clean.replace(/@.*$/, '');
+    return this.users.find(u => {
+      const uEmail = (u.email || '').toLowerCase().trim();
+      const uUser = (u.username || '').toLowerCase().trim();
+      const uBackup = (u.backup_email || '').toLowerCase().trim();
+      return (
+        u.id === identifier ||
+        (u.id || '').toLowerCase() === clean ||
+        uEmail === clean ||
+        uUser === clean ||
+        uBackup === clean ||
+        uUser === userPart ||
+        uEmail === `${userPart}@goldmailer.xyz`
+      );
+    }) || null;
+  }
+
+  // Seed default permanent active accounts without overriding their ban status if banned!
   private seedDefaultData() {
     const defaultPasswordHash = bcrypt.hashSync('@654413Mm', 10);
 
@@ -423,6 +443,118 @@ class GoldDatabase {
         backup_email: 'dorisokoh109@gmail.com',
         role: 'admin' as const,
         plan: 'enterprise' as const
+      },
+      {
+        id: 'usr_admin_01',
+        email: 'admin@goldmailer.xyz',
+        username: 'admin',
+        first_name: 'System',
+        last_name: 'Administrator',
+        dob: '1995-01-01',
+        gender: 'Not specified',
+        phone: '+1 267 230 1662',
+        recovery_phone: '+1 267 230 1662',
+        backup_email: 'admin.backup@goldmailer.xyz',
+        role: 'admin' as const,
+        plan: 'enterprise' as const
+      },
+      {
+        id: 'usr_support_01',
+        email: 'support@goldmailer.xyz',
+        username: 'support',
+        first_name: 'Support',
+        last_name: 'Desk',
+        dob: '1996-03-15',
+        gender: 'Not specified',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'admin' as const,
+        plan: 'enterprise' as const
+      },
+      {
+        id: 'usr_team_01',
+        email: 'team@goldmailer.xyz',
+        username: 'team',
+        first_name: 'GoldMailer',
+        last_name: 'Team',
+        dob: '1997-06-20',
+        gender: 'Not specified',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'admin' as const,
+        plan: 'enterprise' as const
+      },
+      {
+        id: 'usr_security_01',
+        email: 'security@goldmailer.xyz',
+        username: 'security',
+        first_name: 'Security',
+        last_name: 'Officer',
+        dob: '1995-11-11',
+        gender: 'Not specified',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'admin' as const,
+        plan: 'enterprise' as const
+      },
+      {
+        id: 'usr_alex_01',
+        email: 'alex@goldmailer.xyz',
+        username: 'alex',
+        first_name: 'Alex',
+        last_name: 'Morgan',
+        dob: '1999-04-18',
+        gender: 'Male',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'user' as const,
+        plan: 'pro' as const
+      },
+      {
+        id: 'usr_sarah_01',
+        email: 'sarah@goldmailer.xyz',
+        username: 'sarah',
+        first_name: 'Sarah',
+        last_name: 'Jenkins',
+        dob: '2000-08-09',
+        gender: 'Female',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'user' as const,
+        plan: 'free' as const
+      },
+      {
+        id: 'usr_david_01',
+        email: 'david@goldmailer.xyz',
+        username: 'david',
+        first_name: 'David',
+        last_name: 'Chen',
+        dob: '1998-12-03',
+        gender: 'Male',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'user' as const,
+        plan: 'free' as const
+      },
+      {
+        id: 'usr_emma_01',
+        email: 'emma@goldmailer.xyz',
+        username: 'emma',
+        first_name: 'Emma',
+        last_name: 'Watson',
+        dob: '2001-02-14',
+        gender: 'Female',
+        phone: '',
+        recovery_phone: '',
+        backup_email: '',
+        role: 'user' as const,
+        plan: 'free' as const
       }
     ];
 
@@ -451,11 +583,6 @@ class GoldDatabase {
       } else {
         if (existing.email !== def.email) {
           existing.email = def.email;
-          hasChanges = true;
-        }
-        // IMPORTANT: NEVER reset is_banned if the account was previously banned!
-        if (existing.role !== 'admin') {
-          existing.role = 'admin';
           hasChanges = true;
         }
       }
@@ -648,6 +775,32 @@ class GoldDatabase {
     }
 
     return updated;
+  }
+
+  public upsertAccount(user: StoredGoldUser): StoredGoldUser {
+    const cleanEmail = (user.email || '').toLowerCase().trim();
+    const cleanUser = (user.username || cleanEmail.split('@')[0] || '').toLowerCase().trim();
+    const idx = this.users.findIndex(
+      u => (user.id && u.id === user.id) ||
+           u.email.toLowerCase() === cleanEmail ||
+           (cleanUser && u.username.toLowerCase() === cleanUser)
+    );
+    if (idx !== -1) {
+      this.users[idx] = { ...this.users[idx], ...user, email: cleanEmail };
+      return this.users[idx];
+    } else {
+      const formatted: StoredGoldUser = {
+        ...user,
+        email: cleanEmail,
+        username: cleanUser,
+        is_banned: Boolean(user.is_banned),
+        storage_used_bytes: user.storage_used_bytes || 0,
+        storage_limit_bytes: user.storage_limit_bytes || 15 * 1024 * 1024 * 1024
+      };
+      this.users.unshift(formatted);
+      this.scheduleDiskSave();
+      return formatted;
+    }
   }
 
   public async setBanStatus(

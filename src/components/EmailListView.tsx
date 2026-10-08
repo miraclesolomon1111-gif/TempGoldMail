@@ -317,8 +317,8 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
 
       {/* Main Mail List / Drafts List */}
       <div className="flex-1 overflow-y-auto pb-24">
-        {isLoading ? (
-          /* Skeleton Loader */
+        {isLoading && emails.length === 0 ? (
+          /* Skeleton Loader only when no emails loaded yet */
           <div className="divide-y divide-white/5 animate-pulse">
             {[1, 2, 3, 4, 5, 6].map((n) => (
               <div key={n} className="flex items-center gap-3.5 px-4 py-3.5">

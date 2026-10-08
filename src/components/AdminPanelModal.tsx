@@ -885,8 +885,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
                   <div>
                     <p className="text-xs text-zinc-400 font-medium">Total Accounts Created</p>
-                    <p className="text-2xl font-black text-white mt-1">{overview?.totalUsers || users.length || 2}</p>
-                    <p className="text-[11px] text-emerald-400 mt-1">● {overview?.activeAccountsCount || users.length || 2} active</p>
+                    <p className="text-2xl font-black text-white mt-1">{overview?.totalUsers ?? users.length}</p>
+                    <p className="text-[11px] text-emerald-400 mt-1">● {overview?.activeAccountsCount ?? users.length} active</p>
                   </div>
                   <div className="w-12 h-12 rounded-xl bg-[#FF6A00]/15 border border-[#FF6A00]/30 flex items-center justify-center text-[#FF8C42]">
                     <Users className="w-6 h-6" />

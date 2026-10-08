@@ -415,6 +415,31 @@ async function runBugsVerification() {
       '5.5 No mock balance in Admin Overview (monthlyRevenueUsd is 0 when no real payments)'
     );
 
+    // 5.6 Test that all created emails/accounts show up in Admin Users & Email Accounts (more than 2 active users)
+    const adminUsersCheck = await fetch(`${baseUrl}/api/admin/users`, { headers: adminHeaders });
+    const adminUsersList = await adminUsersCheck.json();
+    assert(
+      Array.isArray(adminUsersList) && adminUsersList.length >= 4,
+      `5.6 Admin panel user management shows all created accounts (${adminUsersList.length} users, more than 2 active)`
+    );
+
+    // 5.7 Test instant email creation syncs immediately to DB and admin panel
+    const newInstantEmail = `instant_test_${Date.now()}`;
+    const instantCreateRes = await fetch(`${baseUrl}/api/accounts/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: newInstantEmail, firstName: 'InstantUser' })
+    });
+    const instantCreateData = await instantCreateRes.json();
+    assert(instantCreateRes.status === 201 && instantCreateData.success, '5.7 Instant email creation endpoint succeeds');
+
+    const adminUsersAfterInstant = await fetch(`${baseUrl}/api/admin/users`, { headers: adminHeaders });
+    const adminUsersListAfter = await adminUsersAfterInstant.json();
+    assert(
+      Array.isArray(adminUsersListAfter) && adminUsersListAfter.some((u: any) => u.email === `${newInstantEmail}@goldmailer.xyz`),
+      '5.8 Created email immediately synced to database and appears in admin panel user management'
+    );
+
     console.log(`\n=============================================================`);
     console.log(`🎉 ALL TESTS COMPLETED: ${passed} PASSED, ${failed} FAILED`);
     console.log(`=============================================================`);

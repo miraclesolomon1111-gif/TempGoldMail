@@ -169,7 +169,7 @@ export function setCachedEmails(email: string, emails: EmailMessage[]): void {
 export function getStoredActiveEmail(): string {
   const user = getStoredUser();
   if (user?.email) return user.email;
-  return localStorage.getItem('goldmail_active_email') || '';
+  return localStorage.getItem('goldmail_active_email') || 'miracle@goldmailer.xyz';
 }
 
 export function setStoredActiveEmail(email: string): void {
@@ -483,6 +483,35 @@ export async function registerUser(formData: any): Promise<any> {
     phone: formData.phone || '',
     country: formData.country || 'United States'
   });
+}
+
+// Instant Email/Account Creation Helper (Immediately syncs to database and admin panel)
+export async function createEmailAccount(data: {
+  username?: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  password?: string;
+}): Promise<any> {
+  const res = await fetch('/api/accounts/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  const resData = await safeJsonParse(res);
+  if (!res.ok) throw new Error(resData.error || 'Failed to create email account');
+  if (resData.user) {
+    addStoredAccount({
+      id: resData.user.id,
+      email: resData.user.email,
+      username: resData.user.username,
+      name: resData.user.first_name ? `${resData.user.first_name} ${resData.user.last_name || ''}`.trim() : resData.user.username,
+      token: getAuthToken() || '',
+      avatar_url: resData.user.avatar_url,
+      role: resData.user.role
+    });
+  }
+  return resData;
 }
 
 // Login with Suspicious Device & 2FA Detection

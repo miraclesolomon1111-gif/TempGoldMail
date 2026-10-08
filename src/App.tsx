@@ -64,7 +64,9 @@ export default function App() {
   const [user, setUser] = useState<UserProfile | null>(() => getStoredUser());
   const [activeEmail, setActiveEmail] = useState<string>(() => {
     const stored = getStoredActiveEmail();
-    return stored || '';
+    if (stored) return stored;
+    const u = getStoredUser();
+    return u?.email || '';
   });
 
   // View Mode: 'app' (Webmail) for authenticated users vs 'hero' (Landing Page) for visitors
@@ -104,7 +106,7 @@ export default function App() {
   const [currentFolder, setCurrentFolder] = useState<MailFolder | 'all_inboxes'>('primary');
   const [searchQuery, setSearchQuery] = useState('');
   const [allEmails, setAllEmails] = useState<EmailMessage[]>(() => {
-    const initialEmail = getStoredActiveEmail();
+    const initialEmail = getStoredActiveEmail() || getStoredUser()?.email;
     return initialEmail ? getCachedEmails(initialEmail) : [];
   });
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -221,7 +223,12 @@ export default function App() {
       if (!silent) setIsLoadingEmails(false);
       return;
     }
-    if (!silent) setIsLoadingEmails(true);
+    // Instant display: Render cached emails immediately without waiting for network
+    const cached = getCachedEmails(emailToFetch);
+    if (cached.length > 0) {
+      setAllEmails(cached);
+    }
+    if (!silent) setIsLoadingEmails(cached.length === 0);
     try {
       const emailPromise = fetchEmails(emailToFetch, 'all_mail');
       const draftPromise = fetchDrafts().catch(() => []);
@@ -247,48 +254,84 @@ export default function App() {
   // Real-time Server-Sent Events (SSE) listener for instantaneous inbound email delivery
   useEffect(() => {
     let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource('/api/emails/stream');
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'new_email' && data.email) {
-            const incoming: EmailMessage = data.email;
-            const myTarget = activeEmail.toLowerCase().trim();
-            const myPrefix = myTarget.replace(/@.*$/, '');
-            const rawTo = String(incoming.recipient || incoming.to_email || incoming.to || '').toLowerCase();
-            const rawFrom = String(incoming.from_email || incoming.sender || incoming.from || '').toLowerCase();
+    let reconnectTimeout: any = null;
+    let isMounted = true;
 
-            const isForMe =
-              rawTo.includes(myTarget) ||
-              rawTo.includes(myPrefix) ||
-              rawFrom.includes(myTarget) ||
-              rawFrom.includes(myPrefix);
+    const connectSSE = () => {
+      if (!isMounted) return;
+      try {
+        eventSource = new EventSource('/api/emails/stream');
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'new_email' && data.email) {
+              const incoming: EmailMessage = data.email;
+              const myTarget = activeEmail.toLowerCase().trim();
+              const myPrefix = myTarget.replace(/@.*$/, '');
+              const rawTo = String(incoming.recipient || incoming.to_email || incoming.to || '').toLowerCase();
+              const rawFrom = String(incoming.from_email || incoming.sender || incoming.from || '').toLowerCase();
 
-            if (isForMe) {
-              setAllEmails((prev) => {
-                if (prev.some((e) => e.id === incoming.id)) return prev;
-                const updated = [incoming, ...prev];
-                setCachedEmails(activeEmail, updated);
-                return updated;
-              });
+              const isForMe =
+                !myTarget ||
+                rawTo.includes(myTarget) ||
+                rawTo.includes(myPrefix) ||
+                rawFrom.includes(myTarget) ||
+                rawFrom.includes(myPrefix);
+
+              if (isForMe) {
+                setAllEmails((prev) => {
+                  if (prev.some((e) => e.id === incoming.id)) return prev;
+                  const updated = [incoming, ...prev];
+                  setCachedEmails(activeEmail, updated);
+                  return updated;
+                });
+              }
             }
+          } catch {}
+        };
+        eventSource.onerror = () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
           }
-        } catch {}
-      };
-    } catch {}
+          if (isMounted) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = setTimeout(connectSSE, 2000);
+          }
+        };
+      } catch {}
+    };
+
+    connectSSE();
 
     return () => {
+      isMounted = false;
+      clearTimeout(reconnectTimeout);
       if (eventSource) eventSource.close();
     };
   }, [activeEmail]);
 
-  // Periodic automatic sync every 8 seconds as secondary guarantee
+  // Periodic automatic sync every 3 seconds for instant email updates
   useEffect(() => {
     const timer = setInterval(() => {
       loadMailData(activeEmail, true);
-    }, 8000);
+    }, 3000);
     return () => clearInterval(timer);
+  }, [loadMailData, activeEmail]);
+
+  // Instant sync when user switches back to tab or focuses window
+  useEffect(() => {
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        loadMailData(activeEmail, true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
   }, [loadMailData, activeEmail]);
 
   // Sync Emails action (inbound + historical)

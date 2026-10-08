@@ -34,11 +34,25 @@ import {
 
 // Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
 const sseClients: Response[] = [];
+
+// Send keep-alive comments every 15 seconds so proxies and browsers never drop the connection
+setInterval(() => {
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    const client = sseClients[i];
+    try {
+      client.write(': keepalive\n\n');
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}, 15000);
+
 export function broadcastNewEmail(email: StoredEmail) {
   for (let i = sseClients.length - 1; i >= 0; i--) {
     const client = sseClients[i];
     try {
       client.write(`data: ${JSON.stringify({ type: 'new_email', email })}\n\n`);
+      (client as any).flush?.();
     } catch {
       sseClients.splice(i, 1);
     }
@@ -455,6 +469,12 @@ export const ensureDataLoaded = () => {
 
     if (!freshestFile) return;
 
+    // Fast check: if in-memory cache is already loaded and freshest file hasn't changed, return immediately!
+    if (goldUsers.length > 0 && freshestMtime <= lastDataFileMtime) {
+      return;
+    }
+    lastDataFileMtime = freshestMtime;
+
     try {
       const raw = fs.readFileSync(freshestFile, 'utf-8');
       const parsed = JSON.parse(raw);
@@ -469,7 +489,7 @@ export const ensureDataLoaded = () => {
       if (loadedUsers.length > 0) {
         for (const rawU of loadedUsers) {
           const cleanUser = (rawU.username || (rawU.email || '').split('@')[0] || '').toLowerCase().trim();
-          const u = {
+          const u: StoredGoldUser = {
             ...rawU,
             email: cleanUser ? `${cleanUser}@goldmailer.xyz` : rawU.email
           };
@@ -479,7 +499,20 @@ export const ensureDataLoaded = () => {
           } else {
             goldUsers[idx] = { ...goldUsers[idx], ...u };
           }
+          db.upsertAccount(u);
         }
+      }
+      // Also sync any accounts from db.listAccounts() into goldUsers
+      for (const du of db.listAccounts()) {
+        const idx = goldUsers.findIndex(gu => gu.id === du.id || (gu.email && du.email && gu.email.toLowerCase() === du.email.toLowerCase()));
+        if (idx === -1) {
+          goldUsers.push(du);
+        } else {
+          goldUsers[idx] = { ...goldUsers[idx], ...du };
+        }
+      }
+      for (const gu of goldUsers) {
+        db.upsertAccount(gu);
       }
       const loadedEmails = Array.isArray(parsed.goldEmails) && parsed.goldEmails.length > 0
         ? parsed.goldEmails
@@ -511,6 +544,38 @@ export const ensureDataLoaded = () => {
       // Purge any deleted emails from memory
       if (deletedEmailIds.size > 0) {
         goldEmails = goldEmails.filter(ge => !deletedEmailIds.has(ge.id) && ge.status !== 'deleted');
+      }
+      // Guarantee every @goldmailer.xyz address in emails has an active user in the database
+      for (const em of goldEmails) {
+        const addrs = getAllEmailAddresses([em.recipient, em.to_email, em.to]);
+        for (const addr of addrs) {
+          const cleanAddr = addr.toLowerCase().trim();
+          if (cleanAddr.endsWith('@goldmailer.xyz') && !goldUsers.some(u => u.email.toLowerCase() === cleanAddr)) {
+            const userPrefix = cleanAddr.split('@')[0];
+            const autoUser: StoredGoldUser = {
+              id: 'usr_' + crypto.createHash('md5').update(cleanAddr).digest('hex').slice(0, 12),
+              email: cleanAddr,
+              username: userPrefix,
+              password_hash: bcrypt.hashSync('@654413Mm', 10),
+              first_name: userPrefix.charAt(0).toUpperCase() + userPrefix.slice(1),
+              last_name: '',
+              dob: '1998-05-14',
+              gender: 'Not specified',
+              phone: '',
+              recovery_phone: '',
+              backup_email: '',
+              two_factor_enabled: false,
+              backup_codes: generateBackupCodes(),
+              role: userPrefix.includes('admin') ? 'admin' : 'user',
+              created_at: em.received_at || em.created_at || new Date().toISOString(),
+              is_banned: false,
+              storage_used_bytes: 0,
+              storage_limit_bytes: 15 * 1024 * 1024 * 1024
+            };
+            goldUsers.push(autoUser);
+            db.upsertAccount(autoUser);
+          }
+        }
       }
       if (Array.isArray(parsed.goldDrafts)) {
         for (const d of parsed.goldDrafts) {
@@ -691,6 +756,16 @@ const seedAccounts = () => {
         status: 'inbox'
       });
       void db.insertEmail(goldEmails[goldEmails.length - 1]);
+    }
+  }
+
+  // Sync all accounts from db.listAccounts() into goldUsers
+  for (const du of db.listAccounts()) {
+    const idx = goldUsers.findIndex(gu => gu.id === du.id || (gu.email && du.email && gu.email.toLowerCase() === du.email.toLowerCase()));
+    if (idx === -1) {
+      goldUsers.push(du);
+    } else {
+      goldUsers[idx] = { ...goldUsers[idx], ...du };
     }
   }
 
@@ -945,14 +1020,17 @@ app.post('/api/auth/sync-client-accounts', (req: Request, res: Response) => {
       for (const acc of accounts) {
         if (!acc.email) continue;
         const cleanEmail = acc.email.toLowerCase().trim();
-        const exists = goldUsers.some(u => u.email.toLowerCase() === cleanEmail);
-        if (!exists) {
-          goldUsers.push({
+        const cleanUser = (acc.username || cleanEmail.split('@')[0] || '').toLowerCase().trim();
+        const existing = goldUsers.find(u => u.email.toLowerCase() === cleanEmail);
+        if (existing) {
+          db.upsertAccount(existing);
+        } else {
+          const newUser: StoredGoldUser = {
             id: acc.id || ('usr_' + crypto.randomBytes(8).toString('hex')),
-            email: acc.email,
-            username: acc.username || acc.email.split('@')[0],
+            email: cleanEmail,
+            username: cleanUser,
             password_hash: bcrypt.hashSync('@654413Mm', 10),
-            first_name: acc.name?.split(' ')[0] || acc.username,
+            first_name: acc.name?.split(' ')[0] || cleanUser,
             last_name: acc.name?.split(' ').slice(1).join(' ') || '',
             dob: '1998-05-14',
             gender: 'Not specified',
@@ -967,13 +1045,69 @@ app.post('/api/auth/sync-client-accounts', (req: Request, res: Response) => {
             storage_used_bytes: 0,
             storage_limit_bytes: 15 * 1024 * 1024 * 1024,
             avatar_url: acc.avatar_url || ''
-          });
+          };
+          goldUsers.push(newUser);
+          db.upsertAccount(newUser);
           added++;
         }
       }
       if (added > 0) saveData();
     }
-    return res.json({ success: true, total_users: goldUsers.length });
+    return res.json({ success: true, total_users: db.listAccounts().length });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Instant Email/Account Creation (Syncs immediately with database and shows in Admin Panel)
+app.post(['/api/accounts/create', '/api/auth/create-email'], (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { email, username, firstName, lastName, password } = req.body || {};
+    const inputUser = (username || (email || '').split('@')[0] || '').toLowerCase().trim();
+    if (!inputUser) {
+      return res.status(400).json({ error: 'Username or email address is required' });
+    }
+    const cleanEmail = `${inputUser}@goldmailer.xyz`;
+    let user = goldUsers.find(u => u.email.toLowerCase() === cleanEmail);
+    if (!user) {
+      user = db.listAccounts().find(u => u.email.toLowerCase() === cleanEmail);
+    }
+    if (user) {
+      db.upsertAccount(user);
+      return res.json({ success: true, message: 'Account exists and synced', user: sanitizeUser(user) });
+    }
+
+    const newUser: StoredGoldUser = {
+      id: 'usr_' + crypto.randomBytes(8).toString('hex'),
+      email: cleanEmail,
+      username: inputUser,
+      password_hash: bcrypt.hashSync(password ? String(password).trim() : '@654413Mm', 10),
+      first_name: firstName?.trim() || inputUser.charAt(0).toUpperCase() + inputUser.slice(1),
+      last_name: lastName?.trim() || '',
+      dob: '1998-05-14',
+      gender: 'Not specified',
+      phone: '',
+      recovery_phone: '',
+      backup_email: '',
+      two_factor_enabled: false,
+      backup_codes: generateBackupCodes(),
+      role: inputUser.includes('admin') ? 'admin' : 'user',
+      created_at: new Date().toISOString(),
+      is_banned: false,
+      storage_used_bytes: 0,
+      storage_limit_bytes: 15 * 1024 * 1024 * 1024
+    };
+
+    goldUsers.unshift(newUser);
+    db.upsertAccount(newUser);
+    saveData();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Email created and synced to database instantly',
+      user: sanitizeUser(newUser)
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -1677,8 +1811,8 @@ app.get(['/api/emails', '/api/emails/:emailAddress'], async (req: Request, res: 
     const cleanTarget = rawTarget.toLowerCase().trim();
     const folder = ((req.query.folder as string) || 'all').toLowerCase().trim();
 
-    // Check if target account is banned in DB
-    const account = await db.findAccount(cleanTarget);
+    // Check if target account is banned in DB (Instant in-memory check to prevent lag)
+    const account = goldUsers.find(u => matchesUserIdentifier(u, cleanTarget)) || db.findAccountSync(cleanTarget) || await db.findAccount(cleanTarget);
     if (account && account.is_banned) {
       console.warn(`⛔ [BLOCKED] Banned user attempted to fetch emails: ${account.email}`);
       return res.status(403).json({
@@ -2920,6 +3054,9 @@ const requireAdmin = (req: Request, res: Response, next: express.NextFunction) =
 // 1. Dashboard Overview
 app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
   ensureDataLoaded();
+  for (const gu of goldUsers) {
+    db.upsertAccount(gu);
+  }
   const accounts = db.listAccounts();
   const allEmails = db.getAllEmails();
   const emailBytes = allEmails.reduce((acc, e) => acc + Buffer.byteLength((e.body_html || '') + (e.body_text || '') + (e.subject || ''), 'utf8'), 0);
@@ -2959,6 +3096,9 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
 // 2. User Management (CRUD)
 app.get('/api/admin/users', requireAdmin, (req: Request, res: Response) => {
   ensureDataLoaded();
+  for (const gu of goldUsers) {
+    db.upsertAccount(gu);
+  }
   const search = ((req.query.search as string) || '').toLowerCase().trim();
   let users = db.listAccounts();
   if (search) {
@@ -3061,6 +3201,9 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req: Request, res: Respo
 // 3. Email Accounts (@goldmailer.xyz list)
 app.get('/api/admin/email-accounts', requireAdmin, (_req: Request, res: Response) => {
   ensureDataLoaded();
+  for (const gu of goldUsers) {
+    db.upsertAccount(gu);
+  }
   const accounts = db.listAccounts().map(u => {
     const userEmails = db.getEmailsForUser(u.email);
     const unread = userEmails.filter(e => !e.is_read).length;
