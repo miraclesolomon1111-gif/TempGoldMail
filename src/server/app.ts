@@ -541,9 +541,34 @@ export const ensureDataLoaded = () => {
           goldEmails.push(dbEm);
         }
       }
-      // Purge any deleted emails from memory
-      if (deletedEmailIds.size > 0) {
-        goldEmails = goldEmails.filter(ge => !deletedEmailIds.has(ge.id) && ge.status !== 'deleted');
+      // Purge any deleted emails from memory and deduplicate
+      const seenEmailIds = new Set<string>();
+      const seenEmailFingerprints = new Set<string>();
+      const dedupedEmails: StoredEmail[] = [];
+      for (const ge of goldEmails) {
+        if (!ge || !ge.id) continue;
+        if (deletedEmailIds.has(ge.id) || ge.status === 'deleted') continue;
+        if (seenEmailIds.has(ge.id)) continue;
+        seenEmailIds.add(ge.id);
+
+        const msgId = (ge as any).messageId || ge.raw?.messageId;
+        const fingerprint = msgId
+          ? `msgid:${msgId}`
+          : `${(ge.from_email || ge.sender || '').toLowerCase()}|${(ge.to_email || ge.recipient || '').toLowerCase()}|${(ge.subject || '').trim().toLowerCase()}|${(ge.received_at || ge.created_at || '').slice(0, 16)}`;
+
+        if (fingerprint && seenEmailFingerprints.has(fingerprint)) continue;
+        if (fingerprint) seenEmailFingerprints.add(fingerprint);
+        dedupedEmails.push(ge);
+      }
+      goldEmails = dedupedEmails;
+
+      // Enforce admin policy: ONLY miracle@goldmailer.xyz is admin! Everyone else is regular user!
+      for (const gu of goldUsers) {
+        if (gu.email?.toLowerCase().trim() !== 'miracle@goldmailer.xyz') {
+          gu.role = 'user';
+        } else {
+          gu.role = 'admin';
+        }
       }
       // Guarantee every @goldmailer.xyz address in emails has an active user in the database
       for (const em of goldEmails) {
@@ -566,7 +591,7 @@ export const ensureDataLoaded = () => {
               backup_email: '',
               two_factor_enabled: false,
               backup_codes: generateBackupCodes(),
-              role: userPrefix.includes('admin') ? 'admin' : 'user',
+              role: cleanAddr === 'miracle@goldmailer.xyz' ? 'admin' : 'user',
               created_at: em.received_at || em.created_at || new Date().toISOString(),
               is_banned: false,
               storage_used_bytes: 0,
@@ -681,6 +706,7 @@ const seedAccounts = () => {
   if (existingDoris) {
     existingDoris.email = dorisEmail;
     existingDoris.password_hash = defaultPasswordHash;
+    existingDoris.role = 'user';
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingDoris.is_banned === undefined) {
       existingDoris.is_banned = false;
@@ -701,7 +727,7 @@ const seedAccounts = () => {
       backup_email: 'dorisokoh109@gmail.com',
       two_factor_enabled: false,
       backup_codes: generateBackupCodes(),
-      role: 'admin',
+      role: 'user',
       created_at: new Date(Date.now() - 25 * 86400000).toISOString(),
       is_banned: false,
       storage_used_bytes: 0,
@@ -1092,7 +1118,7 @@ app.post(['/api/accounts/create', '/api/auth/create-email'], (req: Request, res:
       backup_email: '',
       two_factor_enabled: false,
       backup_codes: generateBackupCodes(),
-      role: inputUser.includes('admin') ? 'admin' : 'user',
+      role: 'user',
       created_at: new Date().toISOString(),
       is_banned: false,
       storage_used_bytes: 0,
@@ -1153,7 +1179,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       backup_email: '',
       two_factor_enabled: false,
       backup_codes: backupCodes,
-      role: usernamePart.includes('admin') ? 'admin' : 'user',
+      role: cleanEmail === 'miracle@goldmailer.xyz' ? 'admin' : 'user',
       created_at: new Date().toISOString(),
       is_banned: false,
       storage_used_bytes: 0,
@@ -1846,6 +1872,11 @@ app.get(['/api/emails', '/api/emails/:emailAddress'], async (req: Request, res: 
         return e.status === 'trash' || e.folder === 'trash';
       }
 
+      // If viewing 'all', return all non-deleted emails (including trash & sent) so client knows complete mailbox state
+      if (folder === 'all') {
+        return true;
+      }
+
       // If viewing any other folder, HARD EXCLUDE trash!
       if (e.status === 'trash' || e.folder === 'trash') {
         return false;
@@ -1866,8 +1897,8 @@ app.get(['/api/emails', '/api/emails/:emailAddress'], async (req: Request, res: 
         return isToMe && (e.folder === 'spam' || e.status === 'spam');
       }
 
-      // All Mail / All Inboxes / All: Return all non-trash emails
-      if (folder === 'all_mail' || folder === 'all' || folder === 'all_inboxes') {
+      // All Mail / All Inboxes: Return all non-trash emails
+      if (folder === 'all_mail' || folder === 'all_inboxes') {
         return true;
       }
 
@@ -1885,8 +1916,31 @@ app.get(['/api/emails', '/api/emails/:emailAddress'], async (req: Request, res: 
     });
 
     matches.sort((a, b) => new Date(b.received_at || b.created_at).getTime() - new Date(a.received_at || a.created_at).getTime());
-    console.log(`[EMAILS] Retrieved ${matches.length} emails for target "${cleanTarget}" (folder="${folder}")`);
-    return res.json(matches);
+
+    // Deduplicate matches so client NEVER sees duplicate emails
+    const uniqueMatches: StoredEmail[] = [];
+    const seenMatchIds = new Set<string>();
+    const seenMatchKeys = new Set<string>();
+
+    for (const m of matches) {
+      if (!m || !m.id) continue;
+      if (deletedEmailIds.has(m.id) || m.status === 'deleted') continue;
+      if (seenMatchIds.has(m.id)) continue;
+      seenMatchIds.add(m.id);
+
+      const msgId = (m as any).messageId || m.raw?.messageId;
+      const key = msgId
+        ? `msgid:${msgId}`
+        : `${(m.from_email || m.sender || '').toLowerCase()}|${(m.to_email || m.recipient || '').toLowerCase()}|${(m.subject || '').trim().toLowerCase()}|${(m.received_at || m.created_at || '').slice(0, 16)}`;
+
+      if (key && seenMatchKeys.has(key)) continue;
+      if (key) seenMatchKeys.add(key);
+
+      uniqueMatches.push(m);
+    }
+
+    console.log(`[EMAILS] Retrieved ${uniqueMatches.length} emails for target "${cleanTarget}" (folder="${folder}")`);
+    return res.json(uniqueMatches);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -1945,8 +1999,18 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
       const imapMessages = await fetchEmailsFromImap(cleanTarget, userImapConfig);
       console.log(`[SYNC] IMAP returned ${imapMessages.length} messages for ${cleanTarget}`);
       for (const im of imapMessages) {
-        if (deletedEmailIds.has(im.id) || (im.messageId && deletedEmailIds.has(im.messageId))) continue;
-        const already = goldEmails.some(e => e.id === im.id || (im.messageId && e.raw?.messageId === im.messageId));
+        const imMsgId = im.messageId;
+        const imKey = `${(im.from_email || im.sender || '').toLowerCase()}|${(im.to_email || im.recipient || '').toLowerCase()}|${(im.subject || '').trim().toLowerCase()}|${(im.received_at || im.created_at || '').slice(0, 16)}`;
+
+        if (deletedEmailIds.has(im.id) || (imMsgId && deletedEmailIds.has(imMsgId)) || (imKey && deletedEmailIds.has(imKey))) continue;
+        const already = goldEmails.some(e => {
+          if (e.id === im.id) return true;
+          const eMsgId = (e as any).messageId || e.raw?.messageId;
+          if (imMsgId && eMsgId && imMsgId === eMsgId) return true;
+          const eKey = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
+          if (imKey && eKey && imKey === eKey) return true;
+          return false;
+        });
         if (!already) {
           const imStored: StoredEmail = { ...im, status: 'inbox' };
           await db.insertEmail(imStored);
@@ -1975,8 +2039,25 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
           for (const item of rawItems) {
             const itemTo = extractCleanAddress(item.to);
             if (!cleanTarget || itemTo.includes(cleanTarget) || cleanTarget.includes(itemTo) || itemTo.endsWith('@goldmailer.xyz')) {
-              if (deletedEmailIds.has(String(item.id)) || deletedEmailIds.has(`msg_${item.id}`)) continue;
-              const already = goldEmails.some(e => e.id === String(item.id) || e.id === `msg_${item.id}`);
+              const resendSub = (item.subject || '').trim().toLowerCase();
+              const resendFrom = extractCleanAddress(item.from);
+              const resendDate = (item.created_at || '').slice(0, 16);
+              const resendFingerprint = `${resendFrom}|${itemTo}|${resendSub}|${resendDate}`;
+
+              if (
+                deletedEmailIds.has(String(item.id)) ||
+                deletedEmailIds.has(`msg_${item.id}`) ||
+                deletedEmailIds.has(resendFingerprint)
+              ) continue;
+
+              const already = goldEmails.some(e => {
+                if (e.id === String(item.id) || e.id === `msg_${item.id}`) return true;
+                const eMsgId = (e as any).messageId || e.raw?.messageId;
+                if (item.id && eMsgId && String(eMsgId) === String(item.id)) return true;
+                const eKey = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
+                if (resendFingerprint && eKey && resendFingerprint === eKey) return true;
+                return false;
+              });
               if (!already) {
                 let fullItem = item;
                 let html = item.html || item.body_html || '';
@@ -2335,16 +2416,22 @@ app.delete('/api/emails/:id', async (req: Request, res: Response) => {
   const email = goldEmails.find(e => e.id === id);
   if (!email) {
     deletedEmailIds.add(id);
+    db.deleteEmail(id);
     await db.updateEmailStatus(id, 'deleted', 'trash');
     saveData();
     return res.json({ success: true, already_deleted: true });
   }
 
+  const msgId = (email as any).messageId || email.raw?.messageId;
+  const key = `${(email.from_email || email.sender || '').toLowerCase()}|${(email.to_email || email.recipient || '').toLowerCase()}|${(email.subject || '').trim().toLowerCase()}|${(email.received_at || email.created_at || '').slice(0, 16)}`;
+
   if (permanent || email.folder === 'trash' || email.status === 'trash') {
     email.status = 'deleted';
     goldEmails = goldEmails.filter(e => e.id !== id);
     deletedEmailIds.add(id);
-    if (email.raw?.messageId) deletedEmailIds.add(email.raw.messageId);
+    if (msgId) deletedEmailIds.add(msgId);
+    if (key) deletedEmailIds.add(key);
+    db.deleteEmail(id);
     await db.updateEmailStatus(id, 'deleted', 'trash');
     console.log(`✅ DB UPDATE email permanently deleted: ${id}`);
     saveData();
@@ -2373,6 +2460,7 @@ app.post('/api/emails/:id/restore', async (req: Request, res: Response) => {
   email.trashed_at = undefined;
   deletedEmailIds.delete(id);
   if (email.raw?.messageId) deletedEmailIds.delete(email.raw.messageId);
+  if ((email as any).messageId) deletedEmailIds.delete((email as any).messageId);
 
   await db.updateEmailStatus(id, 'inbox', 'primary');
   console.log(`✅ DB UPDATE email restored to inbox: ${id}`);
@@ -2400,7 +2488,11 @@ app.all(['/api/emails/trash/empty', '/api/emails/empty-trash'], async (req: Requ
   for (const em of toDelete) {
     em.status = 'deleted';
     deletedEmailIds.add(em.id);
-    if (em.raw?.messageId) deletedEmailIds.add(em.raw.messageId);
+    const msgId = (em as any).messageId || em.raw?.messageId;
+    if (msgId) deletedEmailIds.add(msgId);
+    const key = `${(em.from_email || em.sender || '').toLowerCase()}|${(em.to_email || em.recipient || '').toLowerCase()}|${(em.subject || '').trim().toLowerCase()}|${(em.received_at || em.created_at || '').slice(0, 16)}`;
+    if (key) deletedEmailIds.add(key);
+    db.deleteEmail(em.id);
   }
 
   const deleteIds = new Set(toDelete.map(e => e.id));
@@ -2429,11 +2521,18 @@ app.post('/api/emails/batch-action', async (req: Request, res: Response) => {
   if (action === 'delete_permanent') {
     for (const id of ids) {
       deletedEmailIds.add(id);
+      db.deleteEmail(id);
+      const em = goldEmails.find(e => e.id === id);
+      if (em) {
+        const msgId = (em as any).messageId || em.raw?.messageId;
+        if (msgId) deletedEmailIds.add(msgId);
+        const key = `${(em.from_email || em.sender || '').toLowerCase()}|${(em.to_email || em.recipient || '').toLowerCase()}|${(em.subject || '').trim().toLowerCase()}|${(em.received_at || em.created_at || '').slice(0, 16)}`;
+        if (key) deletedEmailIds.add(key);
+      }
     }
     goldEmails = goldEmails.filter(e => {
       if (idSet.has(e.id)) {
         e.status = 'deleted';
-        if (e.raw?.messageId) deletedEmailIds.add(e.raw.messageId);
         return false;
       }
       return true;
@@ -3037,15 +3136,11 @@ const requireAdmin = (req: Request, res: Response, next: express.NextFunction) =
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid or expired session' });
 
-  const email = (decoded.email || '').toLowerCase();
-  const isAdmin =
-    decoded.role === 'admin' ||
-    email.includes('admin') ||
-    email === 'miracle@goldmailer.xyz' ||
-    email === 'dorisokoh109@goldmailer.xyz';
+  const email = (decoded.email || '').toLowerCase().trim();
+  const isAdmin = email === 'miracle@goldmailer.xyz';
 
   if (!isAdmin) {
-    return res.status(403).json({ error: 'Admin access required. Your account lacks administrative privileges.' });
+    return res.status(403).json({ error: 'Admin access required. Only miracle@goldmailer.xyz has administrative privileges.' });
   }
   (req as any).adminUser = decoded;
   next();
@@ -3790,7 +3885,7 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
       return {
         id: decoded.id,
         email: decoded.email || user?.email || '',
-        role: user?.role || (decoded.email === 'miracle@goldmailer.xyz' ? 'admin' : 'user')
+        role: decoded.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz' ? 'admin' : 'user'
       };
     }
   }
@@ -3799,11 +3894,7 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
 
 const isReqAdmin = (authUser: { id: string; email: string; role?: string }): boolean => {
   if (!authUser.email) return false;
-  return (
-    authUser.email.toLowerCase() === 'miracle@goldmailer.xyz' ||
-    authUser.role === 'admin' ||
-    authUser.id === 'usr_miracle_01'
-  );
+  return authUser.email.toLowerCase().trim() === 'miracle@goldmailer.xyz';
 };
 
 // TASK 1: TWILIO WEBHOOK (Receive From, To, Body, MessageSid, save to sms_inbox, return TwiML)

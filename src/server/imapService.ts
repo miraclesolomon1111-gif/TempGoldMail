@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
+import crypto from 'crypto';
 
 export interface ImapConfig {
   host?: string;
@@ -33,6 +34,7 @@ export interface FetchedImapEmail {
   is_starred: boolean;
   folder: string;
   category: 'primary' | 'promotions' | 'social' | 'updates';
+  raw?: any;
 }
 
 /**
@@ -131,9 +133,14 @@ export async function fetchEmailsFromImap(
           const isRead = message.flags ? message.flags.has('\\Seen') : false;
           const isStarred = message.flags ? message.flags.has('\\Flagged') : false;
 
+          const stableMsgId = parsed.messageId || `${cleanFrom}_${cleanTo}_${parsed.subject || ''}_${dateIso}`;
+          const hashKey = crypto.createHash('md5').update(stableMsgId).digest('hex').slice(0, 16);
+          const imapId = 'msg_imap_' + (message.uid ? `${message.uid}_${hashKey.slice(0, 8)}` : hashKey);
+
           results.unshift({
-            id: 'msg_imap_' + (message.uid || Math.random().toString(36).substring(2, 10)),
+            id: imapId,
             messageId: parsed.messageId,
+            raw: { messageId: parsed.messageId, uid: message.uid },
             recipient: cleanTo,
             to_email: cleanTo,
             to: cleanTo,

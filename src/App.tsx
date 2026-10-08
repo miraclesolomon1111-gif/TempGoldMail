@@ -41,6 +41,30 @@ import { HeroLegalPage } from './components/HeroLegalPage';
 import { PhoneHubView } from './components/PhoneHubView';
 import { Phone, Mail } from 'lucide-react';
 
+export function deduplicateEmailList(list: EmailMessage[]): EmailMessage[] {
+  if (!Array.isArray(list)) return [];
+  const seenIds = new Set<string>();
+  const seenFingerprints = new Set<string>();
+  const result: EmailMessage[] = [];
+
+  for (const em of list) {
+    if (!em || !em.id) continue;
+    if (seenIds.has(em.id)) continue;
+    seenIds.add(em.id);
+
+    const msgId = (em as any).messageId || em.raw?.messageId;
+    const fingerprint = msgId
+      ? `msgid:${msgId}`
+      : `${(em.from_email || em.sender || '').toLowerCase()}|${(em.to_email || em.recipient || '').toLowerCase()}|${(em.subject || '').trim().toLowerCase()}|${(em.received_at || em.created_at || '').slice(0, 16)}`;
+
+    if (fingerprint && seenFingerprints.has(fingerprint)) continue;
+    if (fingerprint) seenFingerprints.add(fingerprint);
+
+    result.push(em);
+  }
+  return result;
+}
+
 export default function App() {
   // Theme State
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -68,6 +92,9 @@ export default function App() {
     const u = getStoredUser();
     return u?.email || '';
   });
+
+  // Strict Miracle Admin Access Check
+  const isMiracleAdmin = (user?.email || activeEmail || '').toLowerCase().trim() === 'miracle@goldmailer.xyz';
 
   // View Mode: 'app' (Webmail) for authenticated users vs 'hero' (Landing Page) for visitors
   const [viewMode, setViewMode] = useState<'app' | 'hero'>(() => {
@@ -157,9 +184,13 @@ export default function App() {
       const hash = url.hash.toLowerCase();
       const path = url.pathname.toLowerCase();
 
-      // Admin route
+      // Admin route - strictly for miracle@goldmailer.xyz
       if (path === '/admin' || hash === '#admin') {
-        setIsAdminOpen(true);
+        if (isMiracleAdmin) {
+          setIsAdminOpen(true);
+        } else {
+          setIsAdminOpen(false);
+        }
       }
 
       // Landing / Hero route
@@ -230,12 +261,13 @@ export default function App() {
     }
     if (!silent) setIsLoadingEmails(cached.length === 0);
     try {
-      const emailPromise = fetchEmails(emailToFetch, 'all_mail');
+      const emailPromise = fetchEmails(emailToFetch, 'all');
       const draftPromise = fetchDrafts().catch(() => []);
       const [emailList, draftList] = await Promise.all([emailPromise, draftPromise]);
       if (Array.isArray(emailList)) {
-        setAllEmails(emailList);
-        setCachedEmails(emailToFetch, emailList);
+        const cleanList = deduplicateEmailList(emailList);
+        setAllEmails(cleanList);
+        setCachedEmails(emailToFetch, cleanList);
       }
       if (Array.isArray(draftList)) {
         setDrafts(draftList);
@@ -280,8 +312,7 @@ export default function App() {
 
               if (isForMe) {
                 setAllEmails((prev) => {
-                  if (prev.some((e) => e.id === incoming.id)) return prev;
-                  const updated = [incoming, ...prev];
+                  const updated = deduplicateEmailList([incoming, ...prev]);
                   setCachedEmails(activeEmail, updated);
                   return updated;
                 });
@@ -417,11 +448,13 @@ export default function App() {
   // Email Move to trash (instant optimistic update + permanent cache)
   const handleMoveToTrash = async (id: string) => {
     setAllEmails((prev) => {
-      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder } : m));
+      const updated = deduplicateEmailList(
+        prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
+      );
       setCachedEmails(activeEmail, updated);
       return updated;
     });
-    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'trash' } : prev));
+    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'trash', status: 'trash' } : prev));
     try {
       await updateEmailStatus(id, { folder: 'trash' });
     } catch {}
@@ -430,11 +463,13 @@ export default function App() {
   // Restore email from trash back to Inbox
   const handleRestoreEmail = async (id: string) => {
     setAllEmails((prev) => {
-      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder } : m));
+      const updated = deduplicateEmailList(
+        prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
+      );
       setCachedEmails(activeEmail, updated);
       return updated;
     });
-    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'primary' } : prev));
+    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'primary', status: 'inbox' } : prev));
     try {
       await restoreEmail(id);
     } catch {}
@@ -443,7 +478,9 @@ export default function App() {
   // Email Move to spam
   const handleMoveToSpam = async (id: string) => {
     setAllEmails((prev) => {
-      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m));
+      const updated = deduplicateEmailList(
+        prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
+      );
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -456,7 +493,7 @@ export default function App() {
   // Delete email permanently
   const handleDeleteEmail = async (id: string) => {
     setAllEmails((prev) => {
-      const updated = prev.filter((m) => m.id !== id);
+      const updated = deduplicateEmailList(prev.filter((m) => m.id !== id));
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -470,7 +507,9 @@ export default function App() {
   const handleBatchMoveToTrash = async (ids: string[]) => {
     const idSet = new Set(ids);
     setAllEmails((prev) => {
-      const updated = prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder } : m));
+      const updated = deduplicateEmailList(
+        prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
+      );
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -483,7 +522,7 @@ export default function App() {
   const handleBatchDeletePermanently = async (ids: string[]) => {
     const idSet = new Set(ids);
     setAllEmails((prev) => {
-      const updated = prev.filter((m) => !idSet.has(m.id));
+      const updated = deduplicateEmailList(prev.filter((m) => !idSet.has(m.id)));
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -496,7 +535,9 @@ export default function App() {
   const handleBatchRestore = async (ids: string[]) => {
     const idSet = new Set(ids);
     setAllEmails((prev) => {
-      const updated = prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder } : m));
+      const updated = deduplicateEmailList(
+        prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
+      );
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -507,13 +548,13 @@ export default function App() {
 
   // Empty trash completely
   const handleEmptyTrash = async () => {
-    const trashEmails = allEmails.filter((e) => e.folder === 'trash');
+    const trashEmails = allEmails.filter((e) => e.folder === 'trash' || (e as any).status === 'trash');
     if (trashEmails.length === 0) return;
     const confirmEmpty = window.confirm ? window.confirm('Empty Trash? All messages in Trash will be permanently deleted.') : true;
     if (!confirmEmpty) return;
 
     setAllEmails((prev) => {
-      const updated = prev.filter((m) => m.folder !== 'trash');
+      const updated = deduplicateEmailList(prev.filter((m) => m.folder !== 'trash' && (m as any).status !== 'trash'));
       setCachedEmails(activeEmail, updated);
       return updated;
     });
@@ -602,16 +643,16 @@ export default function App() {
 
   // Filter emails for the currently selected folder (Consistent & Permanent)
   const emailsForFolder = React.useMemo(() => {
-    return allEmails.filter((e) => {
+    const filtered = allEmails.filter((e) => {
       const folder = currentFolder;
 
       // Trash: ONLY show emails marked as trash
       if (folder === 'trash') {
-        return e.folder === 'trash';
+        return e.folder === 'trash' || (e as any).status === 'trash';
       }
 
       // Exclude trash from all other folders!
-      if (e.folder === 'trash') {
+      if (e.folder === 'trash' || (e as any).status === 'trash') {
         return false;
       }
 
@@ -637,7 +678,7 @@ export default function App() {
 
       // Spam folder
       if (folder === 'spam') {
-        return e.folder === 'spam';
+        return e.folder === 'spam' || (e as any).status === 'spam';
       }
 
       // Primary folder
@@ -662,6 +703,8 @@ export default function App() {
 
       return true;
     });
+
+    return deduplicateEmailList(filtered);
   }, [allEmails, currentFolder]);
 
   // Unread / count metrics for folders (computed reliably from all emails)
@@ -742,7 +785,7 @@ export default function App() {
             darkMode={darkMode}
             onToggleDarkMode={toggleDarkMode}
             onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
-            onOpenAdmin={() => setIsAdminOpen(true)}
+            onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
           />
 
           {/* Desktop Sidebar + Content Layout */}
@@ -756,7 +799,7 @@ export default function App() {
               onOpenCompose={handleOpenCompose}
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
-              onOpenAdmin={() => setIsAdminOpen(true)}
+              onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
               darkMode={darkMode}
               activeTab={mainTab}
               onOpenPhone={() => {
@@ -890,7 +933,7 @@ export default function App() {
             onOpenCompose={handleOpenCompose}
             onOpenSettings={() => setIsSettingsOpen(true)}
             onOpenHelp={() => alert('For support, email us at team@goldmailer.xyz or visit goldmailer.xyz/help.')}
-            onOpenAdmin={() => setIsAdminOpen(true)}
+            onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
             onOpenHeroPage={(section) => {
               setViewMode('hero');
               if (section) setHeroInitialSection(section);
@@ -987,7 +1030,7 @@ export default function App() {
         onSwitchAccount={handleSwitchAccount}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
-        onOpenAdmin={() => setIsAdminOpen(true)}
+        onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
         onOpenHeroPage={(section) => {
           setViewMode('hero');
           setHeroInitialSection(section);
@@ -1017,7 +1060,7 @@ export default function App() {
 
       {/* Admin Panel Modal */}
       <AdminPanelModal
-        isOpen={isAdminOpen}
+        isOpen={isAdminOpen && isMiracleAdmin}
         onClose={() => setIsAdminOpen(false)}
         currentUser={user}
       />

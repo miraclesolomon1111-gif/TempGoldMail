@@ -188,6 +188,7 @@ const DB_PATHS = [
 class GoldDatabase {
   private users: StoredGoldUser[] = [];
   private emails: StoredEmail[] = [];
+  private deletedEmailIds: Set<string> = new Set();
   private sessions: StoredSession[] = [];
   private tickets: StoredTicket[] = [];
   private activityLogs: StoredActivityLog[] = [];
@@ -265,11 +266,12 @@ class GoldDatabase {
         goldUsers: this.users,
         emails: this.emails,
         goldEmails: this.emails,
+        deletedEmailIds: Array.from(this.deletedEmailIds),
         sessions: this.sessions,
         tickets: this.tickets,
         activityLogs: this.activityLogs.slice(-500),
         domains: this.domains,
-        adminRoles: this.adminRoles,
+        adminRoles: this.adminRoles.filter(r => r.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz'),
         broadcasts: this.broadcasts,
         payments: this.payments,
         blockedIps: Array.from(this.blockedIps),
@@ -339,15 +341,23 @@ class GoldDatabase {
           };
         });
       }
+      if (Array.isArray(freshestData.deletedEmailIds)) {
+        for (const did of freshestData.deletedEmailIds) {
+          this.deletedEmailIds.add(did);
+        }
+      }
       const rawEmails = Array.isArray(freshestData.emails) && freshestData.emails.length > 0
         ? freshestData.emails
         : (Array.isArray(freshestData.goldEmails) ? freshestData.goldEmails : []);
       if (rawEmails.length > 0) {
-        this.emails = rawEmails.map((e: any) => ({
-          ...e,
-          status: e.status || (e.folder === 'trash' ? 'trash' : 'inbox'),
-          folder: e.folder || 'primary'
-        }));
+        const loadedList = rawEmails
+          .filter((e: any) => e && e.status !== 'deleted' && !this.deletedEmailIds.has(e.id))
+          .map((e: any) => ({
+            ...e,
+            status: e.status || (e.folder === 'trash' ? 'trash' : 'inbox'),
+            folder: e.folder || 'primary'
+          }));
+        this.emails = this.deduplicateStoredEmails(loadedList);
       }
       if (Array.isArray(freshestData.sessions)) {
         this.sessions = freshestData.sessions;
@@ -362,7 +372,7 @@ class GoldDatabase {
         this.domains = freshestData.domains.filter((d: any) => d.domain === 'goldmailer.xyz' || !d.domain.startsWith('goldmailer.'));
       }
       if (Array.isArray(freshestData.adminRoles)) {
-        this.adminRoles = freshestData.adminRoles;
+        this.adminRoles = freshestData.adminRoles.filter((r: any) => r.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz');
       }
       if (Array.isArray(freshestData.broadcasts)) {
         this.broadcasts = freshestData.broadcasts;
@@ -411,6 +421,30 @@ class GoldDatabase {
     }) || null;
   }
 
+  public deduplicateStoredEmails(list: StoredEmail[]): StoredEmail[] {
+    const seenIds = new Set<string>();
+    const seenFingerprints = new Set<string>();
+    const result: StoredEmail[] = [];
+
+    for (const em of list) {
+      if (!em || !em.id) continue;
+      if (this.deletedEmailIds.has(em.id) || em.status === 'deleted') continue;
+      if (seenIds.has(em.id)) continue;
+      seenIds.add(em.id);
+
+      const msgId = (em as any).messageId || em.raw?.messageId;
+      const fingerprint = msgId
+        ? `msgid:${msgId}`
+        : `${(em.from_email || em.sender || '').toLowerCase()}|${(em.to_email || em.recipient || '').toLowerCase()}|${(em.subject || '').trim().toLowerCase()}|${(em.received_at || em.created_at || '').slice(0, 16)}`;
+
+      if (fingerprint && seenFingerprints.has(fingerprint)) continue;
+      if (fingerprint) seenFingerprints.add(fingerprint);
+
+      result.push(em);
+    }
+    return result;
+  }
+
   // Seed default permanent active accounts without overriding their ban status if banned!
   private seedDefaultData() {
     const defaultPasswordHash = bcrypt.hashSync('@654413Mm', 10);
@@ -441,8 +475,8 @@ class GoldDatabase {
         phone: '+1 555 019 2834',
         recovery_phone: '+1 555 019 2834',
         backup_email: 'dorisokoh109@gmail.com',
-        role: 'admin' as const,
-        plan: 'enterprise' as const
+        role: 'user' as const,
+        plan: 'free' as const
       },
       {
         id: 'usr_admin_01',
@@ -455,8 +489,8 @@ class GoldDatabase {
         phone: '+1 267 230 1662',
         recovery_phone: '+1 267 230 1662',
         backup_email: 'admin.backup@goldmailer.xyz',
-        role: 'admin' as const,
-        plan: 'enterprise' as const
+        role: 'user' as const,
+        plan: 'free' as const
       },
       {
         id: 'usr_support_01',
@@ -469,8 +503,8 @@ class GoldDatabase {
         phone: '',
         recovery_phone: '',
         backup_email: '',
-        role: 'admin' as const,
-        plan: 'enterprise' as const
+        role: 'user' as const,
+        plan: 'free' as const
       },
       {
         id: 'usr_team_01',
@@ -483,8 +517,8 @@ class GoldDatabase {
         phone: '',
         recovery_phone: '',
         backup_email: '',
-        role: 'admin' as const,
-        plan: 'enterprise' as const
+        role: 'user' as const,
+        plan: 'free' as const
       },
       {
         id: 'usr_security_01',
@@ -497,8 +531,8 @@ class GoldDatabase {
         phone: '',
         recovery_phone: '',
         backup_email: '',
-        role: 'admin' as const,
-        plan: 'enterprise' as const
+        role: 'user' as const,
+        plan: 'free' as const
       },
       {
         id: 'usr_alex_01',
@@ -586,6 +620,27 @@ class GoldDatabase {
           hasChanges = true;
         }
       }
+    }
+
+    // Enforce admin access: ONLY miracle@goldmailer.xyz is admin! All other emails are regular user!
+    for (const u of this.users) {
+      if (u.email?.toLowerCase().trim() !== 'miracle@goldmailer.xyz') {
+        if (u.role === 'admin') {
+          u.role = 'user';
+          hasChanges = true;
+        }
+      } else {
+        if (u.role !== 'admin') {
+          u.role = 'admin';
+          hasChanges = true;
+        }
+      }
+    }
+
+    const prevAdminRolesCount = this.adminRoles.length;
+    this.adminRoles = this.adminRoles.filter(r => r.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz');
+    if (this.adminRoles.length !== prevAdminRolesCount) {
+      hasChanges = true;
     }
 
     // Primary and default domain is exclusively goldmailer.xyz
@@ -780,19 +835,21 @@ class GoldDatabase {
   public upsertAccount(user: StoredGoldUser): StoredGoldUser {
     const cleanEmail = (user.email || '').toLowerCase().trim();
     const cleanUser = (user.username || cleanEmail.split('@')[0] || '').toLowerCase().trim();
+    const enforcedRole = cleanEmail === 'miracle@goldmailer.xyz' ? 'admin' : 'user';
     const idx = this.users.findIndex(
       u => (user.id && u.id === user.id) ||
            u.email.toLowerCase() === cleanEmail ||
            (cleanUser && u.username.toLowerCase() === cleanUser)
     );
     if (idx !== -1) {
-      this.users[idx] = { ...this.users[idx], ...user, email: cleanEmail };
+      this.users[idx] = { ...this.users[idx], ...user, email: cleanEmail, role: enforcedRole };
       return this.users[idx];
     } else {
       const formatted: StoredGoldUser = {
         ...user,
         email: cleanEmail,
         username: cleanUser,
+        role: enforcedRole,
         is_banned: Boolean(user.is_banned),
         storage_used_bytes: user.storage_used_bytes || 0,
         storage_limit_bytes: user.storage_limit_bytes || 15 * 1024 * 1024 * 1024
@@ -890,7 +947,20 @@ class GoldDatabase {
 
   // ================= EMAIL & TRASH OPERATIONS =================
 
+  public isEmailDeleted(id: string): boolean {
+    return this.deletedEmailIds.has(id);
+  }
+
   public async insertEmail(email: StoredEmail): Promise<StoredEmail> {
+    // If permanently deleted, NEVER insert back
+    if (this.deletedEmailIds.has(email.id) || email.status === 'deleted') {
+      return email;
+    }
+    const msgId = (email as any).messageId || email.raw?.messageId;
+    if (msgId && this.deletedEmailIds.has(msgId)) {
+      return email;
+    }
+
     // Default status to inbox unless sent or draft
     if (!email.status) {
       email.status = email.folder === 'sent' ? 'sent' : email.folder === 'drafts' ? 'draft' : 'inbox';
@@ -898,7 +968,18 @@ class GoldDatabase {
 
     console.log(`✅ DB INSERT goldmailer_emails: ID=${email.id}, To=${email.recipient}, Status=${email.status}`);
 
-    const existingIdx = this.emails.findIndex(e => e.id === email.id);
+    // Deduplication check: Match by ID, Message-ID header, or exact content fingerprint
+    const targetFingerprint = `${(email.from_email || email.sender || '').toLowerCase()}|${(email.to_email || email.recipient || '').toLowerCase()}|${(email.subject || '').trim().toLowerCase()}|${(email.received_at || email.created_at || '').slice(0, 16)}`;
+
+    const existingIdx = this.emails.findIndex(e => {
+      if (e.id === email.id) return true;
+      const eMsgId = (e as any).messageId || e.raw?.messageId;
+      if (msgId && eMsgId && msgId === eMsgId) return true;
+      const eFingerprint = `${(e.from_email || e.sender || '').toLowerCase()}|${(e.to_email || e.recipient || '').toLowerCase()}|${(e.subject || '').trim().toLowerCase()}|${(e.received_at || e.created_at || '').slice(0, 16)}`;
+      if (targetFingerprint && eFingerprint && targetFingerprint === eFingerprint) return true;
+      return false;
+    });
+
     if (existingIdx !== -1) {
       this.emails[existingIdx] = { ...this.emails[existingIdx], ...email };
     } else {
@@ -917,7 +998,19 @@ class GoldDatabase {
   }
 
   public async getEmailById(id: string): Promise<StoredEmail | null> {
-    return this.emails.find(e => e.id === id) || null;
+    if (this.deletedEmailIds.has(id)) return null;
+    return this.emails.find(e => e.id === id && e.status !== 'deleted') || null;
+  }
+
+  public deleteEmail(id: string): boolean {
+    this.deletedEmailIds.add(id);
+    const email = this.emails.find(e => e.id === id);
+    if ((email as any)?.messageId) this.deletedEmailIds.add((email as any).messageId);
+    if (email?.raw?.messageId) this.deletedEmailIds.add(email.raw.messageId);
+    const initialLen = this.emails.length;
+    this.emails = this.emails.filter(e => e.id !== id);
+    this.saveToDiskSync();
+    return this.emails.length < initialLen;
   }
 
   public async updateEmailStatus(
@@ -925,6 +1018,17 @@ class GoldDatabase {
     status: 'inbox' | 'trash' | 'deleted' | 'sent' | 'spam',
     folder?: string
   ): Promise<StoredEmail | null> {
+    if (status === 'deleted') {
+      const email = this.emails.find(e => e.id === id);
+      this.deletedEmailIds.add(id);
+      if ((email as any)?.messageId) this.deletedEmailIds.add((email as any).messageId);
+      if (email?.raw?.messageId) this.deletedEmailIds.add(email.raw.messageId);
+      this.emails = this.emails.filter(e => e.id !== id);
+      this.saveToDiskSync();
+      console.log(`✅ DB UPDATE email permanently deleted and purged from DB: ${id}`);
+      return email || null;
+    }
+
     const email = this.emails.find(e => e.id === id);
     if (!email) return null;
 
@@ -938,9 +1042,8 @@ class GoldDatabase {
       console.log(`✅ DB UPDATE email status to trash: ${id} (trashed_at: ${email.trashed_at})`);
     } else if (status === 'inbox') {
       email.trashed_at = undefined;
+      this.deletedEmailIds.delete(id);
       console.log(`✅ DB UPDATE email status to inbox (restored): ${id}`);
-    } else if (status === 'deleted') {
-      console.log(`✅ DB UPDATE email status to permanently deleted: ${id}`);
     }
 
     this.saveToDiskSync();
@@ -968,6 +1071,19 @@ class GoldDatabase {
     const idSet = new Set(ids);
     let count = 0;
 
+    if (status === 'deleted') {
+      for (const id of ids) {
+        this.deletedEmailIds.add(id);
+        const email = this.emails.find(e => e.id === id);
+        if ((email as any)?.messageId) this.deletedEmailIds.add((email as any).messageId);
+        if (email?.raw?.messageId) this.deletedEmailIds.add(email.raw.messageId);
+      }
+      this.emails = this.emails.filter(e => !idSet.has(e.id));
+      this.saveToDiskSync();
+      console.log(`✅ DB BATCH permanent delete purged ${ids.length} emails from DB`);
+      return ids.length;
+    }
+
     for (const email of this.emails) {
       if (idSet.has(email.id)) {
         email.status = status;
@@ -977,8 +1093,7 @@ class GoldDatabase {
         } else if (status === 'inbox') {
           email.folder = 'primary';
           email.trashed_at = undefined;
-        } else if (status === 'deleted') {
-          email.folder = 'trash';
+          this.deletedEmailIds.delete(email.id);
         }
         count++;
       }
@@ -1267,7 +1382,7 @@ class GoldDatabase {
   // ================= ADMIN ROLES =================
 
   public getAdminRoles(): StoredAdminRole[] {
-    return this.adminRoles;
+    return this.adminRoles.filter(r => r.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz');
   }
 
   public async addAdminRole(
@@ -1277,19 +1392,25 @@ class GoldDatabase {
     permissions: string[],
     addedBy: string
   ): Promise<StoredAdminRole> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail !== 'miracle@goldmailer.xyz') {
+      throw new Error('Only miracle@goldmailer.xyz can be assigned admin privileges');
+    }
+
     const newRole: StoredAdminRole = {
       id: 'role_' + crypto.randomBytes(4).toString('hex'),
-      email: email.trim().toLowerCase(),
+      email: cleanEmail,
       name,
-      role,
+      role: 'super_admin',
       permissions,
       added_by: addedBy,
       created_at: new Date().toISOString()
     };
 
+    this.adminRoles = this.adminRoles.filter(r => r.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz');
     this.adminRoles.push(newRole);
     // Also elevate user in accounts table if exists
-    const user = await this.findAccount(email);
+    const user = await this.findAccount(cleanEmail);
     if (user) {
       user.role = 'admin';
     }
