@@ -61,11 +61,33 @@ export interface StoredCall {
   endedAt?: string;
 }
 
-// Twilio Helper (reads credentials from environment variables)
+// Dynamic Twilio Configuration State
+let dynamicTwilioConfig = {
+  accountSid: process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '',
+  authToken: process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '',
+  trialNumber: process.env.TWILIO_PHONE_NUMBER || '+17372508034'
+};
+
+export function setTwilioCredentials(sid: string, token: string, trialNumber?: string) {
+  if (sid !== undefined) {
+    dynamicTwilioConfig.accountSid = sid.trim();
+    process.env.TWILIO_ACCOUNT_SID = sid.trim();
+  }
+  if (token !== undefined) {
+    dynamicTwilioConfig.authToken = token.trim();
+    process.env.TWILIO_AUTH_TOKEN = token.trim();
+  }
+  if (trialNumber !== undefined && trialNumber.trim()) {
+    dynamicTwilioConfig.trialNumber = trialNumber.trim();
+    process.env.TWILIO_PHONE_NUMBER = trialNumber.trim();
+  }
+}
+
+// Twilio Helper (reads credentials from dynamic state and environment)
 export function getTwilioConfig() {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '';
-  const authToken = process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '';
-  const trialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
+  const accountSid = dynamicTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '';
+  const authToken = dynamicTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '';
+  const trialNumber = dynamicTwilioConfig.trialNumber || process.env.TWILIO_PHONE_NUMBER || '+17372508034';
   const webhookUrl = 'https://goldmailer.xyz/api/webhook/twilio/sms';
   const voiceWebhookUrl = 'https://goldmailer.xyz/api/webhook/twilio/voice';
 
@@ -91,7 +113,29 @@ export function getTwilioClient() {
 }
 
 /**
+ * Normalizes phone numbers to standard E.164 format
+ * Handles local numbers (e.g., Nigerian 09161191940 -> +2349161191940)
+ * and US 10-digit numbers (e.g., 7372508034 -> +17372508034)
+ */
+export function normalizePhoneNumber(num: string, defaultCountryCode = '+234'): string {
+  if (!num) return '';
+  let cleaned = num.trim().replace(/[\s\-\(\)\.]/g, '');
+  if (cleaned.startsWith('+')) return cleaned;
+  if (cleaned.startsWith('00')) return '+' + cleaned.slice(2);
+  // Nigerian local 11-digit mobile format: 080..., 081..., 090..., 091...
+  if (cleaned.startsWith('0') && cleaned.length === 11) {
+    return defaultCountryCode + cleaned.slice(1);
+  }
+  // US local 10-digit format
+  if (cleaned.length === 10) {
+    return '+1' + cleaned;
+  }
+  return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
+}
+
+/**
  * Initiate outbound Voice Call via Twilio
+ * Fixed for Twilio Trial Accounts: removes statusCallbackEvent which triggers disallowed parameters error
  */
 export async function makeCallViaTwilio(options: {
   to: string;
@@ -99,7 +143,9 @@ export async function makeCallViaTwilio(options: {
 }): Promise<{ success: boolean; callSid?: string; error?: string; status?: string }> {
   const client = getTwilioClient();
   const { trialNumber } = getTwilioConfig();
-  const fromNumber = options.from || trialNumber;
+  const rawFrom = options.from || trialNumber;
+  const fromNumber = normalizePhoneNumber(rawFrom, '+1');
+  const toNumber = normalizePhoneNumber(options.to, '+234');
 
   // Real voice call connection without robot text-to-speech or voice messages
   const twiml = `<Response><Pause length="60"/></Response>`;
@@ -114,15 +160,13 @@ export async function makeCallViaTwilio(options: {
   }
 
   try {
+    // Note: Do NOT pass statusCallbackEvent on trial accounts to avoid Twilio 400 parameter errors
     const call = await client.calls.create({
       twiml,
-      to: options.to,
-      from: fromNumber,
-      statusCallback: 'https://goldmailer.xyz/api/webhook/twilio/voice/status',
-      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-      statusCallbackMethod: 'POST'
+      to: toNumber,
+      from: fromNumber
     });
-    console.log(`[TWILIO] Placed call ${call.sid} to ${options.to} from ${fromNumber}`);
+    console.log(`[TWILIO] Placed call ${call.sid} to ${toNumber} from ${fromNumber}`);
     return {
       success: true,
       callSid: call.sid,
@@ -130,6 +174,19 @@ export async function makeCallViaTwilio(options: {
     };
   } catch (err: any) {
     console.error('[TWILIO] Call error:', err.message || err);
+    const msg = String(err.message || '');
+    if (msg.includes('unverified') || err.code === 21215 || err.code === 21608) {
+      return {
+        success: false,
+        error: `Twilio Free Trial restriction: Outbound calls can only be placed to verified numbers on your Twilio account (${toNumber} is unverified). Add it to Verified Caller IDs in your Twilio Console or upgrade account.`
+      };
+    }
+    if (msg.includes('disallowed parameters') || msg.includes('trial accounts have limited parameter access')) {
+      return {
+        success: false,
+        error: `Twilio Trial restriction: ${msg}`
+      };
+    }
     return {
       success: false,
       error: err.message || 'Failed to place call through Twilio'
@@ -138,7 +195,7 @@ export async function makeCallViaTwilio(options: {
 }
 
 /**
- * Send SMS via Twilio with robust error handling
+ * Send SMS via Twilio with robust error handling and trial restriction awareness
  */
 export async function sendSmsViaTwilio(options: {
   to: string;
@@ -147,7 +204,9 @@ export async function sendSmsViaTwilio(options: {
 }): Promise<{ success: boolean; messageSid?: string; error?: string; status?: string }> {
   const client = getTwilioClient();
   const { trialNumber } = getTwilioConfig();
-  const fromNumber = options.from || trialNumber;
+  const rawFrom = options.from || trialNumber;
+  const fromNumber = normalizePhoneNumber(rawFrom, '+1');
+  const toNumber = normalizePhoneNumber(options.to, '+234');
 
   if (!client) {
     console.log('[TWILIO-SANDBOX] Twilio credentials not configured. Outbound SMS queued.');
@@ -162,9 +221,9 @@ export async function sendSmsViaTwilio(options: {
     const res = await client.messages.create({
       body: options.body,
       from: fromNumber,
-      to: options.to
+      to: toNumber
     });
-    console.log(`[TWILIO] Sent SMS ${res.sid} to ${options.to} from ${fromNumber}`);
+    console.log(`[TWILIO] Sent SMS ${res.sid} to ${toNumber} from ${fromNumber}`);
     return {
       success: true,
       messageSid: res.sid,
@@ -172,9 +231,89 @@ export async function sendSmsViaTwilio(options: {
     };
   } catch (err: any) {
     console.error('[TWILIO] Send error:', err.message || err);
+    const msg = String(err.message || '');
+    if (msg.includes('unverified') || err.code === 21608 || err.code === 21215) {
+      return {
+        success: false,
+        error: `Twilio Free Trial restriction: Outbound SMS can only be sent to verified phone numbers on your Twilio account (${toNumber} is unverified). Verify it in Twilio Console or upgrade account.`
+      };
+    }
     return {
       success: false,
       error: err.message || 'Failed to send SMS through Twilio'
+    };
+  }
+}
+
+/**
+ * Run diagnostic test against live Twilio API and fetch trial information
+ */
+export async function testTwilioConnection(): Promise<{
+  success: boolean;
+  account?: any;
+  trialNumbers?: any[];
+  availableNumbersCount?: number;
+  isTrial?: boolean;
+  error?: string;
+  message?: string;
+}> {
+  const client = getTwilioClient();
+  const config = getTwilioConfig();
+
+  if (!client || !config.accountSid) {
+    return {
+      success: false,
+      error: 'Twilio Account SID and Auth Token are not configured. Please enter them in the Admin Panel.'
+    };
+  }
+
+  try {
+    // 1. Fetch Account Details
+    const account = await client.api.v2010.accounts(config.accountSid).fetch();
+
+    // 2. Fetch Incoming Phone Numbers (real trial numbers owned by this account)
+    let trialNumbers: any[] = [];
+    try {
+      const incoming = await client.incomingPhoneNumbers.list({ limit: 10 });
+      trialNumbers = incoming.map(n => ({
+        phoneNumber: n.phoneNumber,
+        friendlyName: n.friendlyName,
+        sid: n.sid,
+        capabilities: n.capabilities
+      }));
+    } catch (e: any) {
+      console.warn('[TWILIO] incomingPhoneNumbers error:', e.message);
+    }
+
+    // 3. Check Available Numbers query capability
+    let availCount = 0;
+    try {
+      const avail = await client.availablePhoneNumbers('US').local.list({ limit: 6, smsEnabled: true });
+      availCount = avail.length;
+    } catch (e: any) {
+      console.warn('[TWILIO] availablePhoneNumbers check:', e.message);
+    }
+
+    const isTrial = (account.type || '').toLowerCase() === 'trial';
+
+    return {
+      success: true,
+      account: {
+        sid: account.sid,
+        friendlyName: account.friendlyName,
+        status: account.status,
+        type: account.type || (isTrial ? 'Trial' : 'Full')
+      },
+      isTrial,
+      trialNumbers,
+      availableNumbersCount: availCount,
+      message: `Twilio connected successfully! Account: ${account.friendlyName || account.sid} (${account.type || 'Trial'}). ${trialNumbers.length} active numbers found.`
+    };
+  } catch (err: any) {
+    console.error('[TWILIO TEST] Error testing Twilio credentials:', err);
+    return {
+      success: false,
+      error: err.message || 'Failed to authenticate with Twilio API. Verify your Account SID and Auth Token.'
     };
   }
 }

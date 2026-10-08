@@ -559,13 +559,14 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
         )}
       </div>
 
-      {/* Floating Action Button (+ Compose) on mobile screens */}
+      {/* Floating Action Button (+ Compose email) on mobile screens - elevated above downside navigation */}
       <button
         onClick={onOpenCompose}
-        title="Compose email"
-        className="lg:hidden fixed bottom-6 right-5 p-4 rounded-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-xl shadow-[#FF6A00]/40 hover:scale-105 active:scale-95 transition-all z-20 flex items-center justify-center cursor-pointer"
+        title="Compose new email"
+        className="lg:hidden fixed bottom-20 right-5 px-4 py-3 rounded-full bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white shadow-2xl shadow-[#FF6A00]/50 hover:scale-105 active:scale-95 transition-all z-40 flex items-center gap-2 cursor-pointer font-bold text-xs"
       >
-        <Plus className="w-6 h-6 stroke-[2.5]" />
+        <Plus className="w-5 h-5 stroke-[2.5]" />
+        <span className="tracking-wide">Compose</span>
       </button>
     </div>
   );

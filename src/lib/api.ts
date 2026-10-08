@@ -1147,3 +1147,56 @@ export async function clearAllPhoneCalls(): Promise<void> {
   });
 }
 
+export async function fetchAdminTwilioStatus(): Promise<{
+  isConfigured: boolean;
+  accountSid: string;
+  hasAuthToken: boolean;
+  trialNumber: string;
+  webhookUrl: string;
+  voiceWebhookUrl: string;
+}> {
+  const res = await fetch('/api/admin/twilio/status', {
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}
+
+export async function updateAdminTwilioConfig(payload: {
+  accountSid?: string;
+  authToken?: string;
+  trialNumber?: string;
+}): Promise<{ success: boolean; message: string; isConfigured: boolean; trialNumber: string }> {
+  const res = await fetch('/api/admin/twilio/config', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to update Twilio configuration');
+  return data;
+}
+
+export async function testAdminTwilioConnection(payload?: {
+  accountSid?: string;
+  authToken?: string;
+  trialNumber?: string;
+}): Promise<{
+  success: boolean;
+  account?: any;
+  trialNumbers?: any[];
+  availableNumbersCount?: number;
+  isTrial?: boolean;
+  error?: string;
+  message?: string;
+}> {
+  const res = await fetch('/api/admin/twilio/test', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload || {})
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to test Twilio connection');
+  return data;
+}
+
+

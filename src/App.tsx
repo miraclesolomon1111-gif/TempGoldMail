@@ -768,16 +768,16 @@ export default function App() {
             )}
           </div>
 
-          {/* Down-side Navigation Bar (Email & Phone Tabs) */}
+          {/* Down-side Navigation Bar (Email & Phone Tabs) - Compact & Sleek */}
           <nav
             aria-label="Downside Navigation"
             className={`sticky bottom-0 z-30 w-full border-t transition-colors ${
               darkMode
                 ? 'bg-[#151619]/95 border-white/10 backdrop-blur-md'
-                : 'bg-white/95 border-orange-200/60 backdrop-blur-md shadow-[0_-4px_16px_rgba(0,0,0,0.04)]'
+                : 'bg-white/95 border-orange-200/60 backdrop-blur-md shadow-[0_-2px_12px_rgba(0,0,0,0.03)]'
             }`}
           >
-            <div className="max-w-md mx-auto px-6 py-2 flex items-center justify-around">
+            <div className="max-w-md mx-auto px-4 py-1 flex items-center justify-around">
               {/* Email Tab */}
               <button
                 type="button"
@@ -785,25 +785,25 @@ export default function App() {
                   setMainTab('email');
                   window.location.hash = '#email';
                 }}
-                className={`flex flex-col items-center gap-1 px-6 py-1.5 rounded-2xl transition-all cursor-pointer relative ${
+                className={`flex flex-col items-center gap-0.5 px-5 py-1 rounded-xl transition-all cursor-pointer relative ${
                   mainTab === 'email'
-                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-sm'
+                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-xs'
                     : darkMode
                       ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
                       : 'text-zinc-600 hover:text-zinc-900 hover:bg-orange-50'
                 }`}
               >
                 <div className="relative">
-                  <Mail className="w-5 h-5 stroke-[2.2]" />
+                  <Mail className="w-4 h-4 stroke-[2.2]" />
                   {unreadCounts.primary > 0 && (
-                    <span className="absolute -top-1 -right-2.5 bg-[#FF6A00] text-white text-[10px] font-black px-1.5 min-w-[17px] h-4 rounded-full flex items-center justify-center shadow-xs">
+                    <span className="absolute -top-1 -right-2 bg-[#FF6A00] text-white text-[9px] font-black px-1 min-w-[15px] h-3.5 rounded-full flex items-center justify-center shadow-xs">
                       {unreadCounts.primary > 99 ? '99+' : unreadCounts.primary}
                     </span>
                   )}
                 </div>
-                <span className="text-[11px] font-medium tracking-wide">Email</span>
+                <span className="text-[10px] font-medium tracking-wide">Email</span>
                 {mainTab === 'email' && (
-                  <span className="w-5 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
+                  <span className="w-4 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
                 )}
               </button>
 
@@ -814,21 +814,21 @@ export default function App() {
                   setMainTab('phone');
                   window.location.hash = '#phone';
                 }}
-                className={`flex flex-col items-center gap-1 px-6 py-1.5 rounded-2xl transition-all cursor-pointer relative ${
+                className={`flex flex-col items-center gap-0.5 px-5 py-1 rounded-xl transition-all cursor-pointer relative ${
                   mainTab === 'phone'
-                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-sm'
+                    ? 'text-[#FF6A00] font-bold bg-[#FF6A00]/12 shadow-xs'
                     : darkMode
                       ? 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
                       : 'text-zinc-600 hover:text-zinc-900 hover:bg-orange-50'
                 }`}
               >
                 <div className="relative">
-                  <Phone className="w-5 h-5 stroke-[2.2]" />
-                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#151619] animate-pulse" />
+                  <Phone className="w-4 h-4 stroke-[2.2]" />
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#151619] animate-pulse" />
                 </div>
-                <span className="text-[11px] font-medium tracking-wide">Phone & SMS</span>
+                <span className="text-[10px] font-medium tracking-wide">Phone & SMS</span>
                 {mainTab === 'phone' && (
-                  <span className="w-5 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
+                  <span className="w-4 h-0.5 rounded-full bg-[#FF6A00] mt-0.5" />
                 )}
               </button>
             </div>

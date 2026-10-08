@@ -153,7 +153,17 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
       setMessages(smsRes);
       setCalls(callsRes);
-      setAvailableNumbers(availRes);
+      // Ensure any phone number that has been bought is never displayed in available numbers
+      const boughtNumbers = new Set(
+        (phonesRes.numbers || []).map(p => p.phoneNumber.replace(/[^\d+]/g, ''))
+      );
+      if (phonesRes.adminNumber) {
+        boughtNumbers.add(phonesRes.adminNumber.replace(/[^\d+]/g, ''));
+      }
+      const unboughtAvail = (availRes || []).filter(
+        a => !boughtNumbers.has(a.phoneNumber.replace(/[^\d+]/g, ''))
+      );
+      setAvailableNumbers(unboughtAvail);
       setContacts(contactsRes);
     } catch (err) {
       console.warn('Failed to load phone data:', err);
@@ -253,8 +263,18 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   // Place Call Handler (Direct Twilio Voice Calling, No TTS)
   const handleMakeCall = async (e?: React.FormEvent, directNumber?: string) => {
     if (e) e.preventDefault();
-    const target = directNumber || callRecipient.trim();
-    if (!target) return;
+    const rawTarget = directNumber || callRecipient.trim();
+    if (!rawTarget) return;
+
+    // Normalize phone number (handling Nigerian 0916... and US numbers)
+    let target = rawTarget.replace(/[\s\-\(\)]/g, '');
+    if (target.startsWith('0') && target.length === 11) {
+      target = '+234' + target.slice(1);
+    } else if (target.length === 10 && !target.startsWith('+')) {
+      target = '+1' + target;
+    } else if (!target.startsWith('+')) {
+      target = '+' + target;
+    }
 
     if (!activeNumber && !isAdmin) {
       setActiveTab('buy');
@@ -315,8 +335,17 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   // Send SMS Handler (Google Messages Style)
   const handleSendSms = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const target = activeThreadNumber || newChatRecipient.trim();
-    if (!target || !messageBody.trim()) return;
+    const rawTarget = activeThreadNumber || newChatRecipient.trim();
+    if (!rawTarget || !messageBody.trim()) return;
+
+    let target = rawTarget.replace(/[\s\-\(\)]/g, '');
+    if (target.startsWith('0') && target.length === 11) {
+      target = '+234' + target.slice(1);
+    } else if (target.length === 10 && !target.startsWith('+')) {
+      target = '+1' + target;
+    } else if (!target.startsWith('+')) {
+      target = '+' + target;
+    }
 
     if (!activeNumber && !isAdmin) {
       setActiveTab('buy');

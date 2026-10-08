@@ -383,7 +383,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
           ? 'bottom-0 right-4 sm:right-8 w-72 sm:w-80 shadow-2xl z-50'
           : isFullscreen
           ? 'fixed inset-2 sm:inset-6 flex flex-col z-50'
-          : 'fixed inset-x-2 bottom-0 sm:inset-x-auto sm:bottom-4 sm:right-6 w-auto sm:w-[620px] max-w-[95vw] flex flex-col z-50'
+          : 'fixed inset-x-2 bottom-2 sm:inset-x-auto sm:bottom-4 sm:right-6 w-auto sm:w-[620px] max-w-[95vw] flex flex-col z-50'
       }`}
     >
       {/* Background Dimmer on Mobile if not minimized and not fullscreen */}
@@ -393,12 +393,12 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
 
       {/* Main Gmail-style Window */}
       <div
-        className={`relative bg-[#1c1d22] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-[0_12px_45px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden text-white z-10 backdrop-blur-2xl ring-1 ring-white/5 ${
+        className={`relative bg-[#1c1d22] border border-white/10 rounded-2xl shadow-[0_12px_45px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden text-white z-10 backdrop-blur-2xl ring-1 ring-white/5 ${
           isMinimized
             ? 'h-11'
             : isFullscreen
             ? 'h-full rounded-2xl'
-            : 'h-[88vh] sm:h-[600px]'
+            : 'h-[85vh] sm:h-[600px]'
         }`}
       >
         {/* ================= 1. GMAIL HEADER BAR ================= */}
@@ -977,7 +977,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
             )}
 
             {/* ================= 10. AUTHENTIC GMAIL ACTION BAR ================= */}
-            <div className="px-4 py-2.5 bg-[#17181c] border-t border-white/5 flex items-center justify-between gap-2 flex-wrap">
+            <div className="px-4 py-2.5 pb-3 sm:pb-2.5 bg-[#17181c] border-t border-white/5 flex items-center justify-between gap-2 flex-wrap">
               {/* Left Side: Split Send Button + Formatting & Attachment Icons */}
               <div className="flex items-center gap-1.5 flex-wrap">
                 {/* Split Send Button */}

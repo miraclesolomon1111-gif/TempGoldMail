@@ -24,7 +24,10 @@ import {
   getTwilioLogs,
   verifyNowPaymentsSignature,
   createNowPaymentsInvoice,
-  getTwilioConfig
+  getTwilioConfig,
+  setTwilioCredentials,
+  testTwilioConnection,
+  normalizePhoneNumber
 } from './phoneService.js';
 
 // Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
@@ -358,7 +361,12 @@ const saveData = () => {
         userPhoneNumbers,
         phonePurchases: phonePurchases.slice(-100),
         calls_history: calls_history.slice(-300),
-        phoneContacts: phoneContacts.slice(-500)
+        phoneContacts: phoneContacts.slice(-500),
+        twilioConfig: {
+          accountSid: getTwilioConfig().accountSid,
+          authToken: getTwilioConfig().authToken,
+          trialNumber: getTwilioConfig().trialNumber
+        }
       },
       null,
       2
@@ -481,6 +489,13 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.phoneContacts)) {
         phoneContacts = parsed.phoneContacts;
+      }
+      if (parsed.twilioConfig && typeof parsed.twilioConfig === 'object') {
+        setTwilioCredentials(
+          parsed.twilioConfig.accountSid || '',
+          parsed.twilioConfig.authToken || '',
+          parsed.twilioConfig.trialNumber || ''
+        );
       }
     } catch (parseErr) {
       console.warn('Data parse error from', freshestFile, parseErr);
@@ -2590,6 +2605,7 @@ const requireAdmin = (req: Request, res: Response, next: express.NextFunction) =
 
 app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
   const totalStorage = goldUsers.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0);
+  const twilioCfg = getTwilioConfig();
   res.json({
     totalUsers: goldUsers.length,
     totalEmails: goldEmails.length,
@@ -2599,7 +2615,8 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     totalStorageUsedMb: (totalStorage / (1024 * 1024)).toFixed(2),
     blockedIpsCount: blockedIps.size,
     recentLogins: userDevices.slice(0, 10),
-    adminPhoneNumber: process.env.TWILIO_PHONE_NUMBER || '+17372508034'
+    adminPhoneNumber: twilioCfg.trialNumber || '+17372508034',
+    isTwilioConfigured: twilioCfg.isConfigured
   });
 });
 
@@ -2624,19 +2641,103 @@ app.delete('/api/admin/users/:id', requireAdmin, (req: Request, res: Response) =
   res.json({ success: true });
 });
 
+// Admin Twilio Gateway & Free Trial Endpoints
+app.get('/api/admin/twilio/status', requireAdmin, async (_req: Request, res: Response) => {
+  const cfg = getTwilioConfig();
+  res.json({
+    isConfigured: cfg.isConfigured,
+    accountSid: cfg.accountSid ? `${cfg.accountSid.slice(0, 8)}...${cfg.accountSid.slice(-4)}` : '',
+    hasAuthToken: Boolean(cfg.authToken),
+    trialNumber: cfg.trialNumber,
+    webhookUrl: cfg.webhookUrl,
+    voiceWebhookUrl: cfg.voiceWebhookUrl
+  });
+});
+
+app.post('/api/admin/twilio/config', requireAdmin, (req: Request, res: Response) => {
+  const { accountSid, authToken, trialNumber } = req.body || {};
+  if (!accountSid && !authToken && !trialNumber) {
+    return res.status(400).json({ error: 'At least one field is required.' });
+  }
+
+  setTwilioCredentials(accountSid, authToken, trialNumber);
+
+  // Sync to admin phone number record
+  if (trialNumber) {
+    const adminNum = userPhoneNumbers.find(p => p.id === 'phone_free_miracle_admin');
+    if (adminNum) {
+      adminNum.phoneNumber = trialNumber.trim();
+      adminNum.friendlyName = `${trialNumber.trim()} (Admin Line)`;
+    }
+  }
+
+  saveData();
+
+  const cfg = getTwilioConfig();
+  return res.json({
+    success: true,
+    message: 'Twilio configuration successfully saved.',
+    isConfigured: cfg.isConfigured,
+    trialNumber: cfg.trialNumber
+  });
+});
+
+app.post('/api/admin/twilio/test', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { accountSid, authToken, trialNumber } = req.body || {};
+    if (accountSid || authToken || trialNumber) {
+      setTwilioCredentials(accountSid, authToken, trialNumber);
+      saveData();
+    }
+
+    const testRes = await testTwilioConnection();
+
+    if (testRes.success && testRes.trialNumbers && testRes.trialNumbers.length > 0) {
+      const liveNumber = testRes.trialNumbers[0].phoneNumber;
+      if (liveNumber) {
+        setTwilioCredentials(undefined as any, undefined as any, liveNumber);
+        const adminNum = userPhoneNumbers.find(p => p.id === 'phone_free_miracle_admin');
+        if (adminNum) {
+          adminNum.phoneNumber = liveNumber;
+          adminNum.friendlyName = `${liveNumber} (Admin Trial Line)`;
+        }
+        saveData();
+      }
+    }
+
+    return res.json(testRes);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || 'Twilio diagnostic failed' });
+  }
+});
+
 // ================= PHONE & SMS APIS (TWILIO & NOWPAYMENTS) =================
 
-// Helper to get active user ID from token or fallback to primary user
-const resolveUserIdFromReq = (req: Request): { id: string; email: string } => {
+// Helper to get active user ID from token safely (does NOT default unauthenticated requests to admin!)
+const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?: string } => {
   const authHeader = req.headers.authorization;
   if (authHeader) {
     const token = authHeader.replace(/^Bearer\s+/i, '');
     const decoded = verifyToken(token);
     if (decoded?.id) {
-      return { id: decoded.id, email: decoded.email || 'miracle@goldmailer.xyz' };
+      const user = goldUsers.find(u => u.id === decoded.id || u.email === decoded.email);
+      return {
+        id: decoded.id,
+        email: decoded.email || user?.email || '',
+        role: user?.role || (decoded.email === 'miracle@goldmailer.xyz' ? 'admin' : 'user')
+      };
     }
   }
-  return { id: 'usr_miracle_01', email: 'miracle@goldmailer.xyz' };
+  return { id: '', email: '', role: 'guest' };
+};
+
+const isReqAdmin = (authUser: { id: string; email: string; role?: string }): boolean => {
+  if (!authUser.email) return false;
+  return (
+    authUser.email.toLowerCase() === 'miracle@goldmailer.xyz' ||
+    authUser.role === 'admin' ||
+    authUser.id === 'usr_miracle_01'
+  );
 };
 
 // TASK 1: TWILIO WEBHOOK (Receive From, To, Body, MessageSid, save to sms_inbox, return TwiML)
@@ -2770,21 +2871,21 @@ app.post(
 app.get('/api/phone/numbers', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
-  const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+  const { trialNumber } = getTwilioConfig();
+  const isAdmin = isReqAdmin(authUser);
 
   // Ensure miracle@goldmailer.xyz has the free phone number
   if (isAdmin) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
-      p => p.phoneNumber === defaultTrialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
+      p => p.phoneNumber === trialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
     );
     if (adminPhoneIndex === -1) {
       userPhoneNumbers.unshift({
         id: 'phone_free_miracle_admin',
-        userId: authUser.id,
-        userEmail: authUser.email,
-        phoneNumber: defaultTrialNumber,
-        friendlyName: '+1 (737) 250-8034 (Admin Line)',
+        userId: authUser.id || 'usr_miracle_01',
+        userEmail: authUser.email || 'miracle@goldmailer.xyz',
+        phoneNumber: trialNumber,
+        friendlyName: `${trialNumber} (Admin Line)`,
         provider: 'twilio',
         status: 'active',
         purchasedAt: '2026-10-08T00:00:00.000Z',
@@ -2796,9 +2897,10 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     }
   }
 
-  // Strictly do NOT give free trial numbers to regular users until they buy!
+  // Strictly do NOT give free trial numbers to regular users!
+  // Only return numbers the user actually owns/purchased (or admin's line if admin)
   const list = userPhoneNumbers.filter(
-    p => p.userId === authUser.id || (isAdmin && p.phoneNumber === defaultTrialNumber)
+    p => (authUser.id && p.userId === authUser.id) || (isAdmin && p.phoneNumber === trialNumber)
   );
 
   const enriched = list.map(p => {
@@ -2815,18 +2917,37 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: isAdmin ? defaultTrialNumber : undefined,
+    adminNumber: isAdmin ? trialNumber : undefined,
     isTwilioConfigured: getTwilioConfig().isConfigured
   });
 });
 
 // 4. GET /api/phone/available - Search available numbers to buy directly from Twilio API
+// Exclude any phone number that has already been bought
 app.get('/api/phone/available', async (_req: Request, res: Response) => {
   try {
-    const list = await listAvailablePhoneNumbers(8);
+    ensureDataLoaded();
+    const list = await listAvailablePhoneNumbers(16);
+    const { trialNumber } = getTwilioConfig();
+
+    // Any phone number that has been bought should not display again
+    const boughtSet = new Set<string>();
+    userPhoneNumbers.forEach(p => {
+      if (p.phoneNumber) boughtSet.add(p.phoneNumber.replace(/[^\d+]/g, ''));
+    });
+    phonePurchases.forEach(p => {
+      if (p.phoneNumber) boughtSet.add(p.phoneNumber.replace(/[^\d+]/g, ''));
+    });
+    // Never display admin dedicated trial number in the purchase list
+    if (trialNumber) {
+      boughtSet.add(trialNumber.replace(/[^\d+]/g, ''));
+    }
+
+    const availableNumbers = list.filter(n => !boughtSet.has(n.phoneNumber.replace(/[^\d+]/g, '')));
+
     return res.json({
       success: true,
-      availableNumbers: list
+      availableNumbers
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -2839,7 +2960,7 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
     ensureDataLoaded();
     const { phoneNumber } = req.body;
     const authUser = resolveUserIdFromReq(req);
-    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+    const isAdmin = isReqAdmin(authUser);
 
     if (isAdmin) {
       return res.json({
@@ -3013,22 +3134,31 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
     ensureDataLoaded();
     const { to, body, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
-    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id);
-    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+    const isAdmin = isReqAdmin(authUser);
+    const { trialNumber } = getTwilioConfig();
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== trialNumber));
+
+    // Non-admin users cannot use the Twilio free trial!
+    if (!isAdmin && userPhones.length === 0) {
+      return res.status(403).json({
+        error: 'You must have an active purchased phone number to send SMS. Twilio trial is reserved for system admin.'
+      });
+    }
 
     if (!to || !body) {
       return res.status(400).json({ error: 'Recipient phone number (to) and message (body) are required.' });
     }
 
-    const { trialNumber } = getTwilioConfig();
     const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to send SMS.' });
     }
 
+    const normalizedTo = normalizePhoneNumber(to, '+234');
+
     const twilioResult = await sendSmsViaTwilio({
-      to,
+      to: normalizedTo,
       from: fromNumber,
       body
     });
@@ -3037,7 +3167,7 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
       id: 'sms_out_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       userId: authUser.id,
       from: fromNumber,
-      to,
+      to: normalizedTo,
       body,
       receivedAt: new Date().toISOString(),
       messageSid: twilioResult.messageSid || 'SM_' + Date.now(),
@@ -3178,22 +3308,31 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
     ensureDataLoaded();
     const { to, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
-    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id);
-    const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
+    const isAdmin = isReqAdmin(authUser);
+    const { trialNumber } = getTwilioConfig();
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== trialNumber));
+
+    // Non-admin users cannot use the Twilio free trial!
+    if (!isAdmin && userPhones.length === 0) {
+      return res.status(403).json({
+        error: 'You must have an active purchased phone number to place calls. Twilio trial is reserved for system admin.'
+      });
+    }
 
     if (!to) {
       return res.status(400).json({ error: 'Recipient phone number (to) is required.' });
     }
 
-    const { trialNumber } = getTwilioConfig();
     const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to place calls.' });
     }
 
+    const normalizedTo = normalizePhoneNumber(to, '+234');
+
     const callResult = await makeCallViaTwilio({
-      to,
+      to: normalizedTo,
       from: fromNumber
     });
 
@@ -3201,7 +3340,7 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
       id: 'call_out_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       userId: authUser.id,
       from: fromNumber,
-      to,
+      to: normalizedTo,
       direction: 'outbound',
       status: callResult.success ? ((callResult.status as any) || 'in-progress') : 'failed',
       callSid: callResult.callSid || 'CA_' + Date.now(),
