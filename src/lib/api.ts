@@ -75,13 +75,57 @@ export function normalizeEmail(raw: any): EmailMessage {
   };
 }
 
+// Local client-side tracking to prevent deleted/trashed emails from resurrecting on network sync
+const TRASHED_EMAILS_KEY = 'goldmail_trashed_ids';
+const DELETED_EMAILS_KEY = 'goldmail_deleted_ids';
+
+export function getTrashedEmailIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(TRASHED_EMAILS_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
+}
+
+export function setTrashedEmailId(id: string, isTrashed: boolean): void {
+  try {
+    const set = getTrashedEmailIds();
+    if (isTrashed) set.add(id);
+    else set.delete(id);
+    localStorage.setItem(TRASHED_EMAILS_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
+export function getDeletedEmailIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_EMAILS_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
+}
+
+export function setDeletedEmailId(id: string): void {
+  try {
+    const set = getDeletedEmailIds();
+    set.add(id);
+    localStorage.setItem(DELETED_EMAILS_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
 // Email local cache helpers to eliminate flicker and guarantee permanent offline/client persistence
 export function getCachedEmails(email: string): EmailMessage[] {
   try {
     const raw = localStorage.getItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizeEmail);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const deletedIds = getDeletedEmailIds();
+        const trashedIds = getTrashedEmailIds();
+        return parsed
+          .filter(e => !deletedIds.has(e.id))
+          .map(normalizeEmail)
+          .map(e => (trashedIds.has(e.id) ? { ...e, folder: 'trash' as MailFolder } : e));
+      }
     }
   } catch {}
   return [];
@@ -89,7 +133,12 @@ export function getCachedEmails(email: string): EmailMessage[] {
 
 export function setCachedEmails(email: string, emails: EmailMessage[]): void {
   try {
-    localStorage.setItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`, JSON.stringify(emails.slice(0, 300)));
+    const deletedIds = getDeletedEmailIds();
+    const trashedIds = getTrashedEmailIds();
+    const clean = emails
+      .filter(e => !deletedIds.has(e.id))
+      .map(e => (trashedIds.has(e.id) ? { ...e, folder: 'trash' as MailFolder } : e));
+    localStorage.setItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`, JSON.stringify(clean.slice(0, 300)));
   } catch {}
 }
 
@@ -646,18 +695,29 @@ export async function fetchEmails(emailAddress: string, folder: string = 'all'):
   try {
     const res = await fetch(`/api/emails/${encodeURIComponent(emailAddress)}?folder=${encodeURIComponent(folder)}`);
     const list = await safeJsonParse(res);
+    const deletedIds = getDeletedEmailIds();
+    const trashedIds = getTrashedEmailIds();
+
     if (Array.isArray(list)) {
-      const normalized = list.map(normalizeEmail);
+      const normalized = list
+        .map(normalizeEmail)
+        .filter(em => !deletedIds.has(em.id))
+        .map(em => (trashedIds.has(em.id) ? { ...em, folder: 'trash' as MailFolder } : em));
+
       if (folder === 'all' || folder === 'all_mail' || folder === 'all_inboxes') {
-        const existingCached = getCachedEmails(emailAddress);
+        const existingCached = getCachedEmails(emailAddress).filter(em => !deletedIds.has(em.id));
         const mergedMap = new Map<string, EmailMessage>();
         for (const em of existingCached) {
           mergedMap.set(em.id, em);
         }
         for (const em of normalized) {
+          // If the email was trashed in client, never let server sync demote it to primary
+          if (trashedIds.has(em.id)) {
+            em.folder = 'trash';
+          }
           mergedMap.set(em.id, em);
         }
-        const merged = Array.from(mergedMap.values());
+        const merged = Array.from(mergedMap.values()).filter(em => !deletedIds.has(em.id));
         merged.sort((a, b) => new Date(b.received_at || b.created_at || 0).getTime() - new Date(a.received_at || a.created_at || 0).getTime());
         setCachedEmails(emailAddress, merged);
         return merged;
@@ -719,6 +779,12 @@ export async function updateEmailStatus(
   id: string,
   updates: { is_read?: boolean; is_starred?: boolean; folder?: MailFolder }
 ): Promise<any> {
+  if (updates.folder === 'trash') {
+    setTrashedEmailId(id, true);
+  } else if (updates.folder) {
+    setTrashedEmailId(id, false);
+  }
+
   const res = await fetch(`/api/emails/${id}`, {
     method: 'PATCH',
     headers: getHeaders(),
@@ -727,10 +793,62 @@ export async function updateEmailStatus(
   return await safeJsonParse(res);
 }
 
+export async function restoreEmail(id: string): Promise<any> {
+  setTrashedEmailId(id, false);
+  const res = await fetch(`/api/emails/${id}/restore`, {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
 export async function deleteEmail(id: string, permanent: boolean = false): Promise<any> {
+  if (permanent) {
+    setDeletedEmailId(id);
+    setTrashedEmailId(id, false);
+  } else {
+    setTrashedEmailId(id, true);
+  }
+
   const res = await fetch(`/api/emails/${id}?permanent=${permanent}`, {
     method: 'DELETE',
     headers: getHeaders()
+  });
+  return await safeJsonParse(res);
+}
+
+export async function emptyTrash(emailAddress?: string): Promise<any> {
+  const res = await fetch('/api/emails/trash/empty', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email: emailAddress || getStoredActiveEmail() })
+  });
+  return await safeJsonParse(res);
+}
+
+export async function batchEmailAction(
+  ids: string[],
+  action: 'trash' | 'restore' | 'delete_permanent' | 'mark_read' | 'mark_unread'
+): Promise<any> {
+  if (action === 'delete_permanent') {
+    for (const id of ids) {
+      setDeletedEmailId(id);
+      setTrashedEmailId(id, false);
+    }
+  } else if (action === 'trash') {
+    for (const id of ids) {
+      setTrashedEmailId(id, true);
+    }
+  } else if (action === 'restore') {
+    for (const id of ids) {
+      setTrashedEmailId(id, false);
+    }
+  }
+
+  const res = await fetch('/api/emails/batch-action', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ ids, action })
   });
   return await safeJsonParse(res);
 }

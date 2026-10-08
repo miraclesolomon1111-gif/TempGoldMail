@@ -17,7 +17,8 @@ import {
   Info,
   CheckSquare,
   Square,
-  Archive
+  Archive,
+  RotateCcw
 } from 'lucide-react';
 import { EmailMessage, MailFolder, Draft } from '../types';
 
@@ -39,6 +40,13 @@ interface EmailListViewProps {
   darkMode: boolean;
   onSelectFolder?: (folder: MailFolder | 'all_inboxes') => void;
   unreadCounts?: Record<string, number>;
+  onMoveToTrash?: (id: string) => void;
+  onDeletePermanently?: (id: string) => void;
+  onRestoreEmail?: (id: string) => void;
+  onBatchMoveToTrash?: (ids: string[]) => void;
+  onBatchDeletePermanently?: (ids: string[]) => void;
+  onBatchRestore?: (ids: string[]) => void;
+  onEmptyTrash?: () => void;
 }
 
 export const EmailListView: React.FC<EmailListViewProps> = ({
@@ -58,7 +66,14 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
   onCopyEmail,
   darkMode,
   onSelectFolder,
-  unreadCounts
+  unreadCounts,
+  onMoveToTrash,
+  onDeletePermanently,
+  onRestoreEmail,
+  onBatchMoveToTrash,
+  onBatchDeletePermanently,
+  onBatchRestore,
+  onEmptyTrash
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -126,6 +141,21 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
     }
   };
 
+  const handleBatchTrash = () => {
+    if (onBatchMoveToTrash) onBatchMoveToTrash(Array.from(selectedIds));
+    setSelectedIds(new Set());
+  };
+
+  const handleBatchDelete = () => {
+    if (onBatchDeletePermanently) onBatchDeletePermanently(Array.from(selectedIds));
+    setSelectedIds(new Set());
+  };
+
+  const handleBatchRestoreAction = () => {
+    if (onBatchRestore) onBatchRestore(Array.from(selectedIds));
+    setSelectedIds(new Set());
+  };
+
   return (
     <div className={`flex-1 flex flex-col min-h-0 relative select-none ${
       darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'
@@ -134,14 +164,14 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
       <div className={`px-3 sm:px-5 py-2 flex items-center justify-between border-b ${
         darkMode ? 'border-white/10 bg-[#151619]' : 'border-zinc-200 bg-white'
       }`}>
-        {/* Left: Folder Title and Selection checkbox */}
+        {/* Left: Folder Title and Selection checkbox or Batch Actions */}
         <div className="flex items-center gap-2.5 min-w-0">
           {!isDraftFolder && emails.length > 0 && (
             <button
               type="button"
               onClick={handleSelectAll}
               title={selectedIds.size === emails.length ? 'Deselect all' : 'Select all'}
-              className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors"
+              className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors cursor-pointer"
             >
               {selectedIds.size === emails.length ? (
                 <CheckSquare className="w-4 h-4 text-[#FF6A00]" />
@@ -153,14 +183,54 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
             </button>
           )}
 
-          <div className="flex items-center gap-2 truncate">
-            <span className="text-xs font-bold uppercase tracking-wider text-[#FF6A00]">
-              {getFolderTitle()}
-            </span>
-            <span className="text-[11px] text-zinc-500 font-mono">
-              ({isDraftFolder ? drafts.length : emails.length})
-            </span>
-          </div>
+          {selectedIds.size > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-[#FF8C42]">
+                {selectedIds.size} selected
+              </span>
+              {currentFolder === 'trash' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleBatchRestoreAction}
+                    title="Restore selected to inbox"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Restore</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBatchDelete}
+                    title="Delete selected forever"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete forever</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleBatchTrash}
+                  title="Move selected to trash"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 truncate">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#FF6A00]">
+                {getFolderTitle()}
+              </span>
+              <span className="text-[11px] text-zinc-500 font-mono">
+                ({isDraftFolder ? drafts.length : emails.length})
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right: Quick Email Pill and Refresh button */}
@@ -184,6 +254,25 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Trash Top Notice Banner */}
+      {currentFolder === 'trash' && (
+        <div className={`px-3 sm:px-5 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2 border-b ${
+          darkMode ? 'bg-zinc-900/90 border-white/5 text-zinc-400' : 'bg-orange-50/70 border-orange-100 text-zinc-700'
+        }`}>
+          <span>Messages in Trash will stay here until deleted permanently.</span>
+          {emails.length > 0 && onEmptyTrash && (
+            <button
+              type="button"
+              onClick={onEmptyTrash}
+              className="text-xs font-bold text-red-400 hover:text-red-300 hover:underline cursor-pointer flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Empty Trash now
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Gmail Category Tabs (Primary, Promotions, Social, Updates) */}
       {isCategoryFolder && onSelectFolder && (
@@ -334,7 +423,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
                 <div
                   key={e.id}
                   onClick={() => onSelectEmail(e)}
-                  className={`flex items-start sm:items-center gap-3 px-3 sm:px-4 py-2.5 cursor-pointer transition-colors ${
+                  className={`group flex items-start sm:items-center gap-3 px-3 sm:px-4 py-2.5 cursor-pointer transition-colors ${
                     darkMode
                       ? isSelected
                         ? 'bg-[#FF6A00]/15'
@@ -416,9 +505,52 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
                     </p>
                   </div>
 
-                  {/* Desktop Timestamp */}
-                  <div className="hidden sm:block text-[11px] font-mono text-zinc-500 flex-shrink-0 ml-2">
-                    {formatGmailTime(e.received_at || e.created_at)}
+                  {/* Quick Action Buttons (Restore / Delete) & Timestamp */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                    {currentFolder === 'trash' ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            if (onRestoreEmail) onRestoreEmail(e.id);
+                          }}
+                          title="Restore to Inbox"
+                          className="p-1 sm:p-1.5 rounded-md hover:bg-emerald-500/20 text-zinc-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            if (onDeletePermanently) onDeletePermanently(e.id);
+                          }}
+                          title="Delete forever"
+                          className="p-1 sm:p-1.5 rounded-md hover:bg-red-500/20 text-zinc-400 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="hidden sm:group-hover:flex items-center">
+                        <button
+                          type="button"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            if (onMoveToTrash) onMoveToTrash(e.id);
+                          }}
+                          title="Delete"
+                          className="p-1.5 rounded-md hover:bg-red-500/15 text-zinc-400 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="hidden sm:block text-[11px] font-mono text-zinc-500">
+                      {formatGmailTime(e.received_at || e.created_at)}
+                    </div>
                   </div>
                 </div>
               );

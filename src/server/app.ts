@@ -275,6 +275,7 @@ let oauthClients: StoredOAuthClient[] = [];
 let oauthCodes: StoredOAuthCode[] = [];
 let oauthTokens: StoredOAuthToken[] = [];
 let blockedIps: Set<string> = new Set();
+let deletedEmailIds: Set<string> = new Set();
 
 // Helper: 10 random 8-digit backup codes
 const generateBackupCodes = (): string[] => {
@@ -301,7 +302,8 @@ const saveData = () => {
         oauthClients,
         oauthCodes: oauthCodes.slice(-50),
         oauthTokens: oauthTokens.slice(-100),
-        blockedIps: Array.from(blockedIps)
+        blockedIps: Array.from(blockedIps),
+        deletedEmailIds: Array.from(deletedEmailIds)
       },
       null,
       2
@@ -332,56 +334,86 @@ const saveData = () => {
 export const ensureDataLoaded = () => {
   try {
     const candidateFiles = [DATA_FILE_ROOT, DATA_FILE_TMP];
+    let freshestFile: string | null = null;
+    let freshestMtime = -1;
+
     for (const file of candidateFiles) {
-      if (fs.existsSync(file)) {
-        try {
-          const raw = fs.readFileSync(file, 'utf-8');
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed.goldUsers)) {
-            for (const u of parsed.goldUsers) {
-              const idx = goldUsers.findIndex(gu => gu.id === u.id || (gu.email && u.email && gu.email.toLowerCase() === u.email.toLowerCase()));
-              if (idx === -1) {
-                goldUsers.push(u);
-              } else {
-                goldUsers[idx] = { ...goldUsers[idx], ...u };
-              }
-            }
+      try {
+        if (fs.existsSync(file)) {
+          const stats = fs.statSync(file);
+          if (stats.mtimeMs > freshestMtime && stats.size > 10) {
+            freshestMtime = stats.mtimeMs;
+            freshestFile = file;
           }
-          if (Array.isArray(parsed.goldEmails)) {
-            for (const em of parsed.goldEmails) {
-              const idx = goldEmails.findIndex(ge => ge.id === em.id);
-              if (idx === -1) {
-                goldEmails.push(em);
-              } else {
-                goldEmails[idx] = { ...goldEmails[idx], ...em };
-              }
-            }
-          }
-          if (Array.isArray(parsed.goldDrafts)) {
-            for (const d of parsed.goldDrafts) {
-              const idx = goldDrafts.findIndex(gd => gd.id === d.id);
-              if (idx === -1) {
-                goldDrafts.push(d);
-              } else {
-                goldDrafts[idx] = { ...goldDrafts[idx], ...d };
-              }
-            }
-          }
-          if (Array.isArray(parsed.userDevices)) {
-            userDevices = parsed.userDevices;
-          }
-          if (Array.isArray(parsed.oauthClients)) {
-            for (const c of parsed.oauthClients) {
-              if (!oauthClients.some(oc => oc.client_id === c.client_id)) {
-                oauthClients.push(c);
-              }
-            }
-          }
-          if (Array.isArray(parsed.blockedIps)) {
-            blockedIps = new Set(parsed.blockedIps);
-          }
-        } catch {}
+        }
+      } catch {}
+    }
+
+    if (!freshestFile) return;
+
+    try {
+      const raw = fs.readFileSync(freshestFile, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed.deletedEmailIds)) {
+        for (const did of parsed.deletedEmailIds) {
+          deletedEmailIds.add(did);
+        }
       }
+      if (Array.isArray(parsed.goldUsers)) {
+        for (const u of parsed.goldUsers) {
+          const idx = goldUsers.findIndex(gu => gu.id === u.id || (gu.email && u.email && gu.email.toLowerCase() === u.email.toLowerCase()));
+          if (idx === -1) {
+            goldUsers.push(u);
+          } else {
+            goldUsers[idx] = { ...goldUsers[idx], ...u };
+          }
+        }
+      }
+      if (Array.isArray(parsed.goldEmails)) {
+        for (const em of parsed.goldEmails) {
+          if (deletedEmailIds.has(em.id)) continue;
+          const idx = goldEmails.findIndex(ge => ge.id === em.id);
+          if (idx === -1) {
+            goldEmails.push(em);
+          } else {
+            goldEmails[idx] = {
+              ...em,
+              folder: em.folder || goldEmails[idx].folder || 'primary',
+              is_read: em.is_read !== undefined ? em.is_read : goldEmails[idx].is_read,
+              is_starred: em.is_starred !== undefined ? em.is_starred : goldEmails[idx].is_starred
+            };
+          }
+        }
+        // Purge any deleted emails from memory
+        if (deletedEmailIds.size > 0) {
+          goldEmails = goldEmails.filter(ge => !deletedEmailIds.has(ge.id));
+        }
+      }
+      if (Array.isArray(parsed.goldDrafts)) {
+        for (const d of parsed.goldDrafts) {
+          const idx = goldDrafts.findIndex(gd => gd.id === d.id);
+          if (idx === -1) {
+            goldDrafts.push(d);
+          } else {
+            goldDrafts[idx] = { ...goldDrafts[idx], ...d };
+          }
+        }
+      }
+      if (Array.isArray(parsed.userDevices)) {
+        userDevices = parsed.userDevices;
+      }
+      if (Array.isArray(parsed.oauthClients)) {
+        for (const c of parsed.oauthClients) {
+          if (!oauthClients.some(oc => oc.client_id === c.client_id)) {
+            oauthClients.push(c);
+          }
+        }
+      }
+      if (Array.isArray(parsed.blockedIps)) {
+        blockedIps = new Set(parsed.blockedIps);
+      }
+    } catch (parseErr) {
+      console.warn('Data parse error from', freshestFile, parseErr);
     }
   } catch (e) {
     console.warn('Notice: data sync check note', e);
@@ -466,9 +498,11 @@ const seedAccounts = () => {
   ];
 
   for (const acc of accountsToGreet) {
-    if (!goldEmails.some(e => (e.recipient || '').toLowerCase().includes(acc.email.toLowerCase()))) {
+    const welcomeMsgId = 'msg_welcome_' + acc.name.toLowerCase();
+    if (deletedEmailIds.has(welcomeMsgId)) continue;
+    if (!goldEmails.some(e => e.id === welcomeMsgId || (e.recipient || '').toLowerCase().includes(acc.email.toLowerCase()))) {
       goldEmails.push({
-        id: 'msg_welcome_' + acc.name.toLowerCase(),
+        id: welcomeMsgId,
         recipient: acc.email,
         to_email: acc.email,
         to: acc.email,
@@ -1446,6 +1480,7 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
       const imapMessages = await fetchEmailsFromImap(cleanTarget, userImapConfig);
       console.log(`[SYNC] IMAP returned ${imapMessages.length} messages for ${cleanTarget}`);
       for (const im of imapMessages) {
+        if (deletedEmailIds.has(im.id) || (im.messageId && deletedEmailIds.has(im.messageId))) continue;
         const already = goldEmails.some(e => e.id === im.id || (im.messageId && e.raw?.messageId === im.messageId));
         if (!already) {
           goldEmails.unshift(im);
@@ -1473,6 +1508,7 @@ app.post('/api/emails/sync', async (req: Request, res: Response) => {
           for (const item of rawItems) {
             const itemTo = extractCleanAddress(item.to);
             if (!cleanTarget || itemTo.includes(cleanTarget) || cleanTarget.includes(itemTo) || itemTo.endsWith('@goldmailer.xyz')) {
+              if (deletedEmailIds.has(String(item.id)) || deletedEmailIds.has(`msg_${item.id}`)) continue;
               const already = goldEmails.some(e => e.id === String(item.id) || e.id === `msg_${item.id}`);
               if (!already) {
                 let fullItem = item;
@@ -1766,6 +1802,7 @@ app.post('/api/emails/simulate-inbound', (req: Request, res: Response) => {
 
 // 4. Update Email Read/Star/Folder
 app.patch('/api/emails/:id', (req: Request, res: Response) => {
+  ensureDataLoaded();
   const { id } = req.params;
   const { is_read, is_starred, folder } = req.body;
   const email = goldEmails.find(e => e.id === id);
@@ -1774,29 +1811,137 @@ app.patch('/api/emails/:id', (req: Request, res: Response) => {
   }
   if (is_read !== undefined) email.is_read = is_read;
   if (is_starred !== undefined) email.is_starred = is_starred;
-  if (folder !== undefined) email.folder = folder;
+  if (folder !== undefined) {
+    email.folder = folder;
+    if (folder === 'primary' || folder !== 'trash') {
+      deletedEmailIds.delete(id);
+      if (email.raw?.messageId) deletedEmailIds.delete(email.raw.messageId);
+    }
+  }
 
   saveData();
   return res.json({ success: true, email });
 });
 
-// 5. Delete Email
+// 5. Delete Email (Move to trash or permanent delete)
 app.delete('/api/emails/:id', (req: Request, res: Response) => {
+  ensureDataLoaded();
   const { id } = req.params;
   const permanent = req.query.permanent === 'true';
   const email = goldEmails.find(e => e.id === id);
   if (!email) {
-    return res.status(404).json({ error: 'Email not found' });
+    deletedEmailIds.add(id);
+    saveData();
+    return res.json({ success: true, already_deleted: true });
   }
 
   if (permanent || email.folder === 'trash') {
     goldEmails = goldEmails.filter(e => e.id !== id);
+    deletedEmailIds.add(id);
+    if (email.raw?.messageId) deletedEmailIds.add(email.raw.messageId);
+    saveData();
+    return res.json({ success: true, permanent: true });
   } else {
     email.folder = 'trash';
+    saveData();
+    return res.json({ success: true, folder: 'trash' });
+  }
+});
+
+// 5b. Restore Email from Trash to Inbox
+app.post('/api/emails/:id/restore', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { id } = req.params;
+  const email = goldEmails.find(e => e.id === id);
+  if (!email) {
+    return res.status(404).json({ error: 'Email not found' });
+  }
+  email.folder = 'primary';
+  deletedEmailIds.delete(id);
+  if (email.raw?.messageId) deletedEmailIds.delete(email.raw.messageId);
+
+  saveData();
+  return res.json({ success: true, email });
+});
+
+// 5c. Empty Trash permanently for user
+app.all(['/api/emails/trash/empty', '/api/emails/empty-trash'], (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const targetEmail = (req.body?.email || req.query?.email || '').toString().toLowerCase().trim();
+
+  const toDelete = goldEmails.filter(e => {
+    if (e.folder !== 'trash') return false;
+    if (!targetEmail) return true;
+    return (
+      (e.recipient && e.recipient.toLowerCase().includes(targetEmail)) ||
+      (e.to_email && e.to_email.toLowerCase().includes(targetEmail)) ||
+      (e.sender && e.sender.toLowerCase().includes(targetEmail)) ||
+      (e.from_email && e.from_email.toLowerCase().includes(targetEmail))
+    );
+  });
+
+  for (const em of toDelete) {
+    deletedEmailIds.add(em.id);
+    if (em.raw?.messageId) deletedEmailIds.add(em.raw.messageId);
+  }
+
+  const deleteIds = new Set(toDelete.map(e => e.id));
+  goldEmails = goldEmails.filter(e => !deleteIds.has(e.id));
+
+  saveData();
+  return res.json({
+    success: true,
+    deleted_count: toDelete.length,
+    remaining: goldEmails.length
+  });
+});
+
+// 5d. Batch actions (trash, restore, delete permanent, mark read, mark unread)
+app.post('/api/emails/batch-action', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { ids, action } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+
+  const idSet = new Set(ids);
+  if (action === 'delete_permanent') {
+    for (const id of ids) {
+      deletedEmailIds.add(id);
+    }
+    goldEmails = goldEmails.filter(e => {
+      if (idSet.has(e.id)) {
+        if (e.raw?.messageId) deletedEmailIds.add(e.raw.messageId);
+        return false;
+      }
+      return true;
+    });
+  } else if (action === 'trash') {
+    for (const e of goldEmails) {
+      if (idSet.has(e.id)) {
+        e.folder = 'trash';
+      }
+    }
+  } else if (action === 'restore') {
+    for (const e of goldEmails) {
+      if (idSet.has(e.id)) {
+        e.folder = 'primary';
+        deletedEmailIds.delete(e.id);
+        if (e.raw?.messageId) deletedEmailIds.delete(e.raw.messageId);
+      }
+    }
+  } else if (action === 'mark_read') {
+    for (const e of goldEmails) {
+      if (idSet.has(e.id)) e.is_read = true;
+    }
+  } else if (action === 'mark_unread') {
+    for (const e of goldEmails) {
+      if (idSet.has(e.id)) e.is_read = false;
+    }
   }
 
   saveData();
-  return res.json({ success: true });
+  return res.json({ success: true, count: ids.length, action });
 });
 
 // 6. Inbound Webhook (Cloudflare Email Routing, Resend, SendGrid, Mailgun, Postmark, AWS SES, or external forwarders)

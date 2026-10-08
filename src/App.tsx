@@ -17,6 +17,9 @@ import {
   deleteDraft,
   updateEmailStatus,
   deleteEmail,
+  restoreEmail,
+  emptyTrash,
+  batchEmailAction,
   syncClientAccounts
 } from './lib/api';
 
@@ -351,9 +354,22 @@ export default function App() {
       setCachedEmails(activeEmail, updated);
       return updated;
     });
-    setSelectedEmail(null);
+    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'trash' } : prev));
     try {
       await updateEmailStatus(id, { folder: 'trash' });
+    } catch {}
+  };
+
+  // Restore email from trash back to Inbox
+  const handleRestoreEmail = async (id: string) => {
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
+    setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'primary' } : prev));
+    try {
+      await restoreEmail(id);
     } catch {}
   };
 
@@ -380,6 +396,62 @@ export default function App() {
     setSelectedEmail(null);
     try {
       await deleteEmail(id, true);
+    } catch {}
+  };
+
+  // Batch move to trash
+  const handleBatchMoveToTrash = async (ids: string[]) => {
+    const idSet = new Set(ids);
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
+    try {
+      await batchEmailAction(ids, 'trash');
+    } catch {}
+  };
+
+  // Batch delete permanently
+  const handleBatchDeletePermanently = async (ids: string[]) => {
+    const idSet = new Set(ids);
+    setAllEmails((prev) => {
+      const updated = prev.filter((m) => !idSet.has(m.id));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
+    try {
+      await batchEmailAction(ids, 'delete_permanent');
+    } catch {}
+  };
+
+  // Batch restore
+  const handleBatchRestore = async (ids: string[]) => {
+    const idSet = new Set(ids);
+    setAllEmails((prev) => {
+      const updated = prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder } : m));
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
+    try {
+      await batchEmailAction(ids, 'restore');
+    } catch {}
+  };
+
+  // Empty trash completely
+  const handleEmptyTrash = async () => {
+    const trashEmails = allEmails.filter((e) => e.folder === 'trash');
+    if (trashEmails.length === 0) return;
+    const confirmEmpty = window.confirm ? window.confirm('Empty Trash? All messages in Trash will be permanently deleted.') : true;
+    if (!confirmEmpty) return;
+
+    setAllEmails((prev) => {
+      const updated = prev.filter((m) => m.folder !== 'trash');
+      setCachedEmails(activeEmail, updated);
+      return updated;
+    });
+    try {
+      await emptyTrash(activeEmail);
     } catch {}
   };
 
@@ -639,6 +711,13 @@ export default function App() {
                 darkMode={darkMode}
                 onSelectFolder={(folder) => setCurrentFolder(folder)}
                 unreadCounts={unreadCounts}
+                onMoveToTrash={handleMoveToTrash}
+                onDeletePermanently={handleDeleteEmail}
+                onRestoreEmail={handleRestoreEmail}
+                onBatchMoveToTrash={handleBatchMoveToTrash}
+                onBatchDeletePermanently={handleBatchDeletePermanently}
+                onBatchRestore={handleBatchRestore}
+                onEmptyTrash={handleEmptyTrash}
               />
             </main>
           </div>
@@ -684,6 +763,7 @@ export default function App() {
           onClose={() => setSelectedEmail(null)}
           onDelete={handleDeleteEmail}
           onMoveToTrash={handleMoveToTrash}
+          onRestore={handleRestoreEmail}
           onMoveToSpam={handleMoveToSpam}
           onToggleStar={(id, starred) => handleToggleStar(id, starred, { stopPropagation: () => {} } as any)}
           onReply={handleReply}

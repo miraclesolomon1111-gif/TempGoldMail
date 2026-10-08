@@ -13,7 +13,8 @@ import {
   Copy,
   Check,
   ShieldCheck,
-  Code
+  Code,
+  RotateCcw
 } from 'lucide-react';
 import { EmailMessage } from '../types';
 
@@ -22,6 +23,7 @@ interface EmailDetailModalProps {
   onClose: () => void;
   onDelete: (id: string) => void;
   onMoveToTrash: (id: string) => void;
+  onRestore?: (id: string) => void;
   onMoveToSpam: (id: string) => void;
   onToggleStar: (id: string, isStarred: boolean) => void;
   onReply: (to: string, subject: string) => void;
@@ -34,6 +36,7 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
   onClose,
   onDelete,
   onMoveToTrash,
+  onRestore,
   onMoveToSpam,
   onToggleStar,
   onReply,
@@ -106,33 +109,79 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
           <ArrowLeft className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center gap-1 text-zinc-400">
-          <button
-            onClick={() => onMoveToTrash(email.id)}
-            title="Move to trash"
-            className="p-2 hover:text-red-400 rounded-full hover:bg-white/10 transition-colors"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => onMoveToSpam(email.id)}
-            title="Report spam"
-            className="p-2 hover:text-white rounded-full hover:bg-white/10 transition-colors"
-          >
-            <AlertOctagon className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => onToggleStar(email.id, Boolean(email.is_starred))}
-            title="Star message"
-            className="p-2 hover:text-amber-400 rounded-full hover:bg-white/10 transition-colors"
-          >
-            <Star className={`w-5 h-5 ${email.is_starred ? 'fill-amber-400 text-amber-400' : ''}`} />
-          </button>
+        <div className="flex items-center gap-1.5 text-zinc-400">
+          {email.folder === 'trash' ? (
+            <>
+              <button
+                onClick={() => onRestore && onRestore(email.id)}
+                title="Restore to Inbox"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span className="hidden sm:inline">Restore</span>
+              </button>
+              <button
+                onClick={() => onDelete(email.id)}
+                title="Delete forever"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Delete forever</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => onMoveToTrash(email.id)}
+                title="Move to trash"
+                className="p-2 hover:text-red-400 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => onMoveToSpam(email.id)}
+                title="Report spam"
+                className="p-2 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <AlertOctagon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => onToggleStar(email.id, Boolean(email.is_starred))}
+                title="Star message"
+                className="p-2 hover:text-amber-400 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <Star className={`w-5 h-5 ${email.is_starred ? 'fill-amber-400 text-amber-400' : ''}`} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Main Reading View */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 max-w-4xl mx-auto w-full space-y-6">
+        {/* Trash Notice Banner */}
+        {email.folder === 'trash' && (
+          <div className={`p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs ${
+            darkMode ? 'bg-zinc-900 border-zinc-700/80 text-zinc-300' : 'bg-orange-50/80 border-orange-200 text-zinc-800'
+          }`}>
+            <span className="font-medium">This message is in Trash.</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onRestore && onRestore(email.id)}
+                className="px-3 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 font-semibold transition-colors cursor-pointer"
+              >
+                Restore to Inbox
+              </button>
+              <button
+                onClick={() => onDelete(email.id)}
+                className="px-3 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold transition-colors cursor-pointer"
+              >
+                Delete forever
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Subject Header */}
         <div className="flex items-start justify-between gap-4">
           <h1 className={`text-xl sm:text-2xl font-bold tracking-tight leading-snug ${
