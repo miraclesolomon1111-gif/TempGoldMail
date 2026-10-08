@@ -18,11 +18,8 @@ import {
   StoredAccount,
   getStoredAccounts,
   removeStoredAccount,
-  getStoredActiveEmail,
-  createEmailAccount,
-  syncClientAccounts
+  getStoredActiveEmail
 } from '../lib/api';
-import { generateRandomEmail } from '../lib/emailGenerator';
 
 interface AccountSwitcherSheetProps {
   isOpen: boolean;
@@ -56,10 +53,6 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
   darkMode
 }) => {
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
-  const [quickUsername, setQuickUsername] = useState('');
-  const [isCreatingQuick, setIsCreatingQuick] = useState(false);
-  const [quickError, setQuickError] = useState('');
-  const [showQuickForm, setShowQuickForm] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -74,38 +67,6 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
     ? `${user.first_name} ${user.last_name || ''}`.trim()
     : user?.username || activeEmail.split('@')[0] || 'User';
   const currentInitial = currentDisplayName.charAt(0).toUpperCase();
-
-  const handleCreateQuickGmail = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const clean = quickUsername.toLowerCase().trim().replace(/@.*$/, '');
-    if (!clean || clean.length < 2) {
-      setQuickError('Username must have at least 2 characters');
-      return;
-    }
-    setQuickError('');
-    setIsCreatingQuick(true);
-    try {
-      const res = await createEmailAccount({ username: clean });
-      if (res.user) {
-        setQuickUsername('');
-        setShowQuickForm(false);
-        await syncClientAccounts();
-        const updated = getStoredAccounts();
-        setAccounts(updated);
-        onSwitchAccount(res.user.email);
-        onClose();
-      }
-    } catch (err: any) {
-      setQuickError(err.message || 'Failed to create email');
-    } finally {
-      setIsCreatingQuick(false);
-    }
-  };
-
-  const handleRandomPrefix = () => {
-    const randomAddr = generateRandomEmail();
-    setQuickUsername(randomAddr.split('@')[0]);
-  };
 
   const handleRemoveAccount = (e: React.MouseEvent, emailToRemove: string) => {
     e.stopPropagation();
@@ -280,76 +241,16 @@ export const AccountSwitcherSheet: React.FC<AccountSwitcherSheetProps> = ({
 
             <button
               type="button"
-              onClick={() => setShowQuickForm(!showQuickForm)}
+              onClick={() => {
+                onOpenAuth('register');
+                onClose();
+              }}
               className="flex items-center justify-center gap-1.5 p-3 rounded-2xl bg-[#FF6A00]/10 hover:bg-[#FF6A00]/20 border border-[#FF6A00]/30 text-xs font-semibold text-[#FF8C42] hover:text-white transition-all cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5 text-[#FF8C42]" />
-              <span>{showQuickForm ? 'Cancel Quick' : '+ Quick Gmail'}</span>
+              <span>Create Account</span>
             </button>
           </div>
-
-          {/* Quick 1-Click Gmail Creator */}
-          {showQuickForm && (
-            <form onSubmit={handleCreateQuickGmail} className="p-3.5 rounded-2xl bg-black/40 border border-[#FF6A00]/30 space-y-2.5 animate-in fade-in slide-in-from-top-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-white flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5 text-[#FF8C42]" />
-                  Instant Gmail Sync
-                </span>
-                <button
-                  type="button"
-                  onClick={handleRandomPrefix}
-                  className="text-[11px] text-[#FF8C42] hover:underline cursor-pointer"
-                >
-                  ⚡ Generate Random
-                </button>
-              </div>
-
-              <div className="flex items-center gap-1.5 bg-white/5 border border-white/15 focus-within:border-[#FF6A00] rounded-xl px-3 py-1.5">
-                <input
-                  type="text"
-                  value={quickUsername}
-                  onChange={(e) => setQuickUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
-                  placeholder="newuser"
-                  className="bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none flex-1 min-w-0"
-                  autoFocus
-                />
-                <span className="text-xs font-mono text-zinc-400">@goldmailer.xyz</span>
-              </div>
-
-              {quickError && (
-                <p className="text-[11px] text-red-400">{quickError}</p>
-              )}
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="submit"
-                  disabled={isCreatingQuick || !quickUsername.trim()}
-                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:from-[#FF8C42] hover:to-[#FF6A00] disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  {isCreatingQuick ? (
-                    <span>Syncing with Database...</span>
-                  ) : (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Create & Sync to DB Instantly</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onOpenAuth('register');
-                    onClose();
-                  }}
-                  className="px-2.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-[11px] text-zinc-300 hover:text-white"
-                  title="Open full 6-step registration with custom details"
-                >
-                  Full Form
-                </button>
-              </div>
-            </form>
-          )}
 
           {/* Quick Management Shortcuts */}
           <div className="pt-2 border-t border-white/10 space-y-1 text-xs">
