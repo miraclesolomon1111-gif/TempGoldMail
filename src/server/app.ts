@@ -637,16 +637,16 @@ const seedAccounts = () => {
     });
   }
 
-  // Ensure admin phone number (+17372508034) is exclusively assigned to admin (miracle@goldmailer.xyz)
-  const defaultTrialNumber = process.env.TWILIO_PHONE_NUMBER || '+17372508034';
-  const adminPhone = userPhoneNumbers.find(p => p.phoneNumber === defaultTrialNumber && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
+  // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz)
+  const defaultTrialNumber = getTwilioConfig().trialNumber || '+12672301662';
+  const adminPhone = userPhoneNumbers.find(p => (p.id === 'phone_free_miracle_admin' || p.phoneNumber === defaultTrialNumber) && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
   if (!adminPhone) {
     userPhoneNumbers.unshift({
       id: 'phone_free_miracle_admin',
       userId: 'usr_miracle_01',
       userEmail: 'miracle@goldmailer.xyz',
       phoneNumber: defaultTrialNumber,
-      friendlyName: '+1 (737) 250-8034 (Admin Line)',
+      friendlyName: `${defaultTrialNumber} (Admin Line)`,
       provider: 'twilio',
       status: 'active',
       purchasedAt: '2026-10-08T00:00:00.000Z',
@@ -655,7 +655,8 @@ const seedAccounts = () => {
       capabilities: { sms: true, voice: true }
     });
   } else {
-    adminPhone.friendlyName = '+1 (737) 250-8034 (Admin Line)';
+    adminPhone.phoneNumber = defaultTrialNumber;
+    adminPhone.friendlyName = `${defaultTrialNumber} (Admin Line)`;
     adminPhone.status = 'active';
     adminPhone.userId = 'usr_miracle_01';
     adminPhone.userEmail = 'miracle@goldmailer.xyz';
