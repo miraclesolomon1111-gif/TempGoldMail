@@ -41,7 +41,9 @@ import {
   Sliders,
   DollarSign,
   UserPlus,
-  Menu
+  Menu,
+  Copy,
+  Check
 } from 'lucide-react';
 import {
   fetchAdminOverview,
@@ -85,7 +87,9 @@ import {
   fetchAdminActivityLogs,
   fetchAdminTwilioStatus,
   updateAdminTwilioConfig,
-  testAdminTwilioConnection
+  testAdminTwilioConnection,
+  fetchSmsInbox,
+  deleteSms
 } from '../lib/api';
 import {
   UserProfile,
@@ -97,7 +101,8 @@ import {
   AdminBroadcastItem,
   AdminPaymentItem,
   AdminSystemHealth,
-  AdminSiteSettings
+  AdminSiteSettings,
+  SMSMessage
 } from '../types';
 
 interface AdminPanelModalProps {
@@ -108,6 +113,7 @@ interface AdminPanelModalProps {
 
 type SidebarTab =
   | 'overview'
+  | 'admin_sms'
   | 'users'
   | 'email_accounts'
   | 'ban_users'
@@ -179,6 +185,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const [smtpUser, setSmtpUser] = useState('postmaster@goldmailer.xyz');
   const [smtpPass, setSmtpPass] = useState('');
 
+  // Admin SMS Box state
+  const [adminSmsMessages, setAdminSmsMessages] = useState<SMSMessage[]>([]);
+  const [adminSmsSearch, setAdminSmsSearch] = useState('');
+  const [isSyncingSms, setIsSyncingSms] = useState(false);
+  const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
+  const [testSmsModalOpen, setTestSmsModalOpen] = useState(false);
+  const [testSmsSender, setTestSmsSender] = useState('Google');
+  const [testSmsBody, setTestSmsBody] = useState('G-847291 is your Google verification code.');
+  const [isSubmittingTestSms, setIsSubmittingTestSms] = useState(false);
+
   // Clear notice after 4 seconds
   useEffect(() => {
     if (feedbackNotice) {
@@ -192,14 +208,19 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     setIsLoading(true);
     try {
       if (tab === 'overview') {
-        const [ov, hl, acts] = await Promise.all([
+        const [ov, hl, acts, sms] = await Promise.all([
           fetchAdminOverview(),
           fetchAdminSystemHealth().catch(() => null),
-          fetchAdminActivityLogs().catch(() => [])
+          fetchAdminActivityLogs().catch(() => []),
+          fetchSmsInbox().catch(() => [])
         ]);
         setOverview(ov);
         setSystemHealth(hl);
         setActivityLogs(acts);
+        setAdminSmsMessages(sms);
+      } else if (tab === 'admin_sms') {
+        const sms = await fetchSmsInbox();
+        setAdminSmsMessages(sms);
       } else if (tab === 'users' || tab === 'ban_users') {
         const us = await fetchAdminUsers();
         setUsers(us);
@@ -278,6 +299,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       group: 'Core Management',
       items: [
         { id: 'overview' as SidebarTab, label: 'Dashboard Overview', icon: LayoutDashboard },
+        { id: 'admin_sms' as SidebarTab, label: 'Admin SMS Box (Twilio)', icon: Smartphone, badge: adminSmsMessages.length || undefined },
         { id: 'users' as SidebarTab, label: 'User Management', icon: Users, badge: users.length || undefined },
         { id: 'email_accounts' as SidebarTab, label: 'Email Accounts', icon: Mail },
         { id: 'ban_users' as SidebarTab, label: 'Ban / Suspend Users', icon: Ban, badge: users.filter(u => u.is_banned).length || undefined }
@@ -500,6 +522,86 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       setFeedbackNotice({ type: 'error', message: err.message });
     } finally {
       setIsTestingTwilio(false);
+    }
+  };
+
+  // Admin SMS helpers
+  const extractCode = (body: string): string | null => {
+    if (!body) return null;
+    const gMatch = body.match(/G-\d{5,7}/i);
+    if (gMatch) return gMatch[0].toUpperCase();
+    const phraseMatch = body.match(/(?:code|otp|pin|verification)(?:\s+is|\s*:|\s*-)?\s*([0-9]{4,8})/i);
+    if (phraseMatch) return phraseMatch[1];
+    const numMatch = body.match(/\b\d{4,8}\b/);
+    if (numMatch) return numMatch[0];
+    return null;
+  };
+
+  const handleCopyCode = (code: string, id: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedCodeId(id);
+    setTimeout(() => setCopiedCodeId(null), 2500);
+  };
+
+  const handleSyncTwilioSms = async () => {
+    setIsSyncingSms(true);
+    try {
+      const msgs = await fetchSmsInbox();
+      setAdminSmsMessages(msgs);
+      setFeedbackNotice({
+        type: 'success',
+        message: `Synced with Twilio. Total messages in admin box: ${msgs.length}`
+      });
+    } catch (e: any) {
+      setFeedbackNotice({
+        type: 'error',
+        message: 'Failed to sync with Twilio: ' + (e.message || 'Network error')
+      });
+    } finally {
+      setIsSyncingSms(false);
+    }
+  };
+
+  const handleSimulateIncomingSms = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!testSmsBody.trim()) return;
+    setIsSubmittingTestSms(true);
+    try {
+      const res = await fetch('/api/webhook/twilio/sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          From: testSmsSender.trim() || 'Google',
+          To: '+17372508034',
+          Body: testSmsBody.trim(),
+          MessageSid: 'SM_admin_test_' + Date.now()
+        }).toString()
+      });
+      if (!res.ok) throw new Error('Webhook rejected test SMS');
+      const msgs = await fetchSmsInbox();
+      setAdminSmsMessages(msgs);
+      setTestSmsModalOpen(false);
+      setFeedbackNotice({
+        type: 'success',
+        message: 'Verification code dropped into Admin SMS Box successfully!'
+      });
+    } catch (err: any) {
+      setFeedbackNotice({
+        type: 'error',
+        message: 'Could not drop test SMS: ' + (err.message || 'Unknown error')
+      });
+    } finally {
+      setIsSubmittingTestSms(false);
+    }
+  };
+
+  const handleDeleteAdminSms = async (id: string) => {
+    try {
+      await deleteSms(id);
+      setAdminSmsMessages(prev => prev.filter(m => m.id !== id));
+      setFeedbackNotice({ type: 'success', message: 'SMS deleted from box' });
+    } catch (err: any) {
+      setFeedbackNotice({ type: 'error', message: 'Failed to delete SMS' });
     }
   };
 
@@ -951,9 +1053,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <span>Memory RSS</span>
                       <span className="font-mono text-zinc-200">{systemHealth?.memoryUsageMb || 85} MB</span>
                     </div>
-                    <div className="flex justify-between text-zinc-400">
+                    <div className="flex justify-between items-center text-zinc-400">
                       <span>Admin Twilio Line</span>
-                      <span className="font-mono text-emerald-400">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('admin_sms')}
+                        className="font-mono text-emerald-400 hover:text-emerald-300 underline underline-offset-2 flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Click to open Admin SMS Box"
+                      >
+                        {overview?.adminPhoneNumber || '+1 (737) 250-8034'}
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -962,6 +1072,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800 space-y-4">
                   <h3 className="font-bold text-sm text-white border-b border-zinc-800 pb-3">Quick Management Tools</h3>
                   <div className="grid grid-cols-2 gap-2 text-xs">
+                    <button
+                      onClick={() => setActiveTab('admin_sms')}
+                      className="p-3 rounded-xl bg-zinc-800/60 hover:bg-emerald-500/15 hover:border-emerald-500/40 border border-zinc-700/60 text-left transition-all"
+                    >
+                      <Smartphone className="w-4 h-4 text-emerald-400 mb-1" />
+                      <p className="font-bold text-white">Admin SMS Box</p>
+                      <p className="text-[10px] text-zinc-400">{adminSmsMessages.length} messages received</p>
+                    </button>
                     <button
                       onClick={() => setActiveTab('users')}
                       className="p-3 rounded-xl bg-zinc-800/60 hover:bg-[#FF6A00]/15 hover:border-[#FF6A00]/40 border border-zinc-700/60 text-left transition-all"
@@ -1018,6 +1136,213 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ADMIN SMS BOX (TWILIO GATEWAY & VERIFICATION CODES) */}
+          {activeTab === 'admin_sms' && (
+            <div className="space-y-6">
+              {/* Header card with Live Status & Twilio info */}
+              <div className="p-6 rounded-3xl bg-gradient-to-r from-zinc-900 via-zinc-900/90 to-zinc-950 border border-zinc-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                        <Smartphone className="w-4 h-4" />
+                      </div>
+                      <h2 className="text-lg font-black text-white">Admin SMS Box (Twilio Live)</h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        Active Webhook
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      Real-time SMS inbox for the admin line{' '}
+                      <span className="font-mono text-emerald-400 font-bold">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</span>.
+                      Google verification codes, OTPs, and incoming messages are captured here.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleSyncTwilioSms}
+                      disabled={isSyncingSms}
+                      className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white border border-zinc-700 flex items-center gap-2 transition-all disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSms ? 'animate-spin' : ''}`} />
+                      {isSyncingSms ? 'Syncing...' : 'Sync from Twilio'}
+                    </button>
+                    <button
+                      onClick={() => setTestSmsModalOpen(true)}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-90 text-xs font-bold text-white flex items-center gap-1.5 shadow-lg shadow-[#FF6A00]/20 transition-all"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Simulate Incoming SMS
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status bar */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-zinc-800/80 text-xs">
+                  <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
+                    <p className="text-[11px] text-zinc-400">Admin Line</p>
+                    <p className="font-mono font-bold text-white mt-0.5">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
+                    <p className="text-[11px] text-zinc-400">Twilio Account SID</p>
+                    <p className="font-mono font-bold text-zinc-300 mt-0.5">{twilioAccountSid ? `${twilioAccountSid.slice(0, 6)}••••${twilioAccountSid.slice(-4)}` : 'Twilio Gateway (Active)'}</p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
+                    <p className="text-[11px] text-zinc-400">Twilio Webhook URL</p>
+                    <p className="font-mono text-[11px] text-emerald-400 truncate mt-0.5">https://goldmailer.xyz/api/webhook/twilio/sms</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Search & Filter Bar */}
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="text"
+                    placeholder="Search SMS by code, sender, or content..."
+                    value={adminSmsSearch}
+                    onChange={(e) => setAdminSmsSearch(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00]"
+                  />
+                </div>
+                {adminSmsSearch && (
+                  <button
+                    onClick={() => setAdminSmsSearch('')}
+                    className="px-3 py-2 text-xs text-zinc-400 hover:text-white"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {/* Messages List */}
+              {(() => {
+                const filtered = adminSmsMessages.filter(m => {
+                  if (!adminSmsSearch) return true;
+                  const q = adminSmsSearch.toLowerCase();
+                  return (
+                    m.body.toLowerCase().includes(q) ||
+                    m.from.toLowerCase().includes(q) ||
+                    m.to.toLowerCase().includes(q)
+                  );
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-8 rounded-3xl bg-zinc-900/60 border border-zinc-800 text-center space-y-4">
+                      <div className="w-12 h-12 rounded-2xl bg-zinc-800 flex items-center justify-center mx-auto text-zinc-500">
+                        <MessageSquare className="w-6 h-6" />
+                      </div>
+                      <div className="max-w-md mx-auto space-y-2">
+                        <h4 className="font-bold text-white text-base">No Incoming SMS Messages Yet</h4>
+                        <p className="text-xs text-zinc-400 leading-relaxed">
+                          We verified your Twilio account <span className="font-mono text-zinc-300">{twilioAccountSid ? `${twilioAccountSid.slice(0, 6)}••••${twilioAccountSid.slice(-4)}` : 'Twilio Gateway'}</span> via the Twilio REST API.
+                          Twilio currently reports 0 messages received for this account.
+                        </p>
+                        <div className="p-3.5 rounded-2xl bg-zinc-950/80 border border-zinc-800 text-left text-[11px] text-zinc-400 space-y-1.5 mt-3">
+                          <p className="font-bold text-zinc-300 flex items-center gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                            Twilio Setup Note:
+                          </p>
+                          <p>
+                            Twilio requires that the phone number <code className="text-emerald-400 font-mono">+1 (737) 250-8034</code> is assigned to this Account SID in your Twilio Console (Phone Numbers &gt; Manage &gt; Active numbers) with SMS Webhook pointed to <code className="text-emerald-400 font-mono">https://goldmailer.xyz/api/webhook/twilio/sms</code>.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex justify-center gap-2 pt-2">
+                        <button
+                          onClick={handleSyncTwilioSms}
+                          disabled={isSyncingSms}
+                          className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-zinc-200 border border-zinc-700"
+                        >
+                          Check Twilio Again
+                        </button>
+                        <button
+                          onClick={() => setTestSmsModalOpen(true)}
+                          className="px-4 py-2 rounded-xl bg-[#FF6A00] hover:bg-[#FF8C42] text-xs font-bold text-white"
+                        >
+                          Simulate Incoming SMS
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-3">
+                    {filtered.map((msg) => {
+                      const detectedCode = extractCode(msg.body);
+                      return (
+                        <div
+                          key={msg.id}
+                          className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800 hover:border-zinc-700 transition-all space-y-3"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800/60 pb-3">
+                            <div className="flex items-center gap-2.5">
+                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                              <span className="font-bold text-sm text-white">{msg.from}</span>
+                              <span className="text-xs text-zinc-500 font-mono">→ {msg.to}</span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                {msg.direction}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 text-xs text-zinc-500">
+                              <span>{new Date(msg.receivedAt).toLocaleString()}</span>
+                              <button
+                                onClick={() => handleDeleteAdminSms(msg.id)}
+                                className="p-1 hover:text-red-400 transition-colors"
+                                title="Delete SMS"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Highlighted verification code if present */}
+                          {detectedCode && (
+                            <div className="p-3.5 rounded-xl bg-gradient-to-r from-amber-500/15 via-[#FF6A00]/15 to-transparent border border-[#FF6A00]/40 flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-2.5">
+                                <span className="px-2 py-0.5 rounded bg-[#FF6A00] text-white font-black text-[10px] uppercase tracking-wider">
+                                  Verification Code
+                                </span>
+                                <span className="font-mono text-lg font-black text-white tracking-widest">
+                                  {detectedCode}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => handleCopyCode(detectedCode, msg.id)}
+                                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-xs flex items-center gap-1.5 transition-all"
+                              >
+                                {copiedCodeId === msg.id ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                    <span className="text-emerald-400">Copied!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>Copy Code</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Message body */}
+                          <p className="text-xs text-zinc-200 font-mono whitespace-pre-wrap leading-relaxed bg-black/30 p-3 rounded-xl border border-zinc-800/40">
+                            {msg.body}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -2142,6 +2467,101 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 Save Quota
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Test / Simulate Incoming SMS Modal */}
+      {testSmsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-md p-6 rounded-3xl bg-[#18191c] border border-[#FF6A00]/40 text-white space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                <Smartphone className="w-5 h-5 text-[#FF8C42]" />
+                Simulate Incoming SMS to Admin Line
+              </h3>
+              <button
+                type="button"
+                onClick={() => setTestSmsModalOpen(false)}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Dispatches a simulated inbound SMS to the live webhook endpoint (<code className="text-emerald-400 font-mono text-[11px]">/api/webhook/twilio/sms</code>) targeting your admin phone line <span className="font-mono text-emerald-400 font-bold">+1 (737) 250-8034</span>.
+            </p>
+
+            <form onSubmit={handleSimulateIncomingSms} className="space-y-3 text-xs">
+              <div>
+                <label className="text-zinc-400 block mb-1">Sender Name or Number</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Google, 22000, +18005550199"
+                  value={testSmsSender}
+                  onChange={(e) => setTestSmsSender(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-zinc-900 border border-zinc-700 text-white outline-none focus:border-[#FF6A00]"
+                />
+              </div>
+
+              <div>
+                <label className="text-zinc-400 block mb-1">Target Phone Number</label>
+                <input
+                  type="text"
+                  disabled
+                  value="+1 (737) 250-8034 (Admin Line)"
+                  className="w-full p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800 text-zinc-400 outline-none font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-zinc-400 block mb-1">SMS Message Body (contains verification code)</label>
+                <textarea
+                  rows={3}
+                  required
+                  placeholder="e.g. G-847291 is your Google verification code."
+                  value={testSmsBody}
+                  onChange={(e) => setTestSmsBody(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-zinc-900 border border-zinc-700 text-white outline-none focus:border-[#FF6A00] resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTestSmsBody(`G-${Math.floor(100000 + Math.random() * 900000)} is your Google verification code.`)}
+                  className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] text-zinc-300 border border-zinc-700"
+                >
+                  Generate Google Code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTestSmsBody(`Your GoldMailer verification code is: ${Math.floor(100000 + Math.random() * 900000)}`)}
+                  className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] text-zinc-300 border border-zinc-700"
+                >
+                  Generate 6-Digit OTP
+                </button>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setTestSmsModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingTestSms}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-90 text-white text-xs font-bold transition-all disabled:opacity-50"
+                >
+                  {isSubmittingTestSms ? 'Dropping...' : 'Drop into Admin SMS Box'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

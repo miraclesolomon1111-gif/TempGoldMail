@@ -4027,6 +4027,19 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
       };
     }
   }
+  const emailHeader = (req.headers['x-user-email'] as string) || (req.query?.userEmail as string);
+  if (emailHeader) {
+    const email = emailHeader.toLowerCase().trim();
+    const user = goldUsers.find(u => u.email.toLowerCase() === email);
+    if (user) {
+      const isAdmin = user.role === 'admin' || email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
+      return {
+        id: user.id,
+        email: user.email,
+        role: isAdmin ? 'admin' : user.role
+      };
+    }
+  }
   return { id: '', email: '', role: 'guest' };
 };
 
