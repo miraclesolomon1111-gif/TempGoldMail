@@ -799,9 +799,9 @@ const seedAccounts = () => {
   // Remove any mock OAuth demo app
   oauthClients = oauthClients.filter(c => c.client_id !== 'client_goldmailer_demo_app');
 
-  // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz)
-  const defaultTrialNumber = getTwilioConfig().trialNumber || '+12672301662';
-  const adminPhone = userPhoneNumbers.find(p => (p.id === 'phone_free_miracle_admin' || p.phoneNumber === defaultTrialNumber) && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
+  // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz / admin)
+  const defaultTrialNumber = getTwilioConfig().trialNumber || '+17372508034';
+  const adminPhone = userPhoneNumbers.find(p => (p.id === 'phone_free_miracle_admin' || p.phoneNumber === defaultTrialNumber || p.phoneNumber.includes('267') || p.phoneNumber.includes('737')) && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
   if (!adminPhone) {
     userPhoneNumbers.unshift({
       id: 'phone_free_miracle_admin',
@@ -4017,10 +4017,13 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
     const decoded = verifyToken(token);
     if (decoded?.id) {
       const user = goldUsers.find(u => u.id === decoded.id || u.email === decoded.email);
+      const email = (decoded.email || user?.email || '').toLowerCase().trim();
+      const isAdmin = decoded.role === 'admin' || user?.role === 'admin' ||
+        email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
       return {
         id: decoded.id,
-        email: decoded.email || user?.email || '',
-        role: decoded.email?.toLowerCase().trim() === 'miracle@goldmailer.xyz' ? 'admin' : 'user'
+        email: email,
+        role: isAdmin ? 'admin' : (user?.role || 'user')
       };
     }
   }
@@ -4028,28 +4031,64 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
 };
 
 const isReqAdmin = (authUser: { id: string; email: string; role?: string }): boolean => {
+  if (authUser.role === 'admin') return true;
   if (!authUser.email) return false;
-  return authUser.email.toLowerCase().trim() === 'miracle@goldmailer.xyz';
+  const email = authUser.email.toLowerCase().trim();
+  return email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
 };
 
 // TASK 1: TWILIO WEBHOOK (Receive From, To, Body, MessageSid, save to sms_inbox, return TwiML)
+// Supports both HTTP POST and GET, form-urlencoded, JSON, raw streams, and query parameters
 export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const body = req.body || {};
-    const from = String(body.From || body.from || '').trim();
-    const to = String(body.To || body.to || '').trim();
-    const text = String(body.Body || body.body || '').trim();
-    const messageSid = String(body.MessageSid || body.messageSid || body.SmsSid || '').trim();
+    let bodyObj: Record<string, any> = {};
+    if (typeof req.body === 'string') {
+      try {
+        bodyObj = Object.fromEntries(new URLSearchParams(req.body));
+      } catch {}
+    } else if (Buffer.isBuffer(req.body)) {
+      try {
+        bodyObj = Object.fromEntries(new URLSearchParams(req.body.toString('utf-8')));
+      } catch {}
+    } else if (req.body && typeof req.body === 'object') {
+      bodyObj = req.body;
+    } else if ((req as any).readable) {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req as any) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        if (raw) {
+          try {
+            bodyObj = Object.fromEntries(new URLSearchParams(raw));
+          } catch {
+            try {
+              bodyObj = JSON.parse(raw);
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    const queryObj = (req.query || {}) as Record<string, any>;
+    const payload = { ...queryObj, ...bodyObj };
+    const from = String(payload.From || payload.from || '').trim();
+    const to = String(payload.To || payload.to || '').trim();
+    const text = String(payload.Body || payload.body || '').trim();
+    const messageSid = String(payload.MessageSid || payload.messageSid || payload.SmsSid || '').trim();
 
     console.log(`[TWILIO WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
 
+    const { trialNumber } = getTwilioConfig();
+    const cleanToDigits = to.replace(/\D/g, '');
+
     // Normalize 'To' number to find user in database
-    const cleanTo = to.replace(/[^\d+]/g, '');
-    const matchedNumber = userPhoneNumbers.find(p => p.phoneNumber.replace(/[^\d+]/g, '') === cleanTo);
+    const matchedNumber = userPhoneNumbers.find(p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits);
     const targetUser = matchedNumber
       ? goldUsers.find(u => u.id === matchedNumber.userId)
-      : (goldUsers.find(u => u.phone && u.phone.replace(/[^\d+]/g, '') === cleanTo) || goldUsers[0]);
+      : (goldUsers.find(u => u.phone && u.phone.replace(/\D/g, '') === cleanToDigits) || goldUsers[0]);
 
     const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
 
@@ -4057,7 +4096,7 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       userId: targetUserId,
       from: from || 'Unknown Sender',
-      to: to || cleanTo || '+17372508034',
+      to: to || trialNumber || '+17372508034',
       body: text,
       receivedAt: new Date().toISOString(),
       messageSid: messageSid || 'SM_' + Date.now(),
@@ -4066,23 +4105,34 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
       is_read: false
     };
 
-    sms_inbox.unshift(newSms);
+    // Deduplicate by messageSid if present
+    if (messageSid) {
+      const existingIdx = sms_inbox.findIndex(s => s.messageSid === messageSid);
+      if (existingIdx !== -1) {
+        sms_inbox[existingIdx] = { ...sms_inbox[existingIdx], ...newSms, id: sms_inbox[existingIdx].id };
+      } else {
+        sms_inbox.unshift(newSms);
+      }
+    } else {
+      sms_inbox.unshift(newSms);
+    }
+
     saveData();
     broadcastNewSMS(newSms);
 
-    console.log(`[TWILIO WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}`);
+    console.log(`[TWILIO WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId} with content: "${text}"`);
 
-    // Return HTTP 200 with empty TwiML <Response></Response>
+    // Return HTTP 200 with standard TwiML <Response></Response>
     res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<Response></Response>');
+    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
   } catch (err: any) {
     console.error('[TWILIO WEBHOOK] Exception handling webhook:', err);
     res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<Response></Response>');
+    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
   }
 };
 
-app.post(
+app.all(
   ['/api/webhook/twilio/sms', '/api/webhooks/twilio/sms', '/api/webhook/twilio', '/api/webhooks/twilio'],
   handleTwilioSmsWebhook
 );
@@ -4166,10 +4216,10 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
   const { trialNumber } = getTwilioConfig();
   const isAdmin = isReqAdmin(authUser);
 
-  // Ensure miracle@goldmailer.xyz has the free phone number
+  // Ensure admin has the configured primary phone line
   if (isAdmin) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
-      p => p.phoneNumber === trialNumber && (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
+      p => p.id === 'phone_free_miracle_admin' || p.phoneNumber === trialNumber || (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
     );
     if (adminPhoneIndex === -1) {
       userPhoneNumbers.unshift({
@@ -4177,7 +4227,7 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
         userId: authUser.id || 'usr_miracle_01',
         userEmail: authUser.email || 'miracle@goldmailer.xyz',
         phoneNumber: trialNumber,
-        friendlyName: `${trialNumber} (Admin Line)`,
+        friendlyName: `${trialNumber} (Primary Line)`,
         provider: 'twilio',
         status: 'active',
         purchasedAt: '2026-10-08T00:00:00.000Z',
@@ -4186,13 +4236,20 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
         capabilities: { sms: true, voice: true }
       });
       saveData();
+    } else {
+      if (userPhoneNumbers[adminPhoneIndex].phoneNumber !== trialNumber) {
+        userPhoneNumbers[adminPhoneIndex].phoneNumber = trialNumber;
+        userPhoneNumbers[adminPhoneIndex].friendlyName = `${trialNumber} (Primary Line)`;
+        userPhoneNumbers[adminPhoneIndex].status = 'active';
+        saveData();
+      }
     }
   }
 
   // Strictly do NOT give free trial numbers to regular users!
   // Only return numbers the user actually owns/purchased (or admin's line if admin)
   const list = userPhoneNumbers.filter(
-    p => (authUser.id && p.userId === authUser.id) || (isAdmin && p.phoneNumber === trialNumber)
+    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber === trialNumber || p.id === 'phone_free_miracle_admin'))
   );
 
   const enriched = list.map(p => {
@@ -4404,51 +4461,56 @@ app.get('/api/phone/sms', async (req: Request, res: Response) => {
   const isAdmin = isReqAdmin(authUser);
   const { trialNumber } = getTwilioConfig();
 
-  // Active sync from live Twilio API for admin to guarantee incoming SMS is immediately displayed
-  if (isAdmin) {
-    const client = getTwilioClient();
-    if (client) {
-      try {
-        const liveMessages = await client.messages.list({ limit: 30 });
-        let hasNew = false;
-        for (const tm of liveMessages) {
-          if (!sms_inbox.some(s => s.messageSid === tm.sid)) {
-            const newLiveSms: StoredSMS = {
-              id: 'sms_live_' + tm.sid,
-              userId: authUser.id || 'usr_miracle_01',
-              from: tm.from || 'Unknown',
-              to: tm.to || trialNumber || '+17372508034',
-              body: tm.body || '',
-              receivedAt: tm.dateSent ? tm.dateSent.toISOString() : (tm.dateCreated ? tm.dateCreated.toISOString() : new Date().toISOString()),
-              messageSid: tm.sid,
-              direction: (tm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
-              status: tm.status,
-              is_read: false
-            };
-            sms_inbox.unshift(newLiveSms);
-            hasNew = true;
-          }
+  // Active sync from live Twilio API to guarantee incoming SMS is immediately displayed
+  const client = getTwilioClient();
+  if (client) {
+    try {
+      const liveMessages = await client.messages.list({ limit: 40 });
+      let hasNew = false;
+      for (const tm of liveMessages) {
+        if (!sms_inbox.some(s => s.messageSid === tm.sid)) {
+          const newLiveSms: StoredSMS = {
+            id: 'sms_live_' + tm.sid,
+            userId: authUser.id || 'usr_miracle_01',
+            from: tm.from || 'Unknown',
+            to: tm.to || trialNumber || '+17372508034',
+            body: tm.body || '',
+            receivedAt: tm.dateSent ? tm.dateSent.toISOString() : (tm.dateCreated ? tm.dateCreated.toISOString() : new Date().toISOString()),
+            messageSid: tm.sid,
+            direction: (tm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
+            status: tm.status,
+            is_read: false
+          };
+          sms_inbox.unshift(newLiveSms);
+          broadcastNewSMS(newLiveSms);
+          hasNew = true;
         }
-        if (hasNew) {
-          saveData();
-        }
-      } catch (syncErr: any) {
-        console.warn('[TWILIO ACTIVE SYNC] Note:', syncErr.message || syncErr);
       }
+      if (hasNew) {
+        saveData();
+      }
+    } catch (syncErr: any) {
+      console.warn('[TWILIO ACTIVE SYNC] Note:', syncErr.message || syncErr);
     }
   }
 
-  const userPhones = new Set(
-    userPhoneNumbers
-      .filter(p => p.userId === authUser.id || (isAdmin && p.id === 'phone_free_miracle_admin'))
-      .map(p => p.phoneNumber)
-  );
+  const userPhonesDigits = new Set<string>();
+  userPhoneNumbers
+    .filter(p => p.userId === authUser.id || (isAdmin && (p.id === 'phone_free_miracle_admin' || p.phoneNumber === trialNumber)))
+    .forEach(p => {
+      if (p.phoneNumber) userPhonesDigits.add(p.phoneNumber.replace(/\D/g, ''));
+    });
+  if (trialNumber && isAdmin) {
+    userPhonesDigits.add(trialNumber.replace(/\D/g, ''));
+  }
 
   const list = sms_inbox.filter(s => {
     // Admin inbox displays all platform and Twilio trial SMS
     if (isAdmin) return true;
-    if (s.userId === authUser.id) return true;
-    if (userPhones.has(s.to) || userPhones.has(s.from)) return true;
+    if (authUser.id && s.userId === authUser.id) return true;
+    const toDigits = (s.to || '').replace(/\D/g, '');
+    const fromDigits = (s.from || '').replace(/\D/g, '');
+    if (userPhonesDigits.has(toDigits) || userPhonesDigits.has(fromDigits)) return true;
     return false;
   });
 

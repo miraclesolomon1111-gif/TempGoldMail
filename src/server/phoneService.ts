@@ -65,7 +65,7 @@ export interface StoredCall {
 let dynamicTwilioConfig = {
   accountSid: process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '',
   authToken: process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '',
-  trialNumber: process.env.TWILIO_PHONE_NUMBER || '+12672301662'
+  trialNumber: process.env.TWILIO_PHONE_NUMBER || '+17372508034'
 };
 
 export function setTwilioCredentials(sid: string, token: string, trialNumber?: string) {

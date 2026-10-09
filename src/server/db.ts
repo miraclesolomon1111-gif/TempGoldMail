@@ -214,7 +214,7 @@ class GoldDatabase {
     smtp_secure: process.env.SMTP_SECURE === 'true',
     twilio_account_sid: process.env.TWILIO_ACCOUNT_SID || '',
     twilio_auth_token: process.env.TWILIO_AUTH_TOKEN || '',
-    twilio_trial_number: process.env.TWILIO_PHONE_NUMBER || '+1 (267) 230-1662',
+    twilio_trial_number: process.env.TWILIO_PHONE_NUMBER || '+1 (737) 250-8034',
     resend_api_key: process.env.RESEND_API_KEY || '',
     resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>',
     nowpayments_api_key: process.env.NOWPAYMENTS_API_KEY || '',

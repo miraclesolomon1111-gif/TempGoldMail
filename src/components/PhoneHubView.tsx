@@ -136,16 +136,9 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       ]);
 
       if (phonesRes.numbers && phonesRes.numbers.length > 0) {
-        // Strictly only display numbers that were bought by the user (or admin dedicated line if admin)
-        const userBoughtNumbers = phonesRes.numbers.filter(
-          n => n.userId === user?.id || (isAdmin && n.phoneNumber === phonesRes.adminNumber)
-        );
-        setPhoneNumbers(userBoughtNumbers);
-        if (userBoughtNumbers.length > 0) {
-          setSelectedFromNumber(userBoughtNumbers[0].phoneNumber);
-        } else {
-          setSelectedFromNumber('');
-        }
+        // Use all numbers authorized and returned by the server for this user/admin
+        setPhoneNumbers(phonesRes.numbers);
+        setSelectedFromNumber(phonesRes.numbers[0].phoneNumber);
       } else {
         setPhoneNumbers([]);
         setSelectedFromNumber('');

@@ -23,6 +23,7 @@ import {
   Phone
 } from 'lucide-react';
 import { MailFolder, UserProfile } from '../types';
+import { GmLogo } from './GmLogo';
 
 interface GmailDrawerProps {
   isOpen: boolean;
@@ -114,9 +115,7 @@ export const GmailDrawer: React.FC<GmailDrawerProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-bold text-white shadow-md text-sm">
-              G
-            </div>
+            <GmLogo size="sm" badge={false} className="shadow-md rounded-xl overflow-hidden" />
             <div>
               <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] bg-clip-text text-transparent">
                 GoldMailer

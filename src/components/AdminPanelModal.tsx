@@ -171,7 +171,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   // Twilio & SMTP Settings state
   const [twilioAccountSid, setTwilioAccountSid] = useState('');
   const [twilioAuthToken, setTwilioAuthToken] = useState('');
-  const [twilioTrialNumber, setTwilioTrialNumber] = useState('+1 (267) 230-1662');
+  const [twilioTrialNumber, setTwilioTrialNumber] = useState('+1 (737) 250-8034');
   const [showAuthToken, setShowAuthToken] = useState(false);
   const [isTestingTwilio, setIsTestingTwilio] = useState(false);
   const [smtpHost, setSmtpHost] = useState('smtp.goldmailer.xyz');
@@ -953,7 +953,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     </div>
                     <div className="flex justify-between text-zinc-400">
                       <span>Admin Twilio Line</span>
-                      <span className="font-mono text-emerald-400">{overview?.adminPhoneNumber || '+1 (267) 230-1662'}</span>
+                      <span className="font-mono text-emerald-400">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</span>
                     </div>
                   </div>
                 </div>
@@ -1857,7 +1857,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     <label className="text-zinc-400 block mb-1">Twilio Primary Phone Number</label>
                     <input
                       type="text"
-                      placeholder="+1 (267) 230-1662"
+                      placeholder="+1 (737) 250-8034"
                       value={twilioTrialNumber}
                       onChange={(e) => setTwilioTrialNumber(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
