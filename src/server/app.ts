@@ -108,6 +108,12 @@ app.use((req: Request, res: Response, next) => {
   next();
 });
 
+// Ads.txt for Google AdSense Verification
+app.get('/ads.txt', (_req: Request, res: Response) => {
+  res.type('text/plain');
+  res.send('google.com, pub-3632610735362445, DIRECT, f08c47fec0942fa0\n');
+});
+
 // Health Check
 app.get(['/api/health', '/api/ping'], (_req: Request, res: Response) => {
   res.json({
