@@ -3175,12 +3175,87 @@ app.get('/api/oauth/clients', async (req: Request, res: Response) => {
   return res.json(clients);
 });
 
+// List all clients for dev portal
+app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
+  try {
+    if (supabase) {
+      try {
+        const { data } = await supabase
+          .from('oauth_clients')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (Array.isArray(data)) {
+          for (const item of data) {
+            const idx = oauthClients.findIndex(c => c.client_id === item.client_id);
+            if (idx === -1) {
+              oauthClients.unshift({
+                client_id: item.client_id,
+                client_secret: item.client_secret,
+                app_name: item.app_name,
+                app_type: item.app_type || 'Web application',
+                javascript_origins: Array.isArray(item.javascript_origins) ? item.javascript_origins : [],
+                redirect_uris: Array.isArray(item.redirect_uris) ? item.redirect_uris : [],
+                redirect_uri: Array.isArray(item.redirect_uris) && item.redirect_uris[0] ? item.redirect_uris[0] : '',
+                owner_user_id: item.user_id || 'dev_user',
+                created_at: item.created_at || new Date().toISOString()
+              });
+            } else {
+              oauthClients[idx].client_secret = item.client_secret;
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('Supabase list clients note:', err.message);
+      }
+    }
+
+    return res.json({ clients: oauthClients });
+  } catch (err: any) {
+    return res.status(500).json({ clients: oauthClients, error: err.message });
+  }
+});
+
+// Regenerate client_secret for dev portal
+app.post('/api/oauth/regenerate-secret', async (req: Request, res: Response) => {
+  try {
+    const { client_id } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'Missing client_id' });
+
+    const newSecret = 'sec_' + crypto.randomBytes(24).toString('hex');
+
+    const client = oauthClients.find(c => c.client_id === client_id);
+    if (client) {
+      client.client_secret = newSecret;
+    }
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('oauth_clients')
+          .update({ client_secret: newSecret })
+          .eq('client_id', client_id);
+      } catch (err: any) {
+        console.warn('Supabase regenerate secret note:', err.message);
+      }
+    }
+
+    saveData();
+    return res.json({ client_secret: newSecret });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Create client standard endpoint (as specified by Google Console style Dev Portal)
 app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
   try {
-    const { app_name, app_type, javascript_origins, redirect_uris } = req.body;
+    const { app_name, app_type, javascript_origins, redirect_uris, user_id } = req.body;
     const client_id = 'gld_' + crypto.randomBytes(12).toString('hex');
     const client_secret = 'sec_' + crypto.randomBytes(24).toString('hex');
+    const appType = app_type || 'Web application';
+    const appName = (app_name || 'My App').trim();
+    const userId = user_id || 'dev_user';
+    const createdAt = new Date().toISOString();
 
     const cleanOrigins = Array.isArray(javascript_origins)
       ? javascript_origins.map(String).filter(Boolean)
@@ -3194,10 +3269,12 @@ app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
         await supabase.from('oauth_clients').insert({
           client_id,
           client_secret,
-          app_name: app_name || 'My App',
-          app_type: app_type || 'Web application',
+          app_name: appName,
+          app_type: appType,
           javascript_origins: cleanOrigins,
-          redirect_uris: cleanRedirects
+          redirect_uris: cleanRedirects,
+          user_id: userId,
+          created_at: createdAt
         });
       } catch (err: any) {
         console.warn('Supabase insert note:', err.message);
@@ -3207,19 +3284,28 @@ app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
     const newClient: StoredOAuthClient = {
       client_id,
       client_secret,
-      app_name: (app_name || 'My App').trim(),
-      app_type: app_type || 'Web application',
+      app_name: appName,
+      app_type: appType,
       javascript_origins: cleanOrigins,
       redirect_uris: cleanRedirects,
       redirect_uri: cleanRedirects[0] || '',
-      owner_user_id: 'dev_user',
-      created_at: new Date().toISOString()
+      owner_user_id: userId,
+      created_at: createdAt
     };
 
     oauthClients.unshift(newClient);
     saveData();
 
-    return res.json({ client_id, client_secret });
+    return res.json({
+      client_id,
+      client_secret,
+      app_name: appName,
+      app_type: appType,
+      javascript_origins: cleanOrigins,
+      redirect_uris: cleanRedirects,
+      user_id: userId,
+      created_at: createdAt
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

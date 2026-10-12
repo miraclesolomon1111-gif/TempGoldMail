@@ -17,6 +17,7 @@ import { OAuthClient } from '../types';
 import {
   fetchOAuthClients,
   createOAuthClient,
+  regenerateOAuthClientSecret,
   authorizeOAuthConsent,
   exchangeOAuthToken,
   fetchOAuthUserInfo
@@ -110,6 +111,19 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
       alert(err.message || 'Failed to create app');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleRegenerateSecret = async (clientId: string) => {
+    if (!confirm('Are you sure you want to regenerate this client secret? The old secret will no longer work.')) return;
+    try {
+      const res = await regenerateOAuthClientSecret(clientId);
+      if (res.client_secret) {
+        alert('New Secret: ' + res.client_secret);
+        await loadClients();
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to regenerate secret');
     }
   };
 
@@ -237,12 +251,28 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
                 <div key={c.client_id} className="p-4 bg-white/5 border border-white/10 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h4 className="text-sm font-bold text-white">{c.app_name}</h4>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        {c.app_name}
+                        {c.app_type && (
+                          <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded text-zinc-300 font-normal">
+                            {c.app_type}
+                          </span>
+                        )}
+                      </h4>
                       <p className="text-[11px] text-[#FF8C42] font-mono">{c.redirect_uri}</p>
                     </div>
-                    <span className="text-[10px] text-zinc-400">
-                      Created: {new Date(c.created_at).toLocaleDateString()}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleRegenerateSecret(c.client_id)}
+                        className="text-[10px] bg-white/10 hover:bg-white/15 text-amber-300 px-2 py-1 rounded transition-colors"
+                      >
+                        Regenerate Secret
+                      </button>
+                      <span className="text-[10px] text-zinc-400">
+                        {new Date(c.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-1.5 text-xs font-mono">

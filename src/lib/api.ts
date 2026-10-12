@@ -942,11 +942,25 @@ export async function batchEmailAction(
 
 export async function fetchOAuthClients(): Promise<OAuthClient[]> {
   try {
-    const res = await fetch('/api/oauth/clients', { headers: getHeaders() });
-    return await safeJsonParse(res);
+    const res = await fetch('/api/oauth/list-clients');
+    const data = await safeJsonParse(res);
+    if (data && Array.isArray(data.clients)) {
+      return data.clients;
+    }
+    const res2 = await fetch('/api/oauth/clients', { headers: getHeaders() });
+    return await safeJsonParse(res2);
   } catch {
     return [];
   }
+}
+
+export async function regenerateOAuthClientSecret(clientId: string): Promise<{ client_secret: string }> {
+  const res = await fetch('/api/oauth/regenerate-secret', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId })
+  });
+  return await safeJsonParse(res);
 }
 
 export async function createOAuthClient(data: {
