@@ -3209,9 +3209,19 @@ app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
       }
     }
 
-    return res.json({ clients: oauthClients });
+    // Mask client_secret for Google OAuth console security compliance (only visible upon creation or regeneration)
+    const sanitizedClients = oauthClients.map(c => ({
+      ...c,
+      client_secret: '••••••••••••••••••••••••••••••••'
+    }));
+
+    return res.json({ clients: sanitizedClients });
   } catch (err: any) {
-    return res.status(500).json({ clients: oauthClients, error: err.message });
+    const sanitizedClients = oauthClients.map(c => ({
+      ...c,
+      client_secret: '••••••••••••••••••••••••••••••••'
+    }));
+    return res.status(500).json({ clients: sanitizedClients, error: err.message });
   }
 });
 

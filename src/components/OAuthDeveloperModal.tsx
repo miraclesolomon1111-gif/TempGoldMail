@@ -45,7 +45,8 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
   const [redirects, setRedirects] = useState<string[]>(['']);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [createdResult, setCreatedResult] = useState<{ client_id: string; client_secret: string } | null>(null);
+  const [createdResult, setCreatedResult] = useState<{ client_id: string; client_secret: string; app_name: string } | null>(null);
+  const [regenModalData, setRegenModalData] = useState<{ client_id: string; client_secret: string } | null>(null);
 
   // Testing Sandbox state
   const [testSelectedClient, setTestSelectedClient] = useState<string>('');
@@ -77,7 +78,6 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
     e.preventDefault();
     if (!appName.trim()) return;
     setIsSubmitting(true);
-    setCreatedResult(null);
     try {
       const cleanOrigins = origins.filter(Boolean);
       const cleanRedirects = redirects.filter(Boolean);
@@ -93,17 +93,15 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
       });
       const data = await res.json();
       if (data.client_id) {
-        setCreatedResult(data);
-        const newClientEntry: OAuthClient = {
+        setCreatedResult({
           client_id: data.client_id,
           client_secret: data.client_secret,
-          app_name: appName.trim(),
-          redirect_uri: cleanRedirects[0] || '',
-          owner_user_id: 'dev_user',
-          created_at: new Date().toISOString()
-        };
-        setClients([newClientEntry, ...clients]);
-        setTestSelectedClient(data.client_id);
+          app_name: appName.trim()
+        });
+        await loadClients();
+        setAppName('');
+        setOrigins(['']);
+        setRedirects(['']);
       } else {
         alert(data.error || 'Failed to create client');
       }
@@ -119,7 +117,7 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
     try {
       const res = await regenerateOAuthClientSecret(clientId);
       if (res.client_secret) {
-        alert('New Secret: ' + res.client_secret);
+        setRegenModalData({ client_id: clientId, client_secret: res.client_secret });
         await loadClients();
       }
     } catch (e: any) {
@@ -292,14 +290,10 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
                     <div className="flex items-center justify-between bg-black/40 p-2 rounded-xl border border-white/5">
                       <span className="text-zinc-400">client_secret:</span>
                       <div className="flex items-center gap-2">
-                        <span className="text-zinc-200 truncate max-w-[240px]">{c.client_secret}</span>
-                        <button
-                          type="button"
-                          onClick={() => copyToClipboard(c.client_secret, c.client_secret)}
-                          className="text-[#FF8C42] hover:text-white"
-                        >
-                          {copiedId === c.client_secret ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        </button>
+                        <span className="text-zinc-500 tracking-widest select-none text-[10px]">••••••••••••••••••••••••••••••••</span>
+                        <span className="text-[10px] text-zinc-500 bg-white/5 px-2 py-0.5 rounded font-sans">
+                          Hidden for security
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -425,16 +419,6 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
             >
               {isSubmitting ? 'Saving...' : 'Save'}
             </button>
-
-            {createdResult && (
-              <div className="p-3 bg-black/60 border border-emerald-500/40 rounded-xl space-y-2">
-                <div className="text-emerald-400 font-semibold text-xs">OAuth Client Created Successfully!</div>
-                <div className="p-2 bg-black/40 rounded border border-white/5 space-y-1 font-mono text-[11px]">
-                  <div><span className="text-zinc-500">client_id:</span> {createdResult.client_id}</div>
-                  <div><span className="text-zinc-500">client_secret:</span> {createdResult.client_secret}</div>
-                </div>
-              </div>
-            )}
           </form>
         )}
 
@@ -483,6 +467,126 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
                 </pre>
               </div>
             )}
+          </div>
+        )}
+
+        {/* POPUP MODAL: Newly Created OAuth Client */}
+        {createdResult && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <div className="relative w-full max-w-md bg-[#18191c] border-2 border-[#FF6A00]/50 rounded-2xl p-6 shadow-2xl space-y-4 text-white">
+              <div className="border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                  <span>✓</span>
+                  <span>OAuth client created</span>
+                </div>
+                <p className="text-xs text-zinc-300 mt-1">
+                  Credentials for <strong>{createdResult.app_name}</strong> are saved to database.
+                </p>
+                <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 text-[10px] leading-relaxed">
+                  ⚠️ Copy your Client Secret now. For security reasons, it will <strong>never be shown or copyable again</strong> after you tap DONE.
+                </div>
+              </div>
+
+              <div className="space-y-2.5 font-mono text-xs">
+                <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans text-[11px]">Client ID (Permanent):</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(createdResult.client_id, 'modal_cid')}
+                      className="text-[#FF8C42] hover:text-white font-sans text-xs"
+                    >
+                      {copiedId === 'modal_cid' ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div className="text-zinc-200 break-all select-all font-semibold">
+                    {createdResult.client_id}
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans text-[11px]">Client Secret (One-Time View):</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(createdResult.client_secret, 'modal_sec')}
+                      className="text-emerald-300 hover:text-white font-sans text-xs"
+                    >
+                      {copiedId === 'modal_sec' ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div className="text-emerald-400 break-all select-all font-semibold">
+                    {createdResult.client_secret}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreatedResult(null);
+                    setActiveTab('clients');
+                  }}
+                  className="px-6 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow hover:opacity-95 cursor-pointer"
+                >
+                  DONE
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* POPUP MODAL: Regenerated Secret */}
+        {regenModalData && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <div className="relative w-full max-w-md bg-[#18191c] border-2 border-amber-500/50 rounded-2xl p-6 shadow-2xl space-y-4 text-white">
+              <div className="border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2 text-amber-300 font-bold text-sm">
+                  <span>🔄</span>
+                  <span>New Client Secret Generated</span>
+                </div>
+                <p className="text-xs text-zinc-300 mt-1">
+                  Previous secret was invalidated. Client ID remains permanent.
+                </p>
+                <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 text-[10px]">
+                  ⚠️ Copy this secret now. It will <strong>never be shown again</strong>.
+                </div>
+              </div>
+
+              <div className="space-y-2.5 font-mono text-xs">
+                <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl space-y-1">
+                  <span className="text-zinc-400 font-sans text-[11px]">Client ID:</span>
+                  <div className="text-zinc-200 break-all">{regenModalData.client_id}</div>
+                </div>
+
+                <div className="p-2.5 bg-black/50 border border-emerald-500/30 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-sans text-[11px]">New Secret:</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(regenModalData.client_secret, 'modal_regen_sec')}
+                      className="text-emerald-300 hover:text-white font-sans text-xs"
+                    >
+                      {copiedId === 'modal_regen_sec' ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div className="text-emerald-400 break-all select-all font-semibold">
+                    {regenModalData.client_secret}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setRegenModalData(null)}
+                  className="px-6 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow hover:opacity-95 cursor-pointer"
+                >
+                  DONE
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

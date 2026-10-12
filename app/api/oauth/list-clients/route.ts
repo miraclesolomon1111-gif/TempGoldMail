@@ -13,8 +13,12 @@ export async function GET(req: Request) {
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (!error && data) {
-        return NextResponse.json({ clients: data });
+      if (!error && Array.isArray(data)) {
+        const sanitized = data.map((c) => ({
+          ...c,
+          client_secret: "••••••••••••••••••••••••••••••••"
+        }));
+        return NextResponse.json({ clients: sanitized });
       }
     }
 
