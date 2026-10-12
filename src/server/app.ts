@@ -3469,20 +3469,39 @@ app.get(['/api/oauth/authorize', '/oauth/authorize'], async (req: Request, res: 
   return res.redirect(targetUrl);
 });
 
+app.get('/api/oauth/accounts', (req: Request, res: Response) => {
+  const accounts = goldUsers.map(u => ({
+    id: u.id,
+    email: u.email,
+    username: u.username,
+    name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username,
+    avatar_url: u.avatar_url || ''
+  }));
+  return res.json({ accounts });
+});
+
 app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    let userId = 'usr_guest';
+    let userId = '';
     if (authHeader) {
       const token = authHeader.replace(/^Bearer\s+/i, '');
       const decoded = verifyToken(token);
       if (decoded) userId = decoded.id;
     }
-    if (userId === 'usr_guest' && goldUsers.length > 0) {
-      userId = goldUsers[0].id;
+
+    const { client_id, redirect_uri, scope, state, user_id, email } = req.body;
+    let selectedUser = goldUsers.find(u => (user_id && u.id === user_id) || (email && u.email && u.email.toLowerCase() === String(email).toLowerCase()));
+    if (!selectedUser && userId) {
+      selectedUser = goldUsers.find(u => u.id === userId);
+    }
+    if (!selectedUser && goldUsers.length > 0) {
+      selectedUser = goldUsers[0];
     }
 
-    const { client_id, redirect_uri, scope, state } = req.body;
+    const finalUserId = selectedUser ? selectedUser.id : (user_id || 'usr_guest');
+    const finalEmail = selectedUser ? selectedUser.email : (email || '');
+
     const client = await findOAuthClient(String(client_id));
     if (!client) {
       return res.status(400).json({ error: 'Invalid client_id' });
@@ -3497,7 +3516,7 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
     oauthCodes.push({
       code,
       client_id: String(client_id),
-      user_id: userId,
+      user_id: finalUserId,
       redirect_uri: chosenRedirect,
       scope: String(scope || 'email profile'),
       expires_at: Date.now() + 10 * 60 * 1000
@@ -3509,16 +3528,25 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
     try {
       const redirectTarget = new URL(chosenRedirect);
       redirectTarget.searchParams.set('code', code);
+      if (finalUserId) {
+        redirectTarget.searchParams.set('goldmailer_id', finalUserId);
+        redirectTarget.searchParams.set('user_id', finalUserId);
+      }
+      if (finalEmail) {
+        redirectTarget.searchParams.set('email', finalEmail);
+      }
       if (state) redirectTarget.searchParams.set('state', String(state));
       redirectTargetUrl = redirectTarget.toString();
     } catch {
-      redirectTargetUrl = `${chosenRedirect}?code=${code}${state ? `&state=${encodeURIComponent(String(state))}` : ''}`;
+      redirectTargetUrl = `${chosenRedirect}?code=${code}&goldmailer_id=${encodeURIComponent(finalUserId)}&user_id=${encodeURIComponent(finalUserId)}&email=${encodeURIComponent(finalEmail)}${state ? `&state=${encodeURIComponent(String(state))}` : ''}`;
     }
 
     return res.json({
       success: true,
       redirect_url: redirectTargetUrl,
-      code
+      code,
+      goldmailer_id: finalUserId,
+      email: finalEmail
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -3565,10 +3593,14 @@ app.post(['/api/oauth/token', '/oauth/token'], async (req: Request, res: Respons
       token_type: 'Bearer',
       expires_in: 3600,
       scope: authCode.scope,
+      goldmailer_id: user.id,
+      user_id: user.id,
+      email: user.email,
       user: {
         id: user.id,
+        goldmailer_id: user.id,
         email: user.email,
-        name: `${user.first_name} ${user.last_name}`.trim(),
+        name: `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.username,
         username: user.username
       }
     });

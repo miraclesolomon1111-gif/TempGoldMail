@@ -984,7 +984,9 @@ export async function authorizeOAuthConsent(data: {
   redirect_uri: string;
   scope: string;
   state?: string;
-}): Promise<{ success: boolean; redirect_url: string; code: string }> {
+  user_id?: string;
+  email?: string;
+}): Promise<{ success: boolean; redirect_url: string; code: string; goldmailer_id?: string; email?: string }> {
   const res = await fetch('/api/oauth/authorize', {
     method: 'POST',
     headers: getHeaders(),
