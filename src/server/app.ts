@@ -809,6 +809,43 @@ const seedAccounts = () => {
   // Remove any mock OAuth demo app
   oauthClients = oauthClients.filter(c => c.client_id !== 'client_goldmailer_demo_app');
 
+  // Ensure TaskNest OAuth client exists (support both client_ids)
+  const tasknestClients: StoredOAuthClient[] = [
+    {
+      client_id: 'gld_8de4f4df561e7bb245f1af02',
+      client_secret: 'sec_8de4f4df561e7bb245f1af02tasknestsec',
+      app_name: 'TaskNest',
+      app_type: 'Website',
+      javascript_origins: ['https://tasknest.name.ng'],
+      redirect_uris: ['https://tasknest.name.ng/auth/goldmailer/callback'],
+      redirect_uri: 'https://tasknest.name.ng/auth/goldmailer/callback',
+      owner_user_id: 'dev_user',
+      created_at: '2026-10-12T18:50:00.000Z'
+    },
+    {
+      client_id: 'gld_8cbbe7f9eec9c4b5fa8ed1cf',
+      client_secret: 'sec_8cbbe7f9eec9c4b5fa8ed1cftasknestsec',
+      app_name: 'TaskNest',
+      app_type: 'Website',
+      javascript_origins: ['https://tasknest.name.ng'],
+      redirect_uris: ['https://tasknest.name.ng/auth/goldmailer/callback'],
+      redirect_uri: 'https://tasknest.name.ng/auth/goldmailer/callback',
+      owner_user_id: 'dev_user',
+      created_at: '2026-10-12T18:57:45.840Z'
+    }
+  ];
+
+  for (const tc of tasknestClients) {
+    const existing = oauthClients.find(c => c.client_id === tc.client_id);
+    if (!existing) {
+      oauthClients.push(tc);
+    } else {
+      if (!existing.redirect_uris || existing.redirect_uris.length === 0) {
+        existing.redirect_uris = tc.redirect_uris;
+      }
+    }
+  }
+
   // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz / admin)
   const defaultTrialNumber = getTwilioConfig().trialNumber || '+17372508034';
   const adminPhone = userPhoneNumbers.find(p => (p.id === 'phone_free_miracle_admin' || p.phoneNumber === defaultTrialNumber || p.phoneNumber.includes('267') || p.phoneNumber.includes('737')) && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
