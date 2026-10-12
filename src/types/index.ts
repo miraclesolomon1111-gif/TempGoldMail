@@ -142,6 +142,9 @@ export interface OAuthClient {
   client_id: string;
   client_secret: string;
   app_name: string;
+  app_type?: string;
+  javascript_origins?: string[];
+  redirect_uris?: string[];
   redirect_uri: string;
   logo_url?: string;
   website_url?: string;

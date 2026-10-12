@@ -35,10 +35,53 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
 }) => {
   const [isApproving, setIsApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [validatedName, setValidatedName] = useState<string>(appName);
+  const [isValidating, setIsValidating] = useState<boolean>(true);
+  const [isClientValid, setIsClientValid] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    if (!isOpen || !clientId) return;
+
+    let isMounted = true;
+    setIsValidating(true);
+    setError(null);
+
+    const checkClient = async () => {
+      try {
+        const query = new URLSearchParams({
+          client_id: clientId,
+          redirect_uri: redirectUri || ''
+        });
+        const res = await fetch(`/api/oauth/validate?${query.toString()}`);
+        const data = await res.json();
+        if (!isMounted) return;
+
+        if (data.valid && data.client) {
+          setIsClientValid(true);
+          setValidatedName(data.client.app_name || appName);
+        } else {
+          setIsClientValid(false);
+          setError(data.error || 'Invalid client_id or unauthorized redirect_uri');
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        setIsClientValid(false);
+        setError(err.message || 'Failed to validate client_id');
+      } finally {
+        if (isMounted) setIsValidating(false);
+      }
+    };
+
+    checkClient();
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, clientId, redirectUri, appName]);
 
   if (!isOpen) return null;
 
   const handleAllow = async () => {
+    if (!isClientValid) return;
     setIsApproving(true);
     setError(null);
     try {
@@ -90,7 +133,7 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
         <div className="mt-5 space-y-4">
           <div className="text-center space-y-1.5">
             <h3 className="text-base font-bold text-white">
-              {appName} wants to access your GoldMailer account
+              {validatedName || appName} wants to access your GoldMailer account
             </h3>
             <p className="text-xs text-zinc-400">
               This will allow the app to confirm your identity and permanent email address.
@@ -143,12 +186,12 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
             </button>
             <button
               type="button"
-              disabled={isApproving}
+              disabled={isApproving || isValidating || !isClientValid}
               onClick={handleAllow}
               className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-xs shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
             >
               <CheckCircle className="w-3.5 h-3.5" />
-              {isApproving ? 'Authorizing...' : 'Allow & Continue'}
+              {isValidating ? 'Validating...' : isApproving ? 'Authorizing...' : 'Allow & Continue'}
             </button>
           </div>
         </div>

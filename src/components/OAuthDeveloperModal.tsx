@@ -37,12 +37,14 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'clients' | 'register' | 'test'>('clients');
 
-  // New Client Form
+  // New Client Form (Google OAuth Console styled)
+  const [appType, setAppType] = useState('Web application');
   const [appName, setAppName] = useState('');
-  const [redirectUri, setRedirectUri] = useState('https://myapp.com/api/auth/callback/goldmailer');
-  const [websiteUrl, setWebsiteUrl] = useState('https://myapp.com');
+  const [origins, setOrigins] = useState<string[]>(['']);
+  const [redirects, setRedirects] = useState<string[]>(['']);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [createdResult, setCreatedResult] = useState<{ client_id: string; client_secret: string } | null>(null);
 
   // Testing Sandbox state
   const [testSelectedClient, setTestSelectedClient] = useState<string>('');
@@ -72,18 +74,38 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!appName.trim() || !redirectUri.trim()) return;
+    if (!appName.trim()) return;
     setIsSubmitting(true);
+    setCreatedResult(null);
     try {
-      const res = await createOAuthClient({
-        app_name: appName.trim(),
-        redirect_uri: redirectUri.trim(),
-        website_url: websiteUrl.trim()
+      const cleanOrigins = origins.filter(Boolean);
+      const cleanRedirects = redirects.filter(Boolean);
+      const res = await fetch('/api/oauth/create-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_name: appName.trim(),
+          app_type: appType,
+          javascript_origins: cleanOrigins,
+          redirect_uris: cleanRedirects
+        })
       });
-      setClients([res.client, ...clients]);
-      setTestSelectedClient(res.client.client_id);
-      setActiveTab('clients');
-      setAppName('');
+      const data = await res.json();
+      if (data.client_id) {
+        setCreatedResult(data);
+        const newClientEntry: OAuthClient = {
+          client_id: data.client_id,
+          client_secret: data.client_secret,
+          app_name: appName.trim(),
+          redirect_uri: cleanRedirects[0] || '',
+          owner_user_id: 'dev_user',
+          created_at: new Date().toISOString()
+        };
+        setClients([newClientEntry, ...clients]);
+        setTestSelectedClient(data.client_id);
+      } else {
+        alert(data.error || 'Failed to create client');
+      }
     } catch (err: any) {
       alert(err.message || 'Failed to create app');
     } finally {
@@ -283,50 +305,106 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
         {activeTab === 'register' && (
           <form onSubmit={handleCreate} className="mt-4 flex-1 overflow-y-auto space-y-4 pr-1 text-xs">
             <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">Application Name</label>
+              <label className="block text-xs font-semibold text-zinc-300 mb-1">Application Type</label>
+              <select
+                value={appType}
+                onChange={(e) => setAppType(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#FF6A00]"
+              >
+                <option value="Web application" className="bg-[#18191c]">Web application</option>
+                <option value="Website" className="bg-[#18191c]">Website</option>
+                <option value="Mobile app" className="bg-[#18191c]">Mobile app</option>
+                <option value="Desktop app" className="bg-[#18191c]">Desktop app</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-zinc-300 mb-1">Name</label>
               <input
                 type="text"
                 required
                 value={appName}
                 onChange={(e) => setAppName(e.target.value)}
-                placeholder="My SaaS App / E-commerce Store"
+                placeholder="My App"
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#FF6A00]"
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">Redirect URI (Callback)</label>
-              <input
-                type="url"
-                required
-                value={redirectUri}
-                onChange={(e) => setRedirectUri(e.target.value)}
-                placeholder="https://myapp.com/api/auth/callback/goldmailer"
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-[#FF6A00]"
-              />
-              <p className="text-[11px] text-zinc-400 mt-1">
-                Where user is redirected with the <code>code</code> query param after approval.
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-zinc-300">Authorized JavaScript Origins</label>
+              <p className="text-[11px] text-zinc-400">
+                Origins allowed for browser or SPA requests (e.g. https://goldmailer.xyz or https://example.com)
               </p>
+              {origins.map((o, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    type="url"
+                    value={o}
+                    onChange={(e) => {
+                      const c = [...origins];
+                      c[i] = e.target.value;
+                      setOrigins(c);
+                    }}
+                    placeholder="https://example.com"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#FF6A00]"
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setOrigins([...origins, ''])}
+                className="text-xs font-medium text-[#FF8C42] hover:text-[#FF6A00]"
+              >
+                + Add origin
+              </button>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">Website URL</label>
-              <input
-                type="url"
-                value={websiteUrl}
-                onChange={(e) => setWebsiteUrl(e.target.value)}
-                placeholder="https://myapp.com"
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#FF6A00]"
-              />
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-zinc-300">Authorized Redirect URIs</label>
+              <p className="text-[11px] text-zinc-400">
+                URIs where users are redirected with authorization code (e.g. https://example.com/auth/callback)
+              </p>
+              {redirects.map((r, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    type="url"
+                    value={r}
+                    onChange={(e) => {
+                      const c = [...redirects];
+                      c[i] = e.target.value;
+                      setRedirects(c);
+                    }}
+                    placeholder="https://example.com/auth/callback"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#FF6A00]"
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setRedirects([...redirects, ''])}
+                className="text-xs font-medium text-[#FF8C42] hover:text-[#FF6A00]"
+              >
+                + Add redirect URI
+              </button>
             </div>
 
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow-md disabled:opacity-50"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-xs shadow-md disabled:opacity-50 transition-all cursor-pointer"
             >
-              {isSubmitting ? 'Registering...' : 'Register OAuth Client'}
+              {isSubmitting ? 'Saving...' : 'Save'}
             </button>
+
+            {createdResult && (
+              <div className="p-3 bg-black/60 border border-emerald-500/40 rounded-xl space-y-2">
+                <div className="text-emerald-400 font-semibold text-xs">OAuth Client Created Successfully!</div>
+                <div className="p-2 bg-black/40 rounded border border-white/5 space-y-1 font-mono text-[11px]">
+                  <div><span className="text-zinc-500">client_id:</span> {createdResult.client_id}</div>
+                  <div><span className="text-zinc-500">client_secret:</span> {createdResult.client_secret}</div>
+                </div>
+              </div>
+            )}
           </form>
         )}
 

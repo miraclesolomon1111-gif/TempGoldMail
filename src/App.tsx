@@ -330,6 +330,11 @@ export default function App() {
           setIsOAuthConsentOpen(true);
         }
       }
+
+      // Developer Portal route
+      if (path === '/dev' || path === '/developer' || path === '/dashboard/dev' || hash === '#dev' || hash === '#developer') {
+        setIsOAuthDevOpen(true);
+      }
     };
 
     handleRouteCheck();
