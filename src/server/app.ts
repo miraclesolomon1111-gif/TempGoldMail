@@ -958,10 +958,20 @@ function extractCleanSender(input: any): string {
   return str.trim();
 }
 
+export function normalizeIp(ipStr: string | undefined): string {
+  if (!ipStr) return '127.0.0.1';
+  let clean = String(ipStr).trim();
+  if (clean.includes(',')) clean = clean.split(',')[0].trim();
+  if (clean.startsWith('::ffff:')) clean = clean.replace('::ffff:', '');
+  if (clean === '::1' || clean === 'localhost') clean = '127.0.0.1';
+  return clean;
+}
+
 // Device info helper
 const parseDeviceInfo = (req: Request) => {
   const ua = req.headers['user-agent'] || 'Unknown Browser';
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+  const rawIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+  const ip = normalizeIp(rawIp);
   let browser = 'Chrome';
   if (ua.includes('Firefox')) browser = 'Firefox';
   else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
@@ -976,6 +986,44 @@ const parseDeviceInfo = (req: Request) => {
   const location = 'Lagos, Nigeria';
   const deviceName = `${os} - ${location} - ${browser}`;
   return { deviceName, browser, os, ip, location };
+};
+
+export const recordActiveDeviceLogin = (user: StoredGoldUser, req: Request): StoredDevice => {
+  const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
+  const parsed = parseDeviceInfo(req);
+  const now = new Date().toISOString();
+
+  const existingIdx = userDevices.findIndex(
+    d => d.user_id === user.id && (normalizeIp(d.ip) === curIp || (d.browser === parsed.browser && d.os === parsed.os))
+  );
+
+  let device: StoredDevice;
+  if (existingIdx !== -1) {
+    userDevices[existingIdx].ip = curIp;
+    userDevices[existingIdx].last_active = now;
+    userDevices[existingIdx].device_name = parsed.deviceName;
+    userDevices[existingIdx].browser = parsed.browser;
+    userDevices[existingIdx].os = parsed.os;
+    userDevices[existingIdx].location = parsed.location;
+    device = userDevices[existingIdx];
+  } else {
+    device = {
+      id: 'dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      user_id: user.id,
+      device_name: parsed.deviceName,
+      browser: parsed.browser,
+      os: parsed.os,
+      ip: curIp,
+      location: parsed.location,
+      last_active: now,
+      is_trusted: true,
+      created_at: now
+    };
+    userDevices.unshift(device);
+  }
+
+  saveData();
+  return device;
 };
 
 const sanitizeUser = (u: StoredGoldUser) => {
@@ -1098,6 +1146,7 @@ app.post('/api/auth/sync-client-accounts', (req: Request, res: Response) => {
         const existing = goldUsers.find(u => u.email.toLowerCase() === cleanEmail);
         if (existing) {
           db.upsertAccount(existing);
+          recordActiveDeviceLogin(existing, req);
         } else {
           const newUser: StoredGoldUser = {
             id: acc.id || ('usr_' + crypto.randomBytes(8).toString('hex')),
@@ -1122,6 +1171,7 @@ app.post('/api/auth/sync-client-accounts', (req: Request, res: Response) => {
           };
           goldUsers.push(newUser);
           db.upsertAccount(newUser);
+          recordActiveDeviceLogin(newUser, req);
           added++;
         }
       }
@@ -1149,6 +1199,7 @@ app.post(['/api/accounts/create', '/api/auth/create-email'], (req: Request, res:
     }
     if (user) {
       db.upsertAccount(user);
+      recordActiveDeviceLogin(user, req);
       return res.json({ success: true, message: 'Account exists and synced', user: sanitizeUser(user) });
     }
 
@@ -1175,6 +1226,7 @@ app.post(['/api/accounts/create', '/api/auth/create-email'], (req: Request, res:
 
     goldUsers.unshift(newUser);
     db.upsertAccount(newUser);
+    recordActiveDeviceLogin(newUser, req);
     saveData();
 
     return res.status(201).json({
@@ -1278,6 +1330,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     saveData();
 
+    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
     const token = generateToken({ id: newUser.id, email: newUser.email, username: newUser.username, role: newUser.role });
 
     // Record session in DB
@@ -1286,9 +1339,12 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       user_id: newUser.id,
       email: newUser.email,
       token,
+      ip: curIp,
+      user_agent: (req.headers['user-agent'] as string) || '',
       created_at: new Date().toISOString(),
       last_active_at: new Date().toISOString()
     });
+    recordActiveDeviceLogin(newUser, req);
 
     return res.status(201).json({
       success: true,
@@ -1438,15 +1494,19 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     }
 
     // Save session in DB
+    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
     const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
     const session = await db.createSession({
       session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
       user_id: user.id,
       email: user.email,
       token,
+      ip: curIp,
+      user_agent: (req.headers['user-agent'] as string) || '',
       created_at: new Date().toISOString(),
       last_active_at: new Date().toISOString()
     });
+    recordActiveDeviceLogin(user, req);
 
     console.log(`✅ [LOGIN SUCCESS] Logged in: ${user.email}`);
     return res.json({
@@ -1506,14 +1566,18 @@ app.post('/api/auth/switch-account', async (req: Request, res: Response) => {
       role: targetUser.role
     });
 
+    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
     const session = await db.createSession({
       session_id: sessionId || ('sess_' + crypto.randomBytes(8).toString('hex')),
       user_id: targetUser.id,
       email: targetUser.email,
       token,
+      ip: curIp,
+      user_agent: (req.headers['user-agent'] as string) || '',
       created_at: new Date().toISOString(),
       last_active_at: new Date().toISOString()
     });
+    recordActiveDeviceLogin(targetUser, req);
 
     console.log(`✅ [SWITCH ACCOUNT] Switched successfully to: ${targetUser.email}`);
     return res.json({
@@ -1608,6 +1672,7 @@ app.post('/api/auth/verify-2fa', async (req: Request, res: Response) => {
     }
 
     const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
+    recordActiveDeviceLogin(user, req);
     return res.json({
       success: true,
       token,
@@ -3470,13 +3535,73 @@ app.get(['/api/oauth/authorize', '/oauth/authorize'], async (req: Request, res: 
 });
 
 app.get('/api/oauth/accounts', (req: Request, res: Response) => {
-  const accounts = goldUsers.map(u => ({
+  ensureDataLoaded();
+  const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
+  const matchedUserIds = new Set<string>();
+  const matchedEmails = new Set<string>();
+
+  // 1. Authorization Bearer token (if user is currently signed in and sends token)
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const decoded = verifyToken(token);
+    if (decoded?.id) matchedUserIds.add(decoded.id);
+    if (decoded?.email) matchedEmails.add(decoded.email.toLowerCase().trim());
+  }
+
+  // 2. IP Address & Device Sync from userDevices (matching client IP)
+  for (const dev of userDevices) {
+    const devIp = normalizeIp(dev.ip);
+    const isIpMatch = devIp === curIp || (devIp === '127.0.0.1' && curIp === '127.0.0.1');
+    if (isIpMatch && dev.user_id) {
+      matchedUserIds.add(dev.user_id);
+    }
+  }
+
+  // 3. IP Address & Device Sync from persistent database sessions (matching client IP)
+  const dbSessions = (db as any).sessions || [];
+  for (const sess of dbSessions) {
+    const sessIp = sess.ip ? normalizeIp(sess.ip) : '';
+    const isIpMatch = sessIp && (sessIp === curIp || (sessIp === '127.0.0.1' && curIp === '127.0.0.1'));
+    if (isIpMatch) {
+      if (sess.user_id) matchedUserIds.add(sess.user_id);
+      if (sess.email) matchedEmails.add(sess.email.toLowerCase().trim());
+    }
+  }
+
+  // 4. Device Sync: Check if client passed synced device account emails/tokens in header or query
+  const rawClientAccsHeader = req.headers['x-device-accounts'] as string;
+  const rawClientAccsQuery = (req.query.client_accounts as string) || (req.query.emails as string);
+  const deviceAccountsPayload = rawClientAccsHeader || rawClientAccsQuery;
+  if (deviceAccountsPayload) {
+    try {
+      const parsed = typeof deviceAccountsPayload === 'string' && (deviceAccountsPayload.startsWith('[') || deviceAccountsPayload.startsWith('{'))
+        ? JSON.parse(deviceAccountsPayload)
+        : deviceAccountsPayload.split(',');
+      const emailList = Array.isArray(parsed)
+        ? parsed.map((item: any) => (typeof item === 'string' ? item : item?.email)).filter(Boolean)
+        : [];
+      for (const em of emailList) {
+        const clean = String(em).toLowerCase().trim();
+        if (clean) matchedEmails.add(clean);
+      }
+    } catch {}
+  }
+
+  // 5. Match and filter ONLY those accounts that are currently logged in on this user's device
+  const matchedUsers = goldUsers.filter(u => {
+    const uEmail = (u.email || '').toLowerCase().trim();
+    return matchedUserIds.has(u.id) || matchedEmails.has(uEmail);
+  });
+
+  const accounts = matchedUsers.map(u => ({
     id: u.id,
     email: u.email,
     username: u.username,
     name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username,
     avatar_url: u.avatar_url || ''
   }));
+
   return res.json({ accounts });
 });
 
@@ -3495,12 +3620,12 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
     if (!selectedUser && userId) {
       selectedUser = goldUsers.find(u => u.id === userId);
     }
-    if (!selectedUser && goldUsers.length > 0) {
-      selectedUser = goldUsers[0];
+    if (!selectedUser) {
+      return res.status(400).json({ error: 'Please choose an active logged-in account to authorize.' });
     }
 
-    const finalUserId = selectedUser ? selectedUser.id : (user_id || 'usr_guest');
-    const finalEmail = selectedUser ? selectedUser.email : (email || '');
+    const finalUserId = selectedUser.id;
+    const finalEmail = selectedUser.email;
 
     const client = await findOAuthClient(String(client_id));
     if (!client) {

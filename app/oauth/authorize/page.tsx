@@ -59,9 +59,55 @@ export default function OAuthAuthorizePage() {
           client_id: clientId,
           redirect_uri: redirectUri
         });
+
+        // Read accounts logged in on this device from localStorage
+        const localAccounts: OAuthAccount[] = [];
+        const localEmails: string[] = [];
+        try {
+          const rawMulti = typeof window !== "undefined" ? localStorage.getItem("goldmailer_multi_accounts") : null;
+          if (rawMulti) {
+            const parsed = JSON.parse(rawMulti);
+            if (Array.isArray(parsed)) {
+              for (const acc of parsed) {
+                if (acc && acc.email) {
+                  localAccounts.push({
+                    id: acc.id || "",
+                    email: acc.email,
+                    username: acc.username || acc.email.split("@")[0],
+                    name: acc.name || acc.username,
+                    avatar_url: acc.avatar_url
+                  });
+                  localEmails.push(acc.email.toLowerCase().trim());
+                }
+              }
+            }
+          }
+          const rawUser = typeof window !== "undefined" ? localStorage.getItem("goldmail_user") : null;
+          if (rawUser) {
+            const u = JSON.parse(rawUser);
+            if (u && u.email && !localEmails.includes(u.email.toLowerCase().trim())) {
+              localAccounts.push({
+                id: u.id || "",
+                email: u.email,
+                username: u.username || u.email.split("@")[0],
+                name: u.first_name ? `${u.first_name} ${u.last_name || ""}`.trim() : (u.name || u.username),
+                avatar_url: u.avatar_url
+              });
+              localEmails.push(u.email.toLowerCase().trim());
+            }
+          }
+        } catch {}
+
+        const token = typeof window !== "undefined" ? localStorage.getItem("goldmail_token") : null;
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        if (localEmails.length > 0) headers["X-Device-Accounts"] = JSON.stringify(localEmails);
+
         const [resVal, resAccs] = await Promise.all([
           fetch(`/api/oauth/validate?${query.toString()}`).then(r => r.json()),
-          fetch(`/api/oauth/accounts`).then(r => r.json()).catch(() => ({ accounts: [] }))
+          fetch(`/api/oauth/accounts${localEmails.length > 0 ? `?emails=${encodeURIComponent(localEmails.join(","))}` : ""}`, { headers })
+            .then(r => r.json())
+            .catch(() => ({ accounts: [] }))
         ]);
 
         if (resVal.valid && resVal.client) {
@@ -72,16 +118,33 @@ export default function OAuthAuthorizePage() {
           setErrorMsg(resVal.error || "Invalid client_id or unauthorized redirect_uri");
         }
 
-        const accList: OAuthAccount[] = resAccs.accounts || [];
-        // Fallback default accounts if empty
-        if (accList.length === 0) {
-          accList.push(
-            { id: "usr_miracle_01", email: "miracle@goldmailer.xyz", username: "miracle", name: "Miracle Solomon" },
-            { id: "usr_doris_02", email: "dorisokoh109@goldmailer.xyz", username: "doris", name: "Doris Okoh" }
-          );
+        // Combine verified server IP/device sync accounts with device local storage accounts
+        const serverAccList: OAuthAccount[] = resAccs.accounts || [];
+        const combinedMap = new Map<string, OAuthAccount>();
+
+        for (const acc of localAccounts) {
+          combinedMap.set(acc.email.toLowerCase(), acc);
         }
-        setAccounts(accList);
-        setSelectedAccount(accList[0]);
+
+        for (const sAcc of serverAccList) {
+          const existing = combinedMap.get(sAcc.email.toLowerCase());
+          if (existing) {
+            combinedMap.set(sAcc.email.toLowerCase(), {
+              ...existing,
+              id: sAcc.id || existing.id,
+              name: sAcc.name || existing.name,
+              username: sAcc.username || existing.username,
+              avatar_url: sAcc.avatar_url || existing.avatar_url
+            });
+          } else if (localAccounts.length === 0) {
+            // When localStorage is empty, rely on IP address sync / session sync from server
+            combinedMap.set(sAcc.email.toLowerCase(), sAcc);
+          }
+        }
+
+        const finalAccounts = Array.from(combinedMap.values());
+        setAccounts(finalAccounts);
+        setSelectedAccount(finalAccounts.length > 0 ? finalAccounts[0] : null);
       } catch (err: any) {
         setIsValid(false);
         setErrorMsg(err.message || "Failed to validate OAuth client");
@@ -228,39 +291,56 @@ export default function OAuthAuthorizePage() {
 
         {/* Multi-Account Selector (Google OAuth Style) */}
         <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-          {accounts.map((acc) => {
-            const isSelected = selectedAccount?.email.toLowerCase() === acc.email.toLowerCase();
-            return (
-              <div
-                key={acc.email}
-                onClick={() => setSelectedAccount(acc)}
-                className={`p-3 rounded-2xl flex items-center gap-3 cursor-pointer transition-all border ${
-                  isSelected
-                    ? "bg-[#FF6A00]/15 border-[#FF6A00] shadow-md shadow-[#FF6A00]/10"
-                    : "bg-white/5 border-white/10 hover:bg-white/10"
-                }`}
-              >
-                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-semibold text-white text-sm flex-shrink-0">
-                  {(acc.name || acc.username || "M").charAt(0).toUpperCase()}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-white truncate">
-                    {acc.name || acc.username}
-                  </p>
-                  <p className="text-[11px] font-mono text-zinc-400 truncate">
-                    {acc.email}
-                  </p>
-                </div>
-                {isSelected ? (
-                  <div className="w-5 h-5 rounded-full bg-[#FF6A00] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                    ✓
-                  </div>
-                ) : (
-                  <div className="w-5 h-5 rounded-full border border-white/30 flex-shrink-0" />
-                )}
+          {accounts.length === 0 ? (
+            <div className="p-4 bg-white/5 border border-white/10 rounded-2xl text-center space-y-2">
+              <p className="text-xs text-zinc-300 font-medium">No account is currently signed in on this device.</p>
+              <p className="text-[11px] text-zinc-400">
+                Please sign in to GoldMailer to continue to <strong className="text-white">{client?.app_name || "Application"}</strong>
+              </p>
+              <div className="pt-1">
+                <a
+                  href={`/?oauth_consent=true&client_id=${encodeURIComponent(params.clientId)}&redirect_uri=${encodeURIComponent(params.redirectUri)}&scope=${encodeURIComponent(params.scope)}&state=${encodeURIComponent(params.state)}`}
+                  className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-xs font-semibold text-white cursor-pointer"
+                >
+                  Sign in to GoldMailer
+                </a>
               </div>
-            );
-          })}
+            </div>
+          ) : (
+            accounts.map((acc) => {
+              const isSelected = selectedAccount?.email.toLowerCase() === acc.email.toLowerCase();
+              return (
+                <div
+                  key={acc.email}
+                  onClick={() => setSelectedAccount(acc)}
+                  className={`p-3 rounded-2xl flex items-center gap-3 cursor-pointer transition-all border ${
+                    isSelected
+                      ? "bg-[#FF6A00]/15 border-[#FF6A00] shadow-md shadow-[#FF6A00]/10"
+                      : "bg-white/5 border-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-semibold text-white text-sm flex-shrink-0">
+                    {(acc.name || acc.username || "M").charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-white truncate">
+                      {acc.name || acc.username}
+                    </p>
+                    <p className="text-[11px] font-mono text-zinc-400 truncate">
+                      {acc.email}
+                    </p>
+                  </div>
+                  {isSelected ? (
+                    <div className="w-5 h-5 rounded-full bg-[#FF6A00] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                      ✓
+                    </div>
+                  ) : (
+                    <div className="w-5 h-5 rounded-full border border-white/30 flex-shrink-0" />
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
 
         {/* Permissions */}

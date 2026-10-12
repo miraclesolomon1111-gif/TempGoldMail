@@ -11,7 +11,7 @@ import {
   Check,
   UserPlus
 } from 'lucide-react';
-import { authorizeOAuthConsent, getStoredAccounts, StoredAccount } from '../lib/api';
+import { authorizeOAuthConsent, getStoredAccounts, getAuthToken, StoredAccount } from '../lib/api';
 import { UserProfile } from '../types';
 
 interface OAuthConsentModalProps {
@@ -80,7 +80,7 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
       }
     };
 
-    // 2. Fetch multi accounts (from localStorage + server)
+    // 2. Fetch multi accounts (from localStorage + server device sync)
     const loadAccounts = async () => {
       const localAccs = getStoredAccounts();
       const combinedMap = new Map<string, StoredAccount>();
@@ -91,23 +91,40 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
           id: user.id,
           email: user.email,
           username: user.username,
-          name: user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.username,
+          name: user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : (user.name || user.username),
           token: ''
         });
       }
 
-      // Add local stored accounts
+      // Add local stored accounts logged in on this device
       for (const a of localAccs) {
-        combinedMap.set(a.email.toLowerCase(), a);
+        if (a && a.email) {
+          combinedMap.set(a.email.toLowerCase(), a);
+        }
       }
 
-      // Fetch server accounts (Miracle, Doris, etc.)
+      // Sync and enrich from server via IP address sync & device sync
       try {
-        const res = await fetch('/api/oauth/accounts');
+        const token = getAuthToken();
+        const localEmails = Array.from(combinedMap.keys());
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        if (localEmails.length > 0) headers['X-Device-Accounts'] = JSON.stringify(localEmails);
+
+        const res = await fetch(`/api/oauth/accounts${localEmails.length > 0 ? `?emails=${encodeURIComponent(localEmails.join(','))}` : ''}`, { headers });
         const data = await res.json();
         if (Array.isArray(data.accounts)) {
           for (const sAcc of data.accounts) {
-            if (!combinedMap.has(sAcc.email.toLowerCase())) {
+            const existing = combinedMap.get(sAcc.email.toLowerCase());
+            if (existing) {
+              combinedMap.set(sAcc.email.toLowerCase(), {
+                ...existing,
+                id: sAcc.id || existing.id,
+                name: sAcc.name || existing.name,
+                username: sAcc.username || existing.username,
+                avatar_url: sAcc.avatar_url || existing.avatar_url
+              });
+            } else if (localAccs.some(la => la.email.toLowerCase() === sAcc.email.toLowerCase())) {
               combinedMap.set(sAcc.email.toLowerCase(), {
                 id: sAcc.id,
                 email: sAcc.email,
@@ -128,6 +145,8 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
           const currentEmail = user?.email?.toLowerCase();
           const found = allAccounts.find(a => a.email.toLowerCase() === currentEmail);
           setSelectedAccount(found || allAccounts[0]);
+        } else {
+          setSelectedAccount(null);
         }
       }
     };
@@ -215,39 +234,46 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
 
           {/* Multi-Account Selector (Google OAuth Style) */}
           <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-            {accounts.map((acc) => {
-              const isSelected = selectedAccount?.email.toLowerCase() === acc.email.toLowerCase();
-              return (
-                <div
-                  key={acc.email}
-                  onClick={() => setSelectedAccount(acc)}
-                  className={`p-3 rounded-2xl flex items-center gap-3 cursor-pointer transition-all border ${
-                    isSelected
-                      ? 'bg-[#FF6A00]/15 border-[#FF6A00] shadow-md shadow-[#FF6A00]/10'
-                      : 'bg-white/5 border-white/10 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-semibold text-white text-sm flex-shrink-0">
-                    {(acc.name || acc.username || 'M').charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold text-white truncate">
-                      {acc.name || acc.username}
-                    </p>
-                    <p className="text-[11px] font-mono text-zinc-400 truncate">
-                      {acc.email}
-                    </p>
-                  </div>
-                  {isSelected ? (
-                    <div className="w-5 h-5 rounded-full bg-[#FF6A00] flex items-center justify-center text-white flex-shrink-0">
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+            {accounts.length === 0 ? (
+              <div className="p-4 bg-white/5 border border-white/10 rounded-2xl text-center space-y-1.5">
+                <p className="text-xs text-zinc-300 font-medium">No account is currently signed in on this device.</p>
+                <p className="text-[11px] text-zinc-400">Please sign in to GoldMailer to continue.</p>
+              </div>
+            ) : (
+              accounts.map((acc) => {
+                const isSelected = selectedAccount?.email.toLowerCase() === acc.email.toLowerCase();
+                return (
+                  <div
+                    key={acc.email}
+                    onClick={() => setSelectedAccount(acc)}
+                    className={`p-3 rounded-2xl flex items-center gap-3 cursor-pointer transition-all border ${
+                      isSelected
+                        ? 'bg-[#FF6A00]/15 border-[#FF6A00] shadow-md shadow-[#FF6A00]/10'
+                        : 'bg-white/5 border-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center font-semibold text-white text-sm flex-shrink-0">
+                      {(acc.name || acc.username || 'M').charAt(0).toUpperCase()}
                     </div>
-                  ) : (
-                    <div className="w-5 h-5 rounded-full border border-white/30 flex-shrink-0" />
-                  )}
-                </div>
-              );
-            })}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-white truncate">
+                        {acc.name || acc.username}
+                      </p>
+                      <p className="text-[11px] font-mono text-zinc-400 truncate">
+                        {acc.email}
+                      </p>
+                    </div>
+                    {isSelected ? (
+                      <div className="w-5 h-5 rounded-full bg-[#FF6A00] flex items-center justify-center text-white flex-shrink-0">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                    ) : (
+                      <div className="w-5 h-5 rounded-full border border-white/30 flex-shrink-0" />
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
 
           {/* Permissions requested */}
