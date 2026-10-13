@@ -318,12 +318,16 @@ export async function initDefaultSession(): Promise<UserProfile | null> {
   try {
     syncClientAccounts();
     const token = getAuthToken();
-    if (token) {
-      return await fetchCurrentUser();
+    if (!token) return null;
+    const stored = getStoredUser();
+    if (stored) {
+      // Validate in background, but return stored user immediately to prevent flicker/kick to hero
+      fetchCurrentUser().catch(() => {});
+      return stored;
     }
-    return null;
+    return await fetchCurrentUser();
   } catch {
-    return null;
+    return getStoredUser();
   }
 }
 
@@ -682,13 +686,25 @@ export async function fetchCurrentUser(): Promise<UserProfile | null> {
   if (!token) return null;
   try {
     const res = await fetch('/api/auth/me', { headers: getHeaders() });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (res.status === 401) {
+        try {
+          const errData = await res.json();
+          if (errData?.session_revoked || errData?.error === 'Session has been logged out or revoked' || errData?.error === 'Invalid token') {
+            return null;
+          }
+        } catch {}
+        return null;
+      }
+      // On 5xx or temporary network/server issues, preserve stored user
+      return getStoredUser();
+    }
     const data = await safeJsonParse(res);
-    if (data.user) {
+    if (data?.user) {
       setStoredUser(data.user);
       return data.user;
     }
-    return null;
+    return getStoredUser();
   } catch {
     return getStoredUser();
   }

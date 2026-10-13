@@ -813,6 +813,12 @@ export const ensureDataLoaded = () => {
       if (Array.isArray(parsed.userWallets)) {
         userWallets = parsed.userWallets;
       }
+      if (Array.isArray(parsed.sessions)) {
+        db.setSessionsSync(parsed.sessions);
+      }
+      if (Array.isArray(parsed.revokedSessionIds)) {
+        db.setRevokedSessionIdsSync(parsed.revokedSessionIds);
+      }
 
       // Requirement: Admin miracle@goldmailer.xyz active number is +1 (205) 607-6793, remove old admin numbers
       const activeAdminDigits = '12056076793';
@@ -2503,10 +2509,9 @@ app.get('/api/auth/me', async (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  // If this token had a session_token, verify session is still active (not revoked)
+  // If this token had a session_token, verify session has not been revoked
   if (decoded.session_token) {
-    const activeSession = db.getSessionSync(decoded.session_token);
-    if (!activeSession) {
+    if (db.isSessionRevoked(decoded.session_token)) {
       return res.status(401).json({ error: 'Session has been logged out or revoked', session_revoked: true });
     }
   }
@@ -2535,8 +2540,7 @@ app.put('/api/auth/profile', async (req: Request, res: Response) => {
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
   if (decoded.session_token) {
-    const activeSession = db.getSessionSync(decoded.session_token);
-    if (!activeSession) {
+    if (db.isSessionRevoked(decoded.session_token)) {
       return res.status(401).json({ error: 'Session has been logged out or revoked', session_revoked: true });
     }
   }

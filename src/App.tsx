@@ -377,9 +377,13 @@ export default function App() {
         if (cached.length > 0) setAllEmails(cached);
         setViewMode('app');
       } else {
-        clearAuthToken();
-        setUser(null);
-        setViewMode('hero');
+        const token = getAuthToken();
+        const stored = getStoredUser();
+        if (!token && !stored) {
+          clearAuthToken();
+          setUser(null);
+          setViewMode('hero');
+        }
       }
     }).catch(() => {});
   }, []);
@@ -389,28 +393,43 @@ export default function App() {
     if (!user) return;
     const interval = setInterval(async () => {
       try {
-        const fresh = await fetchCurrentUser();
-        if (!fresh) {
-          clearAuthToken();
-          setUser(null);
-          setViewMode('hero');
-        } else {
-          setUser(prev => {
-            if (!prev) return fresh;
-            if (
-              prev.two_factor_enabled !== fresh.two_factor_enabled ||
-              prev.recovery_phone !== fresh.recovery_phone ||
-              prev.backup_email !== fresh.backup_email ||
-              (prev as any).recovery_email !== (fresh as any).recovery_email ||
-              JSON.stringify(prev.backup_codes) !== JSON.stringify(fresh.backup_codes)
-            ) {
-              return { ...prev, ...fresh };
-            }
-            return prev;
-          });
+        const token = getAuthToken();
+        if (!token) return;
+        const res = await fetch('/api/auth/me', { headers: getHeaders() });
+        if (res.status === 401) {
+          const errData = await res.json().catch(() => ({}));
+          // Strictly only kick out if session was explicitly revoked or token invalid
+          if (errData?.session_revoked || errData?.error === 'Session has been logged out or revoked' || errData?.error === 'Invalid token') {
+            clearAuthToken();
+            setUser(null);
+            setViewMode('hero');
+          }
+          return;
         }
-      } catch {}
-    }, 10000);
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (data?.user) {
+            const fresh = data.user;
+            setStoredUser(fresh);
+            setUser(prev => {
+              if (!prev) return fresh;
+              if (
+                prev.two_factor_enabled !== fresh.two_factor_enabled ||
+                prev.recovery_phone !== fresh.recovery_phone ||
+                prev.backup_email !== fresh.backup_email ||
+                (prev as any).recovery_email !== (fresh as any).recovery_email ||
+                JSON.stringify(prev.backup_codes) !== JSON.stringify(fresh.backup_codes)
+              ) {
+                return { ...prev, ...fresh };
+              }
+              return prev;
+            });
+          }
+        }
+      } catch {
+        // Network glitch / offline - do not log out
+      }
+    }, 15000);
     return () => clearInterval(interval);
   }, [user]);
 

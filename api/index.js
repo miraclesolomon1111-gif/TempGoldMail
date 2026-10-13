@@ -30,6 +30,7 @@ var GoldDatabase = class {
     this.emails = [];
     this.deletedEmailIds = /* @__PURE__ */ new Set();
     this.sessions = [];
+    this.revokedSessionIds = /* @__PURE__ */ new Set();
     this.tickets = [];
     this.activityLogs = [];
     this.domains = [];
@@ -105,6 +106,7 @@ var GoldDatabase = class {
         goldEmails: this.emails,
         deletedEmailIds: Array.from(this.deletedEmailIds),
         sessions: this.sessions,
+        revokedSessionIds: Array.from(this.revokedSessionIds),
         tickets: this.tickets,
         activityLogs: this.activityLogs.slice(-500),
         domains: this.domains,
@@ -185,6 +187,9 @@ var GoldDatabase = class {
       }
       if (Array.isArray(freshestData.sessions)) {
         this.sessions = freshestData.sessions;
+      }
+      if (Array.isArray(freshestData.revokedSessionIds)) {
+        this.revokedSessionIds = new Set(freshestData.revokedSessionIds);
       }
       if (Array.isArray(freshestData.tickets)) {
         this.tickets = freshestData.tickets.filter((t) => t.id !== "tkt_001");
@@ -888,7 +893,7 @@ var GoldDatabase = class {
       (s) => s.session_id !== session.session_id && s.session_token !== session.session_token
     );
     this.sessions.unshift(session);
-    this.scheduleDiskSave();
+    this.saveToDiskSync();
     if (this.supabase) {
       try {
         await this.supabase.from("goldmailer_sessions").insert([{
@@ -912,11 +917,43 @@ var GoldDatabase = class {
     }
     return session;
   }
+  createSessionSync(session) {
+    session.session_token = session.session_token || session.token || session.session_id;
+    session.token = session.session_token;
+    session.session_id = session.session_id || session.id || "sess_" + crypto.randomBytes(8).toString("hex");
+    session.ip_address = session.ip_address || session.ip || "127.0.0.1";
+    session.ip = session.ip_address;
+    session.last_active = session.last_active || session.last_active_at || (/* @__PURE__ */ new Date()).toISOString();
+    session.last_active_at = session.last_active;
+    this.sessions = this.sessions.filter(
+      (s) => s.session_id !== session.session_id && s.session_token !== session.session_token
+    );
+    this.sessions.unshift(session);
+    this.saveToDiskSync();
+    return session;
+  }
+  isSessionRevoked(sessionIdOrToken) {
+    if (!sessionIdOrToken) return false;
+    return this.revokedSessionIds.has(sessionIdOrToken);
+  }
   getSessions() {
     return this.sessions;
   }
+  setSessionsSync(sessions) {
+    if (Array.isArray(sessions)) {
+      this.sessions = sessions;
+    }
+  }
+  setRevokedSessionIdsSync(ids) {
+    if (Array.isArray(ids)) {
+      for (const id of ids) {
+        this.revokedSessionIds.add(id);
+      }
+    }
+  }
   getSessionSync(sessionIdOrToken) {
     if (!sessionIdOrToken) return null;
+    if (this.isSessionRevoked(sessionIdOrToken)) return null;
     return this.sessions.find(
       (s) => s.session_id === sessionIdOrToken || s.session_token === sessionIdOrToken || s.token === sessionIdOrToken || s.id === sessionIdOrToken
     ) || null;
@@ -1012,6 +1049,17 @@ var GoldDatabase = class {
     }
   }
   async removeSession(tokenOrId) {
+    if (!tokenOrId) return;
+    this.revokedSessionIds.add(tokenOrId);
+    const matched = this.sessions.find(
+      (s) => s.session_id === tokenOrId || s.session_token === tokenOrId || s.token === tokenOrId || s.id === tokenOrId
+    );
+    if (matched) {
+      if (matched.session_token) this.revokedSessionIds.add(matched.session_token);
+      if (matched.session_id) this.revokedSessionIds.add(matched.session_id);
+      if (matched.id) this.revokedSessionIds.add(matched.id);
+      if (matched.token) this.revokedSessionIds.add(matched.token);
+    }
     this.sessions = this.sessions.filter(
       (s) => s.session_id !== tokenOrId && s.session_token !== tokenOrId && s.token !== tokenOrId && s.id !== tokenOrId
     );
@@ -1025,6 +1073,15 @@ var GoldDatabase = class {
   }
   async removeOtherSessions(userId, currentSessionToken) {
     const cleanUser = (userId || "").toLowerCase().trim();
+    const otherSessions = this.sessions.filter(
+      (s) => (s.user_id === userId || (s.email || "").toLowerCase() === cleanUser) && s.session_token !== currentSessionToken && s.token !== currentSessionToken && s.session_id !== currentSessionToken && s.id !== currentSessionToken
+    );
+    for (const s of otherSessions) {
+      if (s.session_token) this.revokedSessionIds.add(s.session_token);
+      if (s.session_id) this.revokedSessionIds.add(s.session_id);
+      if (s.id) this.revokedSessionIds.add(s.id);
+      if (s.token) this.revokedSessionIds.add(s.token);
+    }
     this.sessions = this.sessions.filter(
       (s) => s.user_id !== userId && (s.email || "").toLowerCase() !== cleanUser || s.session_token === currentSessionToken || s.token === currentSessionToken || s.session_id === currentSessionToken || s.id === currentSessionToken
     );
@@ -2566,6 +2623,12 @@ var ensureDataLoaded = () => {
       if (Array.isArray(parsed.userWallets)) {
         userWallets = parsed.userWallets;
       }
+      if (Array.isArray(parsed.sessions)) {
+        db.setSessionsSync(parsed.sessions);
+      }
+      if (Array.isArray(parsed.revokedSessionIds)) {
+        db.setRevokedSessionIdsSync(parsed.revokedSessionIds);
+      }
       const activeAdminDigits = "12056076793";
       userPhoneNumbers = userPhoneNumbers.filter((p) => {
         const isMiracle = p.userId === "usr_miracle_01" || p.userEmail === "miracle@goldmailer.xyz" || p.id === "phone_free_miracle_admin";
@@ -4009,8 +4072,7 @@ app.get("/api/auth/me", async (req, res) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: "Invalid token" });
   if (decoded.session_token) {
-    const activeSession = db.getSessionSync(decoded.session_token);
-    if (!activeSession) {
+    if (db.isSessionRevoked(decoded.session_token)) {
       return res.status(401).json({ error: "Session has been logged out or revoked", session_revoked: true });
     }
   }
@@ -4034,8 +4096,7 @@ app.put("/api/auth/profile", async (req, res) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: "Invalid token" });
   if (decoded.session_token) {
-    const activeSession = db.getSessionSync(decoded.session_token);
-    if (!activeSession) {
+    if (db.isSessionRevoked(decoded.session_token)) {
       return res.status(401).json({ error: "Session has been logged out or revoked", session_revoked: true });
     }
   }

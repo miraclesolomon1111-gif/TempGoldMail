@@ -207,6 +207,7 @@ class GoldDatabase {
   private emails: StoredEmail[] = [];
   private deletedEmailIds: Set<string> = new Set();
   private sessions: StoredSession[] = [];
+  private revokedSessionIds: Set<string> = new Set();
   private tickets: StoredTicket[] = [];
   private activityLogs: StoredActivityLog[] = [];
   private domains: StoredDomain[] = [];
@@ -287,6 +288,7 @@ class GoldDatabase {
         goldEmails: this.emails,
         deletedEmailIds: Array.from(this.deletedEmailIds),
         sessions: this.sessions,
+        revokedSessionIds: Array.from(this.revokedSessionIds),
         tickets: this.tickets,
         activityLogs: this.activityLogs.slice(-500),
         domains: this.domains,
@@ -380,6 +382,9 @@ class GoldDatabase {
       }
       if (Array.isArray(freshestData.sessions)) {
         this.sessions = freshestData.sessions;
+      }
+      if (Array.isArray(freshestData.revokedSessionIds)) {
+        this.revokedSessionIds = new Set(freshestData.revokedSessionIds);
       }
       if (Array.isArray(freshestData.tickets)) {
         this.tickets = freshestData.tickets.filter((t: any) => t.id !== 'tkt_001');
@@ -1275,7 +1280,7 @@ class GoldDatabase {
       s.session_token !== session.session_token
     );
     this.sessions.unshift(session);
-    this.scheduleDiskSave();
+    this.saveToDiskSync();
 
     if (this.supabase) {
       try {
@@ -1302,12 +1307,50 @@ class GoldDatabase {
     return session;
   }
 
+  public createSessionSync(session: StoredSession): StoredSession {
+    session.session_token = session.session_token || session.token || session.session_id;
+    session.token = session.session_token;
+    session.session_id = session.session_id || session.id || ('sess_' + crypto.randomBytes(8).toString('hex'));
+    session.ip_address = session.ip_address || session.ip || '127.0.0.1';
+    session.ip = session.ip_address;
+    session.last_active = session.last_active || session.last_active_at || new Date().toISOString();
+    session.last_active_at = session.last_active;
+
+    this.sessions = this.sessions.filter(s => 
+      s.session_id !== session.session_id && 
+      s.session_token !== session.session_token
+    );
+    this.sessions.unshift(session);
+    this.saveToDiskSync();
+    return session;
+  }
+
+  public isSessionRevoked(sessionIdOrToken: string): boolean {
+    if (!sessionIdOrToken) return false;
+    return this.revokedSessionIds.has(sessionIdOrToken);
+  }
+
   public getSessions(): StoredSession[] {
     return this.sessions;
   }
 
+  public setSessionsSync(sessions: StoredSession[]): void {
+    if (Array.isArray(sessions)) {
+      this.sessions = sessions;
+    }
+  }
+
+  public setRevokedSessionIdsSync(ids: string[]): void {
+    if (Array.isArray(ids)) {
+      for (const id of ids) {
+        this.revokedSessionIds.add(id);
+      }
+    }
+  }
+
   public getSessionSync(sessionIdOrToken: string): StoredSession | null {
     if (!sessionIdOrToken) return null;
+    if (this.isSessionRevoked(sessionIdOrToken)) return null;
     return this.sessions.find(s =>
       s.session_id === sessionIdOrToken ||
       s.session_token === sessionIdOrToken ||
@@ -1424,6 +1467,20 @@ class GoldDatabase {
   }
 
   public async removeSession(tokenOrId: string): Promise<void> {
+    if (!tokenOrId) return;
+    this.revokedSessionIds.add(tokenOrId);
+    const matched = this.sessions.find(s =>
+      s.session_id === tokenOrId ||
+      s.session_token === tokenOrId ||
+      s.token === tokenOrId ||
+      s.id === tokenOrId
+    );
+    if (matched) {
+      if (matched.session_token) this.revokedSessionIds.add(matched.session_token);
+      if (matched.session_id) this.revokedSessionIds.add(matched.session_id);
+      if (matched.id) this.revokedSessionIds.add(matched.id);
+      if (matched.token) this.revokedSessionIds.add(matched.token);
+    }
     this.sessions = this.sessions.filter(s =>
       s.session_id !== tokenOrId &&
       s.session_token !== tokenOrId &&
@@ -1443,6 +1500,19 @@ class GoldDatabase {
 
   public async removeOtherSessions(userId: string, currentSessionToken: string): Promise<void> {
     const cleanUser = (userId || '').toLowerCase().trim();
+    const otherSessions = this.sessions.filter(s =>
+      ((s.user_id === userId || (s.email || '').toLowerCase() === cleanUser)) &&
+      s.session_token !== currentSessionToken &&
+      s.token !== currentSessionToken &&
+      s.session_id !== currentSessionToken &&
+      s.id !== currentSessionToken
+    );
+    for (const s of otherSessions) {
+      if (s.session_token) this.revokedSessionIds.add(s.session_token);
+      if (s.session_id) this.revokedSessionIds.add(s.session_id);
+      if (s.id) this.revokedSessionIds.add(s.id);
+      if (s.token) this.revokedSessionIds.add(s.token);
+    }
     this.sessions = this.sessions.filter(s =>
       (s.user_id !== userId && (s.email || '').toLowerCase() !== cleanUser) ||
       s.session_token === currentSessionToken ||
