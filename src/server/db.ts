@@ -33,6 +33,8 @@ export interface StoredGoldUser {
   plan_status?: 'active' | 'cancelled' | 'trial' | 'expired';
   reset_token?: string;
   reset_token_expires?: number;
+  temp_email_2fa_code?: string;
+  temp_email_2fa_expires?: number;
 }
 
 export interface StoredEmail {

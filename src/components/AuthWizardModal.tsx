@@ -18,7 +18,8 @@ import {
   Check,
   Eye,
   EyeOff,
-  Loader2
+  Loader2,
+  Smartphone
 } from 'lucide-react';
 import { COUNTRIES_LIST } from '../lib/emailGenerator';
 import { PrivacyModal, TermsModal } from './LegalModals';
@@ -30,6 +31,7 @@ import {
   registerGoldUser,
   loginGoldUser,
   verify2FALogin,
+  sendEmail2FACode,
   requestPasswordReset,
   confirmPasswordReset
 } from '../lib/api';
@@ -105,7 +107,13 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   const [tempAuthToken, setTempAuthToken] = useState('');
   const [twoFaTargetEmail, setTwoFaTargetEmail] = useState('');
   const [twoFaCode, setTwoFaCode] = useState('');
-  const [useBackupCode, setUseBackupCode] = useState(false);
+  const [twoFaMethod, setTwoFaMethod] = useState<'totp' | 'backup_code' | 'email'>('totp');
+  const [showTryAnotherWay, setShowTryAnotherWay] = useState(false);
+  const [backupEmailInput, setBackupEmailInput] = useState('');
+  const [maskedBackupEmail, setMaskedBackupEmail] = useState('');
+  const [emailCodeSent, setEmailCodeSent] = useState(false);
+  const [emailCodeSending, setEmailCodeSending] = useState(false);
+  const [emailCodeMsg, setEmailCodeMsg] = useState('');
 
   // Forgot Password state
   const [forgotIdentifier, setForgotIdentifier] = useState('');
@@ -232,6 +240,14 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       if (res.requires_2fa) {
         setTempAuthToken(res.temp_auth_token || '');
         setTwoFaTargetEmail(res.email || loginIdentifier);
+        setMaskedBackupEmail(res.masked_backup_email || '');
+        if (res.backup_email) {
+          setBackupEmailInput(res.backup_email);
+        }
+        setTwoFaMethod('totp');
+        setShowTryAnotherWay(false);
+        setEmailCodeSent(false);
+        setTwoFaCode('');
         setMode('2fa');
         setError(null);
         return;
@@ -246,11 +262,38 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
     }
   };
 
+  // Send 2FA code to recovery/backup email (Gmail)
+  const handleSendEmailCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setError(null);
+    setEmailCodeSending(true);
+    try {
+      const res = await sendEmail2FACode({
+        temp_auth_token: tempAuthToken,
+        email: twoFaTargetEmail || loginIdentifier,
+        backup_email: backupEmailInput.trim()
+      });
+      setEmailCodeSent(true);
+      setEmailCodeMsg(res.target_email || res.message || 'Code sent');
+      setTwoFaCode('');
+    } catch (err: any) {
+      setError(err.message || 'Failed to send verification code. Please check your recovery email.');
+    } finally {
+      setEmailCodeSending(false);
+    }
+  };
+
   // 2FA Verification handler
   const handle2FASubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!twoFaCode.trim()) {
-      setError('Please enter your 6-digit Authenticator code or 8-digit backup code');
+      if (twoFaMethod === 'backup_code') {
+        setError('Please enter your 8-digit emergency backup code');
+      } else if (twoFaMethod === 'email') {
+        setError('Please enter the 6-digit code sent to your backup Gmail');
+      } else {
+        setError('Please enter your 6-digit Authenticator code');
+      }
       return;
     }
     setError(null);
@@ -264,7 +307,13 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       onSuccess(res.user);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Invalid 2FA code or backup code');
+      if (twoFaMethod === 'backup_code') {
+        setError(err.message || 'Invalid backup code. Please check and try again.');
+      } else if (twoFaMethod === 'email') {
+        setError(err.message || 'Invalid verification code or code expired.');
+      } else {
+        setError(err.message || 'Invalid Authenticator code. Check clock sync or try another way.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -463,67 +512,402 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
         )}
 
         {/* ================= 2FA VERIFICATION PAGE ================= */}
-        {mode === '2fa' && (
-          <form onSubmit={handle2FASubmit} className="mt-5 space-y-4 animate-in fade-in">
-            <div className="p-4 rounded-2xl bg-gradient-to-br from-[#FF6A00]/15 to-transparent border border-[#FF6A00]/30 space-y-2">
-              <div className="flex items-center gap-2.5 text-[#FF8C42]">
-                <KeyRound className="w-5 h-5" />
-                <h3 className="font-bold text-sm text-white">2-Step Verification</h3>
+        {mode === '2fa' && showTryAnotherWay && (
+          <div className="mt-5 space-y-4 animate-in fade-in">
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-[#FF6A00]/15 to-transparent border border-[#FF6A00]/30 space-y-1.5">
+              <div className="flex items-center gap-2 text-[#FF8C42]">
+                <ShieldCheck className="w-5 h-5" />
+                <h3 className="font-bold text-sm text-white">Choose how you want to sign in</h3>
               </div>
               <p className="text-xs text-zinc-300 leading-relaxed">
-                Enter the verification code for <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong> to complete your sign-in.
+                To protect your GoldMailer account, choose a verification method for{' '}
+                <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong>:
               </p>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                {useBackupCode ? '8-Digit Backup Code' : '6-Digit Authenticator App Code'}
-              </label>
-              <input
-                type="text"
-                required
-                autoFocus
-                value={twoFaCode}
-                onChange={(e) => setTwoFaCode(e.target.value)}
-                placeholder={useBackupCode ? '1234-5678' : '123456'}
-                className="w-full bg-black/40 border border-[#FF6A00]/40 rounded-xl px-4 py-3 text-base text-white font-mono text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-[#FF6A00]/50"
-              />
-            </div>
-
-            <div className="flex items-center justify-between text-xs pt-1">
+            <div className="space-y-2.5">
+              {/* Option 1: Authenticator app */}
               <button
                 type="button"
                 onClick={() => {
-                  setUseBackupCode(!useBackupCode);
+                  setTwoFaMethod('totp');
+                  setShowTryAnotherWay(false);
                   setTwoFaCode('');
                   setError(null);
                 }}
-                className="text-xs text-[#FF8C42] hover:underline cursor-pointer"
+                className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between group cursor-pointer ${
+                  twoFaMethod === 'totp'
+                    ? 'bg-[#FF6A00]/15 border-[#FF6A00]/50 shadow-md shadow-[#FF6A00]/10'
+                    : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                }`}
               >
-                {useBackupCode
-                  ? 'Use 6-digit Authenticator App code'
-                  : 'Lost device? Use an 8-digit backup code'}
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#FF6A00]/20 text-[#FF8C42] flex items-center justify-center flex-shrink-0">
+                    <Smartphone className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white group-hover:text-[#FF8C42] transition-colors">
+                      Get a code from your Authenticator app
+                    </h4>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Enter the 6-digit code generated by Google Authenticator or your authenticator app
+                    </p>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors flex-shrink-0 ml-2" />
+              </button>
+
+              {/* Option 2: Backup codes */}
+              <button
+                type="button"
+                onClick={() => {
+                  setTwoFaMethod('backup_code');
+                  setShowTryAnotherWay(false);
+                  setTwoFaCode('');
+                  setError(null);
+                }}
+                className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between group cursor-pointer ${
+                  twoFaMethod === 'backup_code'
+                    ? 'bg-[#FF6A00]/15 border-[#FF6A00]/50 shadow-md shadow-[#FF6A00]/10'
+                    : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center flex-shrink-0">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white group-hover:text-amber-400 transition-colors">
+                      Enter an 8-digit emergency backup code
+                    </h4>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Use one of the emergency backup codes you saved during 2-step verification setup
+                    </p>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors flex-shrink-0 ml-2" />
+              </button>
+
+              {/* Option 3: Backup Gmail / Recovery email */}
+              <button
+                type="button"
+                onClick={() => {
+                  setTwoFaMethod('email');
+                  setShowTryAnotherWay(false);
+                  setTwoFaCode('');
+                  setError(null);
+                }}
+                className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between group cursor-pointer ${
+                  twoFaMethod === 'email'
+                    ? 'bg-[#FF6A00]/15 border-[#FF6A00]/50 shadow-md shadow-[#FF6A00]/10'
+                    : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center flex-shrink-0">
+                    <Mail className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white group-hover:text-blue-400 transition-colors">
+                      Get a verification code at your backup Gmail
+                    </h4>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      {maskedBackupEmail
+                        ? `Send a 6-digit code to your recovery email (${maskedBackupEmail})`
+                        : 'Enter your backup Gmail to receive a 6-digit verification code'}
+                    </p>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors flex-shrink-0 ml-2" />
               </button>
             </div>
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verifying code...</span>
-                </>
-              ) : (
-                <>
-                  <span>Verify Code & Sign In</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
-          </form>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowTryAnotherWay(false)}
+                className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 font-semibold text-xs border border-white/10 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 2FA Form (Active Method) */}
+        {mode === '2fa' && !showTryAnotherWay && (
+          <div className="mt-5 space-y-4 animate-in fade-in">
+            {/* METHOD 1: Authenticator App */}
+            {twoFaMethod === 'totp' && (
+              <form onSubmit={handle2FASubmit} className="space-y-4">
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-[#FF6A00]/15 to-transparent border border-[#FF6A00]/30 space-y-2">
+                  <div className="flex items-center gap-2.5 text-[#FF8C42]">
+                    <Smartphone className="w-5 h-5" />
+                    <h3 className="font-bold text-sm text-white">2-Step Verification</h3>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Enter the 6-digit code generated by your Authenticator app for{' '}
+                    <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong>.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                    6-Digit Authenticator App Code
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    maxLength={6}
+                    value={twoFaCode}
+                    onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="123456"
+                    className="w-full bg-black/40 border border-[#FF6A00]/40 rounded-xl px-4 py-3 text-lg text-white font-mono text-center tracking-[0.3em] focus:outline-none focus:ring-2 focus:ring-[#FF6A00]/50 placeholder-zinc-600"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verifying code...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Verify Code & Sign In</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTryAnotherWay(true);
+                      setError(null);
+                    }}
+                    className="text-xs text-[#FF8C42] hover:underline font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Try another way</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* METHOD 2: 8-Digit Backup Code */}
+            {twoFaMethod === 'backup_code' && (
+              <form onSubmit={handle2FASubmit} className="space-y-4">
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                  <div className="flex items-center gap-2.5 text-amber-400">
+                    <KeyRound className="w-5 h-5" />
+                    <h3 className="font-bold text-sm text-white">8-Digit Backup Code</h3>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Enter one of the 8-digit emergency backup codes you saved for{' '}
+                    <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong>.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                    Emergency Backup Code
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    maxLength={10}
+                    value={twoFaCode}
+                    onChange={(e) => setTwoFaCode(e.target.value)}
+                    placeholder="1234-5678"
+                    className="w-full bg-black/40 border border-amber-500/40 rounded-xl px-4 py-3 text-lg text-white font-mono text-center tracking-[0.25em] focus:outline-none focus:ring-2 focus:ring-amber-500/50 placeholder-zinc-600"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-white font-bold text-sm shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verifying backup code...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Verify Backup Code & Sign In</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTryAnotherWay(true);
+                      setError(null);
+                    }}
+                    className="text-xs text-[#FF8C42] hover:underline font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Try another way</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* METHOD 3: Backup Gmail / Recovery Email */}
+            {twoFaMethod === 'email' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/30 space-y-2">
+                  <div className="flex items-center gap-2.5 text-blue-400">
+                    <Mail className="w-5 h-5" />
+                    <h3 className="font-bold text-sm text-white">Recovery Gmail Verification</h3>
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Receive a 6-digit verification code to your backup Gmail / recovery email for{' '}
+                    <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong>.
+                  </p>
+                </div>
+
+                {!emailCodeSent ? (
+                  <form onSubmit={handleSendEmailCode} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-300 mb-1">
+                        Enter Backup Gmail Address
+                      </label>
+                      {maskedBackupEmail && (
+                        <p className="text-[11px] text-zinc-400 mb-1.5">
+                          Registered recovery email: <span className="font-mono text-white font-semibold">{maskedBackupEmail}</span>
+                        </p>
+                      )}
+                      <div className="relative">
+                        <input
+                          type="email"
+                          required
+                          autoFocus
+                          value={backupEmailInput}
+                          onChange={(e) => setBackupEmailInput(e.target.value)}
+                          placeholder="example@gmail.com"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00] focus:ring-1 focus:ring-[#FF6A00]"
+                        />
+                        <Mail className="absolute right-3.5 top-3 w-4 h-4 text-zinc-500" />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={emailCodeSending || !backupEmailInput.trim()}
+                      className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 text-white font-bold text-sm shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                    >
+                      {emailCodeSending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Sending code to Gmail...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-4 h-4" />
+                          <span>Send Code to Gmail</span>
+                        </>
+                      )}
+                    </button>
+                  </form>
+                ) : (
+                  <form onSubmit={handle2FASubmit} className="space-y-4">
+                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-400" />
+                      <div>
+                        <span>Verification code dispatched to </span>
+                        <strong className="text-white font-mono">{emailCodeMsg || backupEmailInput}</strong>.
+                        <p className="text-[11px] text-emerald-400/80 mt-0.5">Please check your inbox (and spam folder). Code is valid for 10 minutes.</p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                        6-Digit Code from Backup Gmail
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        autoFocus
+                        maxLength={6}
+                        value={twoFaCode}
+                        onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, ''))}
+                        placeholder="123456"
+                        className="w-full bg-black/40 border border-blue-500/40 rounded-xl px-4 py-3 text-lg text-white font-mono text-center tracking-[0.3em] focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder-zinc-600"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-bold text-sm shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Verifying code...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Verify Code & Sign In</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </>
+                      )}
+                    </button>
+
+                    <div className="flex items-center justify-between text-xs pt-1">
+                      <button
+                        type="button"
+                        onClick={handleSendEmailCode}
+                        disabled={emailCodeSending}
+                        className="text-xs text-blue-400 hover:underline cursor-pointer disabled:opacity-50"
+                      >
+                        {emailCodeSending ? 'Resending...' : "Didn't receive code? Resend to Gmail"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEmailCodeSent(false);
+                          setTwoFaCode('');
+                          setError(null);
+                        }}
+                        className="text-xs text-zinc-400 hover:text-white cursor-pointer"
+                      >
+                        Change Gmail
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTryAnotherWay(true);
+                      setError(null);
+                    }}
+                    className="text-xs text-[#FF8C42] hover:underline font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Try another way</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {/* ================= FORGOT PASSWORD PAGE ================= */}

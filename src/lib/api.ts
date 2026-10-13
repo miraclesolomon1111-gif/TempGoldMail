@@ -588,6 +588,25 @@ export async function verify2FALogin(params: {
   return data;
 }
 
+// Send 2FA Verification Code to Backup Email / Recovery Gmail
+export async function sendEmail2FACode(params: {
+  identifier?: string;
+  email?: string;
+  temp_auth_token?: string;
+  backup_email?: string;
+}): Promise<{ success: boolean; message: string; target_email: string; raw_target?: string }> {
+  const res = await fetch('/api/auth/2fa/send-email-code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to send verification code');
+  }
+  return data;
+}
+
 // Forgot Password API
 export async function requestPasswordReset(identifier: string): Promise<{ success: boolean; message: string; recovery_email?: string; reset_url?: string; reset_token?: string }> {
   const res = await fetch('/api/auth/forgot-password', {

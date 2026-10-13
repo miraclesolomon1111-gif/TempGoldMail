@@ -280,6 +280,8 @@ export interface StoredGoldUser {
   imap_config?: any;
   reset_token?: string;
   reset_token_expires?: number;
+  temp_email_2fa_code?: string;
+  temp_email_2fa_expires?: number;
 }
 
 export interface StoredEmail {
@@ -1530,10 +1532,20 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       const codeInput = (totp_code || backup_code || code || '').toString().trim();
       if (!codeInput) {
         const tempToken = generateToken({ id: user.id, email: user.email, temp_2fa: true });
+        const maskEmailAddress = (em: string): string => {
+          if (!em || !em.includes('@')) return '';
+          const [local, domain] = em.split('@');
+          if (local.length <= 2) return `${local[0]}***@${domain}`;
+          return `${local[0]}***${local[local.length - 1]}@${domain}`;
+        };
         return res.status(200).json({
           requires_2fa: true,
           temp_auth_token: tempToken,
           email: user.email,
+          backup_email: user.backup_email || '',
+          masked_backup_email: maskEmailAddress(user.backup_email || ''),
+          has_backup_email: Boolean(user.backup_email),
+          has_backup_codes: Boolean(user.backup_codes && user.backup_codes.length > 0),
           message: 'Two-factor authentication code required'
         });
       }
@@ -1566,8 +1578,23 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
         }
       }
 
+      // Check Backup Email 2FA Code
+      if (!valid2FA && user.temp_email_2fa_code && /^\d{6}$/.test(cleanCode)) {
+        if (
+          user.temp_email_2fa_code === cleanCode &&
+          user.temp_email_2fa_expires &&
+          user.temp_email_2fa_expires > Date.now()
+        ) {
+          valid2FA = true;
+          user.temp_email_2fa_code = undefined;
+          user.temp_email_2fa_expires = undefined;
+          await db.updateAccount(user.id, { temp_email_2fa_code: undefined, temp_email_2fa_expires: undefined });
+          saveData();
+        }
+      }
+
       if (!valid2FA) {
-        return res.status(401).json({ error: 'Invalid 2FA code or backup code' });
+        return res.status(401).json({ error: 'Invalid 2FA code, backup code, or email verification code' });
       }
     }
 
@@ -1823,20 +1850,227 @@ app.post('/api/auth/verify-2fa', async (req: Request, res: Response) => {
       if (matchIdx !== -1) {
         valid = true;
         user.backup_codes.splice(matchIdx, 1);
+        await db.updateAccount(user.id, { backup_codes: user.backup_codes });
+        saveData();
+      }
+    }
+
+    // Check Backup Email Verification Code (6 digits sent to backup Gmail)
+    if (!valid && user.temp_email_2fa_code && /^\d{6}$/.test(cleanCode)) {
+      if (
+        user.temp_email_2fa_code === cleanCode &&
+        user.temp_email_2fa_expires &&
+        user.temp_email_2fa_expires > Date.now()
+      ) {
+        valid = true;
+        user.temp_email_2fa_code = undefined;
+        user.temp_email_2fa_expires = undefined;
+        await db.updateAccount(user.id, { temp_email_2fa_code: undefined, temp_email_2fa_expires: undefined });
         saveData();
       }
     }
 
     if (!valid) {
-      return res.status(401).json({ error: 'Invalid 2FA code or backup code. Please check and try again.' });
+      return res.status(401).json({ error: 'Invalid 2FA code, backup code, or email verification code. Please check and try again.' });
     }
 
-    const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
+    // Create session and set cookies like Gmail
+    const curIp = getClientIP(req);
+    const userAgent = getClientUserAgent(req);
+    const detected = await detectDeviceAndLocation(userAgent, curIp);
+    const { device, browser, os, city, country } = detected;
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const ssid = 's_' + crypto.randomBytes(20).toString('hex');
+    const sapisid = crypto.createHash('sha1').update(sessionToken + 'salt').digest('hex');
+    const nowIso = new Date().toISOString();
+
+    const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role, session_token: sessionToken });
+
+    await db.createSession({
+      id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+      session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+      user_id: user.id,
+      email: user.email,
+      session_token: sessionToken,
+      token,
+      ip_address: curIp,
+      ip: curIp,
+      city,
+      country,
+      device,
+      browser,
+      os,
+      user_agent: userAgent,
+      is_current: true,
+      last_active: nowIso,
+      created_at: nowIso
+    });
     recordActiveDeviceLogin(user, req);
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('goldmailer_session', sessionToken, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SSID', ssid, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SAPISID', sapisid, { path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+
     return res.json({
       success: true,
       token,
+      session_token: sessionToken,
       user: sanitizeUser(user)
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Send 2FA Verification Code to Backup Email / Recovery Gmail
+app.post('/api/auth/2fa/send-email-code', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { identifier, email, temp_auth_token, backup_email } = req.body;
+
+    let user: StoredGoldUser | undefined;
+
+    if (temp_auth_token) {
+      const decoded = verifyToken(temp_auth_token);
+      if (decoded?.id) {
+        user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+      }
+    }
+
+    if (!user) {
+      const rawInput = (identifier || email || '').trim();
+      user = goldUsers.find(u => matchesUserIdentifier(u, rawInput));
+    }
+
+    if (!user) {
+      const acc = await db.findAccount(email || identifier);
+      if (acc) user = acc as StoredGoldUser;
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'User session not found. Please sign in again.' });
+    }
+
+    const maskEmailAddress = (em: string): string => {
+      if (!em || !em.includes('@')) return '';
+      const [local, domain] = em.split('@');
+      if (local.length <= 2) return `${local[0]}***@${domain}`;
+      return `${local[0]}***${local[local.length - 1]}@${domain}`;
+    };
+
+    // Determine target email for code delivery
+    let targetEmail = (backup_email || user.backup_email || '').trim();
+    if (!targetEmail) {
+      return res.status(400).json({ error: 'Please enter your backup Gmail / recovery email address to receive a code.' });
+    }
+
+    // Validate email format
+    if (!targetEmail.includes('@') || !targetEmail.includes('.')) {
+      return res.status(400).json({ error: 'Please enter a valid backup email address (e.g. name@gmail.com).' });
+    }
+
+    // If user already had a registered backup email, verify the entered email matches
+    if (user.backup_email && backup_email) {
+      const cleanTarget = targetEmail.toLowerCase();
+      const cleanStored = user.backup_email.toLowerCase();
+      if (cleanTarget !== cleanStored) {
+        return res.status(400).json({
+          error: `The email entered does not match your registered recovery email (${maskEmailAddress(user.backup_email)}).`
+        });
+      }
+    }
+
+    // If user didn't have a backup email saved yet, associate this one
+    if (!user.backup_email) {
+      user.backup_email = targetEmail;
+      await db.updateAccount(user.id, { backup_email: targetEmail });
+    }
+
+    // Generate 6-digit verification code
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    user.temp_email_2fa_code = verificationCode;
+    user.temp_email_2fa_expires = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    await db.updateAccount(user.id, {
+      temp_email_2fa_code: verificationCode,
+      temp_email_2fa_expires: user.temp_email_2fa_expires,
+      backup_email: user.backup_email
+    });
+    saveData();
+
+    // Send email with code
+    const fromAddress = process.env.SMTP_FROM || process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>';
+    const emailSubject = `${verificationCode} is your GoldMailer verification code`;
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border: 1px solid #fed7aa; border-radius: 16px;">
+        <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 12px;">
+          <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #FF6A00, #FF8C42); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: bold; font-size: 22px;">G</div>
+          <div>
+            <h2 style="margin: 0; color: #18181b; font-size: 20px;">GoldMailer Security</h2>
+            <span style="font-size: 12px; color: #71717a;">2-Step Verification</span>
+          </div>
+        </div>
+
+        <p style="font-size: 15px; color: #27272a; line-height: 1.6;">Hello <strong>${user.first_name || user.username}</strong>,</p>
+        <p style="font-size: 15px; color: #27272a; line-height: 1.6;">Use the verification code below to complete your sign-in to GoldMailer account <strong>${user.email}</strong>:</p>
+
+        <div style="margin: 28px 0; text-align: center;">
+          <div style="display: inline-block; background: #fff7ed; border: 2px dashed #FF6A00; color: #ea580c; font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 6px; padding: 14px 28px; border-radius: 12px;">
+            ${verificationCode}
+          </div>
+        </div>
+
+        <p style="font-size: 13px; color: #71717a; line-height: 1.5;">This code will expire in <strong>10 minutes</strong>. If you did not attempt to sign in to GoldMailer, someone may be trying to access your account. Please change your password immediately.</p>
+        <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #f4f4f5; font-size: 12px; color: #a1a1aa;">
+          <p style="margin: 0;">GoldMailer Security Team · Protected by 2-Step Verification</p>
+        </div>
+      </div>
+    `;
+
+    const emailText = `Hello ${user.first_name || user.username},\n\nYour GoldMailer 2-step verification code is: ${verificationCode}\n\nThis code expires in 10 minutes. If you did not attempt to sign in, please secure your account.\n\nGoldMailer Security Team`;
+
+    // Try sending via SMTP
+    let sent = false;
+    const activeSmtp = getActiveSmtpTransporter();
+    if (activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: fromAddress,
+          to: targetEmail,
+          subject: emailSubject,
+          text: emailText,
+          html: emailHtml
+        });
+        sent = true;
+      } catch (err: any) {
+        console.warn('SMTP 2FA send note:', err.message);
+      }
+    }
+
+    // Try sending via Resend
+    if (!sent && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: fromAddress,
+          to: [targetEmail],
+          subject: emailSubject,
+          text: emailText,
+          html: emailHtml
+        });
+        sent = true;
+      } catch (err: any) {
+        console.warn('Resend 2FA send note:', err.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Verification code sent to ${maskEmailAddress(targetEmail)}`,
+      target_email: maskEmailAddress(targetEmail),
+      raw_target: targetEmail
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
