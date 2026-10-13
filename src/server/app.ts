@@ -102,6 +102,14 @@ const upload = multer({
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+// Normalize URL for Vercel Serverless Function rewrites
+app.use((req: Request, _res: Response, next) => {
+  if (req.url && !req.url.startsWith('/api') && !req.url.startsWith('/oauth')) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
+
 // CORS
 app.use((req: Request, res: Response, next) => {
   res.header('Access-Control-Allow-Origin', '*');
