@@ -92,7 +92,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   const [mockOtpHint, setMockOtpHint] = useState<string | null>(null);
 
   // Terms and Privacy Agreement
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(true);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
 

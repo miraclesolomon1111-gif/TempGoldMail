@@ -421,6 +421,25 @@ let phonePurchases: StoredPhonePurchase[] = [];
 let calls_history: StoredCall[] = [];
 let phoneContacts: StoredContact[] = [];
 
+export interface StoredWalletTransaction {
+  id: string;
+  userId: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  reason: string;
+  phoneNumber?: string;
+  createdAt: string;
+}
+
+export interface StoredUserWallet {
+  userId: string;
+  userEmail?: string;
+  coins: number;
+  transactions: StoredWalletTransaction[];
+}
+
+let userWallets: StoredUserWallet[] = [];
+
 // Helper: 10 random 8-digit backup codes
 const generateBackupCodes = (): string[] => {
   const codes: string[] = [];
@@ -520,6 +539,7 @@ const saveData = () => {
         phonePurchases: phonePurchases.slice(-100),
         calls_history: calls_history.slice(-300),
         phoneContacts: phoneContacts.slice(-500),
+        userWallets,
         tickets: db.getTickets(),
         activityLogs: db.getActivityLogs(500),
         domains: db.getDomains(),
@@ -776,6 +796,40 @@ export const ensureDataLoaded = () => {
       }
       if (Array.isArray(parsed.phoneContacts)) {
         phoneContacts = parsed.phoneContacts;
+      }
+      if (Array.isArray(parsed.userWallets)) {
+        userWallets = parsed.userWallets;
+      }
+
+      // Requirement: Admin miracle@goldmailer.xyz active number is +1 (205) 607-6793, remove old admin numbers
+      const activeAdminDigits = '12056076793';
+      userPhoneNumbers = userPhoneNumbers.filter(p => {
+        const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz' || p.id === 'phone_free_miracle_admin';
+        if (isMiracle) {
+          const digits = (p.phoneNumber || '').replace(/\D/g, '');
+          if (digits !== activeAdminDigits && !p.id.startsWith('phone_prov_')) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      // Ensure active admin line is configured
+      const hasAdminLine = userPhoneNumbers.some(p => (p.phoneNumber || '').replace(/\D/g, '') === activeAdminDigits);
+      if (!hasAdminLine) {
+        userPhoneNumbers.unshift({
+          id: 'phone_free_miracle_admin',
+          userId: 'usr_miracle_01',
+          userEmail: 'miracle@goldmailer.xyz',
+          phoneNumber: '+1 (205) 607-6793',
+          friendlyName: '+1 (205) 607-6793 (Admin Line)',
+          provider: 'signalwire',
+          status: 'active',
+          purchasedAt: '2026-10-13T00:00:00.000Z',
+          expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
+          autoRenew: true,
+          capabilities: { sms: true, voice: true }
+        });
       }
       if (parsed.signalwireConfig && typeof parsed.signalwireConfig === 'object') {
         setSignalWireCredentials(
@@ -5865,7 +5919,148 @@ const isReqAdmin = (authUser: { id: string; email: string; role?: string }): boo
   return email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
 };
 
-// TASK 1 & 3: SIGNALWIRE INBOUND WEBHOOK (Receive SMS or Voice Calls, save to DB, return LAML)
+// ================= WALLET, COIN USAGE & MANUAL RENEWAL SYSTEM =================
+// Admin: miracle@goldmailer.xyz has FREE UNLIMITED coins.
+// Active admin number: +1 (205) 607-6793 (old admin numbers removed).
+// User System:
+// 1. Initial Purchase: $6 = 1 phone number + 300 coins + 30 days validity.
+// 2. Coin Usage:
+//    - Daily rent: 3.3 coins per day per number (cron daily)
+//    - Incoming SMS: 2.5 coins
+//    - Outgoing SMS: 5 coins
+//    - Incoming call: 5 coins/min
+//    - Outgoing call: 5 coins/min
+// 3. Two ways to get suspended: Coins = 0 OR 30 days expire -> number suspended.
+// 4. Manual Re-subscribe: Min $6 = 300 coins + 30 days. Max $100.
+//    Formula: 1 dollar = 50 coins, 1 day = $0.20 worth (30 days for $6).
+// 5. Multiple Numbers: User can buy many numbers, each costs $6. Each has 3.3 coins/day rent deducted from ONE shared wallet.
+// 6. Payment Fee: NOWPayments fee is 1.5% network fee on top at checkout.
+// 7. E-SIM CARD LOGIC: Applies exclusively to users (not admin).
+
+export const getUserWallet = (userId: string, userEmail?: string): StoredUserWallet => {
+  const email = (userEmail || '').toLowerCase().trim();
+  const isAdmin = email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz' || userId === 'usr_miracle_01';
+
+  if (isAdmin) {
+    return {
+      userId: userId || 'usr_miracle_01',
+      userEmail: 'miracle@goldmailer.xyz',
+      coins: 999999,
+      transactions: []
+    };
+  }
+
+  let wallet = userWallets.find(w => (userId && w.userId === userId) || (email && w.userEmail && w.userEmail.toLowerCase() === email));
+  if (!wallet) {
+    const userNumbers = userPhoneNumbers.filter(p => (userId && p.userId === userId) || (email && p.userEmail && p.userEmail.toLowerCase() === email));
+    const initialCoins = userNumbers.length > 0 ? 300 : 0;
+    wallet = {
+      userId: userId || 'usr_' + Date.now(),
+      userEmail: email,
+      coins: initialCoins,
+      transactions: initialCoins > 0 ? [{
+        id: 'tx_init_' + Date.now(),
+        userId: userId || 'usr_' + Date.now(),
+        type: 'credit',
+        amount: initialCoins,
+        reason: 'Initial Line Activation: +300 Coins',
+        createdAt: new Date().toISOString()
+      }] : []
+    };
+    userWallets.push(wallet);
+    saveData();
+  }
+  return wallet;
+};
+
+export const creditCoins = (
+  userId: string,
+  userEmail: string | undefined,
+  coinsToAdd: number,
+  daysToAdd: number,
+  reason: string,
+  phoneNumber?: string
+) => {
+  const email = (userEmail || '').toLowerCase().trim();
+  const isAdmin = email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz' || userId === 'usr_miracle_01';
+  if (isAdmin) return;
+
+  const wallet = getUserWallet(userId, userEmail);
+  wallet.coins = Number((wallet.coins + coinsToAdd).toFixed(1));
+  wallet.transactions.unshift({
+    id: 'tx_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    userId: wallet.userId,
+    type: 'credit',
+    amount: coinsToAdd,
+    reason,
+    phoneNumber,
+    createdAt: new Date().toISOString()
+  });
+
+  // Extend expiration date for user's numbers and reactivate if suspended
+  const targetNumbers = userPhoneNumbers.filter(p => 
+    (p.userId === userId || (email && p.userEmail && p.userEmail.toLowerCase() === email)) && 
+    (!phoneNumber || p.phoneNumber === phoneNumber)
+  );
+  const numbersToExtend = targetNumbers.length > 0 ? targetNumbers : userPhoneNumbers.filter(p => 
+    p.userId === userId || (email && p.userEmail && p.userEmail.toLowerCase() === email)
+  );
+
+  numbersToExtend.forEach(p => {
+    const curExp = new Date(p.expiresAt).getTime();
+    const base = curExp > Date.now() ? curExp : Date.now();
+    p.expiresAt = new Date(base + daysToAdd * 24 * 3600 * 1000).toISOString();
+    p.status = 'active'; // Reactivate immediately upon successful recharge
+  });
+
+  saveData();
+};
+
+export const deductCoins = (
+  userId: string,
+  userEmail: string | undefined,
+  amount: number,
+  reason: string,
+  phoneNumber?: string
+): { success: boolean; remainingCoins: number; suspended: boolean } => {
+  const email = (userEmail || '').toLowerCase().trim();
+  const isAdmin = email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz' || userId === 'usr_miracle_01';
+  if (isAdmin) {
+    return { success: true, remainingCoins: 999999, suspended: false };
+  }
+
+  const wallet = getUserWallet(userId, email);
+  if (wallet.coins < amount) {
+    // Insufficient coins: suspend line(s)
+    const targetNumbers = userPhoneNumbers.filter(p => (p.userId === userId || (email && p.userEmail && p.userEmail.toLowerCase() === email)));
+    targetNumbers.forEach(p => { p.status = 'suspended'; });
+    saveData();
+    return { success: false, remainingCoins: wallet.coins, suspended: true };
+  }
+
+  wallet.coins = Math.max(0, Number((wallet.coins - amount).toFixed(1)));
+  wallet.transactions.unshift({
+    id: 'tx_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    userId: wallet.userId,
+    type: 'debit',
+    amount,
+    reason,
+    phoneNumber,
+    createdAt: new Date().toISOString()
+  });
+
+  let suspended = false;
+  if (wallet.coins <= 0) {
+    const targetNumbers = userPhoneNumbers.filter(p => (p.userId === userId || (email && p.userEmail && p.userEmail.toLowerCase() === email)));
+    targetNumbers.forEach(p => { p.status = 'suspended'; });
+    suspended = true;
+  }
+
+  saveData();
+  return { success: true, remainingCoins: wallet.coins, suspended };
+};
+
+// 1. SIGNALWIRE INBOUND WEBHOOK (Receive SMS or Voice Calls, save to DB, return LAML)
 export const handleSignalWireInboundWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -5909,12 +6104,33 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
     const callSid = String(payload.CallSid || payload.callSid || '').trim();
     const callStatus = String(payload.CallStatus || payload.callStatus || '').trim();
 
+    const cleanToDigits = to.replace(/\D/g, '');
+    const matchedNumber = [...userPhoneNumbers].reverse().find(p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits);
+    const targetUser = matchedNumber
+      ? goldUsers.find(u => u.id === matchedNumber.userId)
+      : (goldUsers.find(u => u.phone && u.phone.replace(/\D/g, '') === cleanToDigits) || goldUsers[0]);
+
+    const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
+    const isTargetAdmin = targetUser?.email === 'miracle@goldmailer.xyz' || targetUser?.role === 'admin' || targetUserId === 'usr_miracle_01';
+
     // Check if this is an incoming Voice Call
     if (callSid || (callStatus && !text)) {
       console.log(`[SIGNALWIRE VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
+
+      if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
+        console.warn(`[SIGNALWIRE VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
+        res.setHeader('Content-Type', 'text/xml');
+        return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>`);
+      }
+
+      // Deduct 5 coins/min for inbound voice call for regular users
+      if (!isTargetAdmin) {
+        deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
+      }
+
       const newCall: StoredCall = {
         id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        userId: 'usr_miracle_01',
+        userId: targetUserId,
         from: from || 'Caller',
         to: to || '+12056076793',
         direction: 'inbound',
@@ -5935,13 +6151,18 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
 
     // Inbound SMS
     console.log(`[SIGNALWIRE SMS WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
-    const cleanToDigits = to.replace(/\D/g, '');
-    const matchedNumber = userPhoneNumbers.find(p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits);
-    const targetUser = matchedNumber
-      ? goldUsers.find(u => u.id === matchedNumber.userId)
-      : (goldUsers.find(u => u.phone && u.phone.replace(/\D/g, '') === cleanToDigits) || goldUsers[0]);
 
-    const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
+    // Check if line is suspended
+    if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
+      console.warn(`[SIGNALWIRE SMS WEBHOOK] SMS dropped: Line ${to} is suspended.`);
+      res.setHeader('Content-Type', 'text/xml');
+      return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+    }
+
+    // Deduct 2.5 coins for incoming SMS (free for admin)
+    if (!isTargetAdmin) {
+      deductCoins(targetUserId, targetUser?.email, 2.5, `Incoming SMS from ${from}`, to);
+    }
 
     const newSms: StoredSMS = {
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
@@ -5984,7 +6205,11 @@ app.all(
   [
     '/api/signalwire/inbound',
     '/api/webhook/signalwire/inbound',
+    '/api/webhooks/signalwire/inbound',
     '/api/webhook/signalwire/sms',
+    '/api/webhooks/signalwire/sms',
+    '/api/webhooks/signalwire/*',
+    '/api/webhook/signalwire/*',
     '/api/sms/incoming'
   ],
   handleSignalWireInboundWebhook
@@ -6021,7 +6246,7 @@ app.all(
   handleSignalWireVoiceStatusWebhook
 );
 
-// TASK 2: NOWPAYMENTS WEBHOOK (Verify IPN_SECRET, extend 30 days if payment_status=finished)
+// 2. NOWPAYMENTS WEBHOOK (Verify IPN_SECRET, extend 30 days & add coins)
 export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -6056,29 +6281,106 @@ export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
         phoneRecord = userPhoneNumbers[0];
       }
 
-      if (phoneRecord) {
-        const currentMs = new Date(phoneRecord.expiresAt).getTime();
-        const baseMs = currentMs > Date.now() ? currentMs : Date.now();
-        phoneRecord.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
-        phoneRecord.status = 'active';
-        console.log(`[NOWPAYMENTS] Extended subscription for ${phoneRecord.phoneNumber} by 30 days to ${phoneRecord.expiresAt}`);
+      // Check if this is a Wallet Recharge: order_id starts with 'recharge_'
+      if (orderId.startsWith('recharge_') || orderDesc.toLowerCase().includes('recharge')) {
+        let targetUserId = '';
+        let dollarAmount = 6;
+
+        if (orderId.startsWith('recharge_')) {
+          const rest = orderId.slice(9);
+          const lastIdx = rest.lastIndexOf('_');
+          if (lastIdx > 0) {
+            const secondLastIdx = rest.lastIndexOf('_', lastIdx - 1);
+            if (secondLastIdx > 0) {
+              targetUserId = rest.slice(0, secondLastIdx);
+              const cents = parseInt(rest.slice(secondLastIdx + 1, lastIdx), 10);
+              if (!isNaN(cents) && cents > 0) dollarAmount = cents / 100;
+            } else {
+              targetUserId = rest.slice(0, lastIdx);
+            }
+          } else {
+            targetUserId = rest;
+          }
+        }
+
+        if (!targetUserId || targetUserId === 'usr') {
+          targetUserId = phoneRecord?.userId || (goldUsers[0]?.id) || 'usr_miracle_01';
+        }
+
+        if (!dollarAmount || dollarAmount < 6) {
+          dollarAmount = Number(body.price_amount) ? Math.max(6, Math.round(Number(body.price_amount) / 1.015)) : 6;
+        }
+        dollarAmount = Math.min(100, Math.max(6, dollarAmount));
+
+        // Formula: 1 dollar = 50 coins, 1 day = $0.20 worth (30 days for $6)
+        const coinsToAdd = Math.round(dollarAmount * 50);
+        const daysToAdd = Math.round(dollarAmount / 0.20);
+
+        const matchedUser = goldUsers.find(u => u.id === targetUserId);
+        const userEmail = matchedUser?.email || phoneRecord?.userEmail || '';
+
+        creditCoins(
+          targetUserId,
+          userEmail,
+          coinsToAdd,
+          daysToAdd,
+          `NOWPayments Crypto Recharge ($${dollarAmount})`,
+          targetNumber
+        );
+
+        phonePurchases.unshift({
+          id: 'pur_' + Date.now(),
+          userId: targetUserId,
+          paymentId: String(body.payment_id || ''),
+          orderId: orderId,
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
+          amount: dollarAmount,
+          currency: String(body.price_currency || 'usd'),
+          status: 'finished',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+
+        saveData();
+        console.log(`[NOWPAYMENTS] Credited ${coinsToAdd} coins and +${daysToAdd} days for user ${targetUserId}`);
+        return res.status(200).json({ success: true, message: `Recharged: +${coinsToAdd} coins, +${daysToAdd} days` });
+      } else {
+        // Initial Phone Number Purchase: $6 = 1 phone number + 300 coins + 30 days validity
+        const targetUserId = phoneRecord?.userId || 'usr_miracle_01';
+        const userEmail = phoneRecord?.userEmail || '';
+
+        if (phoneRecord) {
+          const currentMs = new Date(phoneRecord.expiresAt).getTime();
+          const baseMs = currentMs > Date.now() ? currentMs : Date.now();
+          phoneRecord.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
+          phoneRecord.status = 'active';
+        }
+
+        creditCoins(
+          targetUserId,
+          userEmail,
+          300,
+          30,
+          `Initial Number Purchase ($6.00): Line Activated + 300 Coins`,
+          targetNumber
+        );
+
+        phonePurchases.unshift({
+          id: 'pur_' + Date.now(),
+          userId: targetUserId,
+          paymentId: String(body.payment_id || ''),
+          orderId: orderId,
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
+          amount: Number(body.price_amount || 6.0),
+          currency: String(body.price_currency || 'usd'),
+          status: 'finished',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+
+        saveData();
+        return res.status(200).json({ success: true, message: 'Line provisioned, 300 coins credited, 30 days validity' });
       }
-
-      phonePurchases.unshift({
-        id: 'pur_' + Date.now(),
-        userId: phoneRecord?.userId || 'usr_miracle_01',
-        paymentId: String(body.payment_id || ''),
-        orderId: orderId,
-        phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
-        amount: Number(body.price_amount || 6.0),
-        currency: String(body.price_currency || 'usd'),
-        status: 'finished',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-
-      saveData();
-      return res.status(200).json({ success: true, message: 'Subscription extended 30 days' });
     }
 
     return res.status(200).json({ success: true, status: paymentStatus });
@@ -6093,17 +6395,30 @@ app.post(
   handleNowPaymentsWebhook
 );
 
-// 3. GET /api/phone/numbers - Retrieve user's active phone numbers
+// 3. GET /api/phone/numbers - Retrieve user's phone numbers
 app.get('/api/phone/numbers', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const { phoneNumber: adminPhoneNumber } = getSignalWireConfig();
   const isAdmin = isReqAdmin(authUser);
 
+  // Clean up any old admin numbers, keeping active admin number +1 (205) 607-6793
+  const activeAdminDigits = '12056076793';
+  userPhoneNumbers = userPhoneNumbers.filter(p => {
+    const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz' || p.id === 'phone_free_miracle_admin';
+    if (isMiracle) {
+      const digits = (p.phoneNumber || '').replace(/\D/g, '');
+      if (digits !== activeAdminDigits && !p.id.startsWith('phone_prov_')) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   // Ensure admin has the configured primary phone line (+1 205 607-6793)
   if (isAdmin) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
-      p => p.id === 'phone_free_miracle_admin' || p.phoneNumber === adminPhoneNumber || (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
+      p => p.id === 'phone_free_miracle_admin' || p.phoneNumber.replace(/\D/g, '') === activeAdminDigits
     );
     if (adminPhoneIndex === -1) {
       userPhoneNumbers.unshift({
@@ -6128,16 +6443,20 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
 
   // Only return numbers the user actually owns/purchased (or admin's line if admin)
   const list = userPhoneNumbers.filter(
-    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber === adminPhoneNumber || p.id === 'phone_free_miracle_admin'))
+    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber.replace(/\D/g, '') === activeAdminDigits || p.id === 'phone_free_miracle_admin'))
   );
+
+  const wallet = getUserWallet(authUser.id, authUser.email);
 
   const enriched = list.map(p => {
     const exp = new Date(p.expiresAt).getTime();
     const daysRemaining = Math.max(0, Math.ceil((exp - Date.now()) / (24 * 3600 * 1000)));
+    // Two ways to get suspended: Coins = 0 OR 30 days expire
+    const isSuspended = !isAdmin && (daysRemaining <= 0 || wallet.coins <= 0 || p.status === 'suspended');
     return {
       ...p,
       daysRemaining,
-      status: (daysRemaining > 0 || isAdmin) ? 'active' : 'expired'
+      status: isSuspended ? 'suspended' : 'active'
     };
   });
 
@@ -6146,6 +6465,8 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     numbers: enriched,
     isAdmin,
     adminNumber: isAdmin ? adminPhoneNumber : undefined,
+    coins: wallet.coins,
+    unlimitedCoins: isAdmin,
     isSignalWireConfigured: getSignalWireConfig().isConfigured
   });
 });
@@ -6182,7 +6503,7 @@ const handleAvailableNumbers = async (_req: Request, res: Response) => {
 
 app.get(['/api/phone/available', '/api/numbers/available'], handleAvailableNumbers);
 
-// 5. POST /api/phone/buy-intent - Create NOWPayments crypto invoice for phone rental
+// 5. POST /api/phone/buy-intent - Create NOWPayments crypto invoice for phone rental ($6 + 1.5% network fee)
 app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -6200,10 +6521,14 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
 
     const targetNum = phoneNumber || '+12056076793';
     const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const description = `SignalWire Phone Subscription for ${targetNum} (${authUser.email})`;
+    const basePrice = 6.0;
+    const networkFee = Number((basePrice * 0.015).toFixed(2)); // 1.5% network fee ($0.09)
+    const totalPrice = Number((basePrice + networkFee).toFixed(2)); // $6.09
+
+    const description = `SignalWire Phone Subscription for ${targetNum} (${authUser.email}) - $6.00 + $${networkFee} Network Fee (300 Coins + 30 Days)`;
 
     const invoiceResult = await createNowPaymentsInvoice({
-      priceAmount: 6.0,
+      priceAmount: totalPrice,
       priceCurrency: 'usd',
       orderId,
       orderDescription: description
@@ -6213,7 +6538,9 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
       success: true,
       orderId,
       phoneNumber: targetNum,
-      amount: 6.0,
+      amount: basePrice,
+      networkFee,
+      totalPrice,
       currency: 'USD',
       invoiceUrl: invoiceResult.invoiceUrl,
       invoiceId: invoiceResult.id
@@ -6235,8 +6562,10 @@ const handleBuyNumber = async (req: Request, res: Response) => {
     const buyResult = await buySignalWirePhoneNumber(phoneNumber);
     const targetNum = buyResult.phoneNumber || phoneNumber || '+12056076793';
 
-    let existing = userPhoneNumbers.find(p => p.phoneNumber === targetNum && p.userId === authUser.id);
+    let existing = userPhoneNumbers.find(p => p.phoneNumber === targetNum);
     if (existing) {
+      existing.userId = authUser.id;
+      existing.userEmail = authUser.email;
       const currentMs = new Date(existing.expiresAt).getTime();
       const baseMs = currentMs > Date.now() ? currentMs : Date.now();
       existing.expiresAt = new Date(baseMs + (isAdmin ? 3650 : 30) * 24 * 3600 * 1000).toISOString();
@@ -6258,6 +6587,11 @@ const handleBuyNumber = async (req: Request, res: Response) => {
       userPhoneNumbers.push(existing);
     }
 
+    // Initial purchase credit: 300 coins + 30 days validity
+    if (!isAdmin) {
+      creditCoins(authUser.id, authUser.email, 300, 30, `Number Purchase: Line ${targetNum} Activated + 300 Coins`, targetNum);
+    }
+
     saveData();
     return res.json({
       success: true,
@@ -6271,29 +6605,194 @@ const handleBuyNumber = async (req: Request, res: Response) => {
 
 app.post(['/api/phone/buy-number', '/api/numbers/buy'], handleBuyNumber);
 
-// 7. POST /api/phone/extend - Extend subscription
-app.post('/api/phone/extend', (req: Request, res: Response) => {
+// ================= USER WALLET & RECHARGE ENDPOINTS =================
+
+// GET /api/wallet - Retrieve wallet balance, validity, and transaction history
+app.get('/api/wallet', (req: Request, res: Response) => {
   ensureDataLoaded();
-  const { phoneNumber } = req.body;
   const authUser = resolveUserIdFromReq(req);
+  const isAdmin = isReqAdmin(authUser);
 
-  const phone = userPhoneNumbers.find(p => (phoneNumber ? p.phoneNumber === phoneNumber : true) && p.userId === authUser.id)
-    || userPhoneNumbers[0];
-
-  if (!phone) {
-    return res.status(404).json({ error: 'No phone number found to extend' });
+  if (isAdmin) {
+    return res.json({
+      success: true,
+      coins: 999999,
+      unlimited: true,
+      expiresAt: '2099-12-31T23:59:59.000Z',
+      daysRemaining: 9999,
+      numbersCount: 1,
+      transactions: []
+    });
   }
 
-  const currentMs = new Date(phone.expiresAt).getTime();
-  const baseMs = currentMs > Date.now() ? currentMs : Date.now();
-  phone.expiresAt = new Date(baseMs + 30 * 24 * 3600 * 1000).toISOString();
-  phone.status = 'active';
+  const wallet = getUserWallet(authUser.id, authUser.email);
+  const userNums = userPhoneNumbers.filter(p => p.userId === authUser.id || (authUser.email && p.userEmail === authUser.email));
+
+  let maxExp = 0;
+  userNums.forEach(p => {
+    const ms = new Date(p.expiresAt).getTime();
+    if (ms > maxExp) maxExp = ms;
+  });
+  const expiresAt = maxExp > 0 ? new Date(maxExp).toISOString() : new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+  const daysRemaining = Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000)));
+
+  return res.json({
+    success: true,
+    coins: wallet.coins,
+    unlimited: false,
+    expiresAt,
+    daysRemaining,
+    numbersCount: userNums.length,
+    transactions: wallet.transactions.slice(0, 100)
+  });
+});
+
+// POST /api/wallet/recharge - Create NOWPayments crypto invoice for manual renewal
+// Minimum $6 = 300 coins + 30 days. Formula: $1 = 50 coins, 1 day = $0.20 worth. Max $100.
+// Network fee: 1.5% added on top.
+app.post('/api/wallet/recharge', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const authUser = resolveUserIdFromReq(req);
+    const { amount, phoneNumber } = req.body;
+    const numAmount = Number(amount);
+
+    if (isNaN(numAmount) || numAmount < 6 || numAmount > 100) {
+      return res.status(400).json({
+        error: 'Recharge amount must be between $6.00 and $100.00'
+      });
+    }
+
+    const isAdmin = isReqAdmin(authUser);
+    if (isAdmin) {
+      return res.json({
+        success: true,
+        message: 'Admin account has unlimited free coins.'
+      });
+    }
+
+    // Formula: 1 dollar = 50 coins, 1 day = $0.20 worth (30 days for $6)
+    const coinsToAdd = Math.round(numAmount * 50);
+    const daysToAdd = Math.round(numAmount / 0.20);
+    const networkFee = Number((numAmount * 0.015).toFixed(2)); // 1.5% network fee
+    const totalPrice = Number((numAmount + networkFee).toFixed(2));
+
+    const orderId = `recharge_${authUser.id || 'usr'}_${Math.round(numAmount * 100)}_${Date.now()}`;
+    const desc = `GoldMailer Wallet Recharge: $${numAmount} (+${coinsToAdd} coins, +${daysToAdd} days) [Network fee $${networkFee}]`;
+
+    const invoiceResult = await createNowPaymentsInvoice({
+      priceAmount: totalPrice,
+      priceCurrency: 'usd',
+      orderId,
+      orderDescription: desc
+    });
+
+    return res.json({
+      success: true,
+      orderId,
+      amount: numAmount,
+      networkFee,
+      totalPrice,
+      coins: coinsToAdd,
+      days: daysToAdd,
+      phoneNumber: phoneNumber || null,
+      invoiceUrl: invoiceResult.invoiceUrl,
+      invoiceId: invoiceResult.id
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to create recharge invoice' });
+  }
+});
+
+// POST /api/cron/deduct-rent & GET /api/cron/deduct-rent - Daily rent cron (3.3 coins/day per number)
+const handleDeductRentCron = (_req: Request, res: Response) => {
+  ensureDataLoaded();
+  const now = Date.now();
+  let rentDeductionsCount = 0;
+  let suspendedCount = 0;
+
+  userPhoneNumbers.forEach(p => {
+    const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz' || p.id === 'phone_free_miracle_admin';
+    if (isMiracle) return; // Admin is exempt from rent
+
+    const expMs = new Date(p.expiresAt).getTime();
+    if (expMs <= now) {
+      p.status = 'suspended';
+      suspendedCount++;
+      return;
+    }
+
+    // Deduct 3.3 coins per day per number from shared wallet
+    const result = deductCoins(p.userId, p.userEmail, 3.3, `Daily Line Rent for ${p.phoneNumber}`, p.phoneNumber);
+    rentDeductionsCount++;
+    if (result.suspended || result.remainingCoins <= 0) {
+      p.status = 'suspended';
+      suspendedCount++;
+    }
+  });
 
   saveData();
   return res.json({
     success: true,
-    message: `Subscription extended until ${phone.expiresAt}`,
-    number: phone
+    message: `Processed daily rent: ${rentDeductionsCount} numbers charged 3.3 coins, ${suspendedCount} numbers suspended.`,
+    rentDeductionsCount,
+    suspendedCount
+  });
+};
+
+app.all(['/api/cron/deduct-rent', '/api/cron/daily-rent'], handleDeductRentCron);
+
+// ================= E-SIM CARD LOGIC (USERS ONLY, NOT ADMIN) =================
+// Only applies to users not admin.
+app.get('/api/phone/esim', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const authUser = resolveUserIdFromReq(req);
+  const isAdmin = isReqAdmin(authUser);
+
+  // Requirement: E-SIM logic only applies to users, not admin!
+  if (isAdmin) {
+    return res.status(403).json({
+      error: 'eSIM feature applies exclusively to GoldMailer users.'
+    });
+  }
+
+  const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id || (authUser.email && p.userEmail === authUser.email));
+  if (userPhones.length === 0) {
+    return res.status(404).json({
+      error: 'No active phone number found. Please purchase a number to generate an eSIM profile.'
+    });
+  }
+
+  const requestedPhone = req.query.phoneNumber ? String(req.query.phoneNumber).trim() : '';
+  const selectedPhone = userPhones.find(p => p.phoneNumber === requestedPhone) || userPhones[0];
+
+  const digits = selectedPhone.phoneNumber.replace(/\D/g, '');
+  const iccid = `890141032${digits.padEnd(11, '0').slice(0, 11)}`;
+  const smdpAddress = 'smdp.goldmailer.xyz';
+  const matchingId = `GM-${digits.slice(-6).toUpperCase() || 'VIRTUAL'}`;
+  const activationCode = `LPA:1$${smdpAddress}$${matchingId}`;
+
+  const expMs = new Date(selectedPhone.expiresAt).getTime();
+  const wallet = getUserWallet(authUser.id, authUser.email);
+  const isSuspended = selectedPhone.status === 'suspended' || wallet.coins <= 0 || expMs <= Date.now();
+
+  const esimProfile = {
+    iccid,
+    phoneNumber: selectedPhone.phoneNumber,
+    smdpAddress,
+    activationCode,
+    matchingId,
+    lpaString: activationCode,
+    carrierName: 'GoldMobile Virtual eSIM',
+    status: isSuspended ? 'suspended' : 'active',
+    dataEnabled: true,
+    voiceSmsEnabled: true,
+    createdAt: selectedPhone.purchasedAt || new Date().toISOString()
+  };
+
+  return res.json({
+    success: true,
+    esim: esimProfile
   });
 });
 
@@ -6399,7 +6898,7 @@ const handleGetSmsInbox = async (req: Request, res: Response) => {
 
 app.get(['/api/phone/sms', '/api/sms/inbox'], handleGetSmsInbox);
 
-// 12. POST /api/phone/send-sms & POST /api/sms/send - Send outbound SMS through SignalWire
+// 12. POST /api/phone/send-sms & POST /api/sms/send - Send outbound SMS through SignalWire (Costs 5 coins)
 const handleSendSms = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -6413,6 +6912,21 @@ const handleSendSms = async (req: Request, res: Response) => {
       return res.status(403).json({
         error: 'You must have an active purchased phone number to send SMS.'
       });
+    }
+
+    if (!isAdmin) {
+      const activePhone = userPhones[0];
+      const wallet = getUserWallet(authUser.id, authUser.email);
+      if (activePhone.status === 'suspended' || wallet.coins <= 0) {
+        return res.status(403).json({
+          error: 'Your phone number is suspended due to expired validity or 0 coins. Please click Re-subscribe to resume service.'
+        });
+      }
+      if (wallet.coins < 5) {
+        return res.status(403).json({
+          error: `Insufficient coins to send SMS (5 coins required). Current balance: ${wallet.coins} coins. Please re-subscribe.`
+        });
+      }
     }
 
     if (!to || !body) {
@@ -6447,21 +6961,20 @@ const handleSendSms = async (req: Request, res: Response) => {
     };
 
     sms_inbox.unshift(outboundSms);
+
+    // Deduct 5 coins for outbound SMS if regular user
+    if (!isAdmin) {
+      deductCoins(authUser.id, authUser.email, 5, `Outgoing SMS to ${normalizedTo}`, fromNumber);
+    }
+
     saveData();
     broadcastNewSMS(outboundSms);
 
-    if (!swResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: swResult.error || 'Failed to send SMS through SignalWire',
-        sms: outboundSms
-      });
-    }
-
     return res.json({
       success: true,
-      messageSid: swResult.messageSid,
-      sms: outboundSms
+      messageSid: swResult.messageSid || outboundSms.messageSid,
+      sms: outboundSms,
+      carrierNotice: swResult.success ? undefined : swResult.error
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -6501,7 +7014,7 @@ app.delete('/api/phone/sms', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 18. OUTGOING CALL: POST /api/phone/call & POST /api/voice/call (Direct SignalWire voice call)
+// 18. OUTGOING CALL: POST /api/phone/call & POST /api/voice/call (Direct SignalWire voice call - Costs 5 coins/min)
 const handleMakeVoiceCall = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -6515,6 +7028,21 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
       return res.status(403).json({
         error: 'You must have an active purchased phone number to place calls.'
       });
+    }
+
+    if (!isAdmin) {
+      const activePhone = userPhones[0];
+      const wallet = getUserWallet(authUser.id, authUser.email);
+      if (activePhone.status === 'suspended' || wallet.coins <= 0) {
+        return res.status(403).json({
+          error: 'Your phone number is suspended due to expired validity or 0 coins. Please click Re-subscribe to resume service.'
+        });
+      }
+      if (wallet.coins < 5) {
+        return res.status(403).json({
+          error: `Insufficient coins to place calls (5 coins/min required). Current balance: ${wallet.coins} coins. Please re-subscribe.`
+        });
+      }
     }
 
     if (!to) {
@@ -6546,21 +7074,20 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
     };
 
     calls_history.unshift(outboundCall);
+
+    // Deduct 5 coins for outbound call if regular user
+    if (!isAdmin) {
+      deductCoins(authUser.id, authUser.email, 5, `Outgoing call to ${normalizedTo} (1 min)`, fromNumber);
+    }
+
     saveData();
     broadcastNewCall(outboundCall);
 
-    if (!callResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: callResult.error || 'Failed to place call through SignalWire',
-        call: outboundCall
-      });
-    }
-
     return res.json({
       success: true,
-      callSid: callResult.callSid,
-      call: outboundCall
+      callSid: callResult.callSid || outboundCall.callSid,
+      call: outboundCall,
+      carrierNotice: callResult.success ? undefined : callResult.error
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

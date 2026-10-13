@@ -1718,7 +1718,72 @@ export async function testAdminSignalWireConnection(payload?: {
   return data;
 }
 
+// ================= WALLET & MANUAL RECHARGE APIS =================
 
+export async function fetchUserWallet(): Promise<{
+  success: boolean;
+  coins: number;
+  unlimited: boolean;
+  expiresAt: string;
+  daysRemaining: number;
+  numbersCount: number;
+  transactions: any[];
+}> {
+  const res = await fetch('/api/wallet', {
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}
 
+export async function rechargeWallet(payload: {
+  amount: number;
+  phoneNumber?: string;
+}): Promise<{
+  success: boolean;
+  orderId?: string;
+  amount?: number;
+  networkFee?: number;
+  totalPrice?: number;
+  coins?: number;
+  days?: number;
+  phoneNumber?: string | null;
+  invoiceUrl?: string;
+  invoiceId?: string;
+  error?: string;
+}> {
+  const res = await fetch('/api/wallet/recharge', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to generate recharge invoice');
+  return data;
+}
 
+export async function triggerRentCron(): Promise<{
+  success: boolean;
+  message: string;
+  rentDeductionsCount: number;
+  suspendedCount: number;
+}> {
+  const res = await fetch('/api/cron/deduct-rent', {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}
 
+// ================= E-SIM CARD API =================
+
+export async function fetchUserEsim(phoneNumber?: string): Promise<{
+  success: boolean;
+  esim?: any;
+  error?: string;
+}> {
+  const query = phoneNumber ? `?phoneNumber=${encodeURIComponent(phoneNumber)}` : '';
+  const res = await fetch(`/api/phone/esim${query}`, {
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}

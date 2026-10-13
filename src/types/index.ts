@@ -208,7 +208,7 @@ export interface UserPhoneNumber {
   phoneNumber: string;
   friendlyName?: string;
   provider: 'signalwire';
-  status: 'active' | 'expired' | 'pending';
+  status: 'active' | 'suspended' | 'expired' | 'pending';
   purchasedAt: string;
   expiresAt: string;
   daysRemaining?: number;
@@ -217,6 +217,40 @@ export interface UserPhoneNumber {
     sms: boolean;
     voice: boolean;
   };
+}
+
+export interface WalletTransaction {
+  id: string;
+  userId: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  reason: string;
+  phoneNumber?: string;
+  createdAt: string;
+}
+
+export interface UserWallet {
+  userId: string;
+  coins: number;
+  unlimited: boolean;
+  expiresAt: string;
+  daysRemaining: number;
+  numbersCount: number;
+  transactions: WalletTransaction[];
+}
+
+export interface ESimProfile {
+  iccid: string;
+  phoneNumber: string;
+  smdpAddress: string;
+  activationCode: string;
+  matchingId: string;
+  lpaString: string;
+  carrierName: string;
+  status: 'active' | 'suspended';
+  dataEnabled: boolean;
+  voiceSmsEnabled: boolean;
+  createdAt: string;
 }
 
 export interface AvailablePhoneNumber {

@@ -28,15 +28,27 @@ import {
   Smile,
   Image as ImageIcon,
   Paperclip,
-  Loader2
+  Loader2,
+  QrCode,
+  Wallet,
+  Zap,
+  ArrowUpRight,
+  ArrowDownLeft,
+  History,
+  Sparkles,
+  Shield
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import {
   SMSMessage,
   UserPhoneNumber,
   AvailablePhoneNumber,
   UserProfile,
   PhoneCall,
-  PhoneContact
+  PhoneContact,
+  UserWallet,
+  WalletTransaction,
+  ESimProfile
 } from '../types';
 import {
   fetchUserPhoneNumbers,
@@ -54,7 +66,10 @@ import {
   fetchPhoneContacts,
   savePhoneContact,
   deletePhoneContact,
-  provisionAdminNumber
+  provisionAdminNumber,
+  fetchUserWallet,
+  rechargeWallet,
+  fetchUserEsim
 } from '../lib/api';
 
 interface PhoneHubViewProps {
@@ -77,12 +92,37 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   darkMode,
   onOpenEmail
 }) => {
-  const [activeTab, setActiveTab] = useState<'inbox' | 'contacts' | 'calls' | 'history' | 'buy'>('inbox');
+  const [activeTab, setActiveTab] = useState<'inbox' | 'contacts' | 'calls' | 'history' | 'buy' | 'wallet' | 'esim'>('inbox');
   const [phoneNumbers, setPhoneNumbers] = useState<UserPhoneNumber[]>([]);
   const [availableNumbers, setAvailableNumbers] = useState<AvailablePhoneNumber[]>([]);
   const [messages, setMessages] = useState<SMSMessage[]>([]);
   const [calls, setCalls] = useState<PhoneCall[]>([]);
   const [contacts, setContacts] = useState<PhoneContact[]>([]);
+
+  // User Wallet & Coin State
+  const [walletData, setWalletData] = useState<{
+    coins: number;
+    unlimited: boolean;
+    expiresAt: string;
+    daysRemaining: number;
+    numbersCount: number;
+    transactions: WalletTransaction[];
+  } | null>(null);
+
+  // Manual Renewal / Re-subscribe Modal State
+  const [rechargeModalOpen, setRechargeModalOpen] = useState(false);
+  const [rechargeAmount, setRechargeAmount] = useState<number>(6);
+  const [customRechargeAmount, setCustomRechargeAmount] = useState<string>('6');
+  const [isGeneratingRechargeInvoice, setIsGeneratingRechargeInvoice] = useState(false);
+  const [rechargeInvoiceUrl, setRechargeInvoiceUrl] = useState<string | null>(null);
+  const [rechargeNotice, setRechargeNotice] = useState<string | null>(null);
+  const [rechargeDetails, setRechargeDetails] = useState<any | null>(null);
+
+  // eSIM Profile State (Users only, not admin)
+  const [esimProfile, setEsimProfile] = useState<ESimProfile | null>(null);
+  const [esimQrUrl, setEsimQrUrl] = useState<string | null>(null);
+  const [isLoadingEsim, setIsLoadingEsim] = useState(false);
+  const [esimGuideTab, setEsimGuideTab] = useState<'ios' | 'android'>('ios');
 
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -130,37 +170,52 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const loadPhoneData = async () => {
     setIsLoading(true);
     try {
-      const [phonesRes, smsRes, availRes, callsRes, contactsRes] = await Promise.all([
+      const [phonesRes, smsRes, availRes, callsRes, contactsRes, walletRes, esimRes] = await Promise.allSettled([
         fetchUserPhoneNumbers(),
         fetchSmsInbox(),
         fetchAvailablePhoneNumbers(),
         fetchPhoneCalls(),
-        fetchPhoneContacts()
+        fetchPhoneContacts(),
+        fetchUserWallet(),
+        !isAdmin ? fetchUserEsim() : Promise.resolve(null)
       ]);
 
-      if (phonesRes.numbers && phonesRes.numbers.length > 0) {
-        // Use all numbers authorized and returned by the server for this user/admin
-        setPhoneNumbers(phonesRes.numbers);
-        setSelectedFromNumber(phonesRes.numbers[0].phoneNumber);
+      if (phonesRes.status === 'fulfilled' && phonesRes.value.numbers && phonesRes.value.numbers.length > 0) {
+        setPhoneNumbers(phonesRes.value.numbers);
+        setSelectedFromNumber(phonesRes.value.numbers[0].phoneNumber);
       } else {
         setPhoneNumbers([]);
         setSelectedFromNumber('');
       }
 
-      setMessages(smsRes);
-      setCalls(callsRes);
-      // Ensure any phone number that has been bought is never displayed in available numbers
-      const boughtNumbers = new Set(
-        (phonesRes.numbers || []).map(p => p.phoneNumber.replace(/[^\d+]/g, ''))
-      );
-      if (phonesRes.adminNumber) {
-        boughtNumbers.add(phonesRes.adminNumber.replace(/[^\d+]/g, ''));
+      if (smsRes.status === 'fulfilled') setMessages(smsRes.value);
+      if (callsRes.status === 'fulfilled') setCalls(callsRes.value);
+      if (contactsRes.status === 'fulfilled') setContacts(contactsRes.value);
+
+      if (availRes.status === 'fulfilled') {
+        const pList = phonesRes.status === 'fulfilled' ? phonesRes.value.numbers || [] : [];
+        const boughtNumbers = new Set(pList.map((p: any) => p.phoneNumber.replace(/[^\d+]/g, '')));
+        if (phonesRes.status === 'fulfilled' && phonesRes.value.adminNumber) {
+          boughtNumbers.add(phonesRes.value.adminNumber.replace(/[^\d+]/g, ''));
+        }
+        const unboughtAvail = (availRes.value || []).filter(
+          (a: any) => !boughtNumbers.has(a.phoneNumber.replace(/[^\d+]/g, ''))
+        );
+        setAvailableNumbers(unboughtAvail);
       }
-      const unboughtAvail = (availRes || []).filter(
-        a => !boughtNumbers.has(a.phoneNumber.replace(/[^\d+]/g, ''))
-      );
-      setAvailableNumbers(unboughtAvail);
-      setContacts(contactsRes);
+
+      if (walletRes.status === 'fulfilled' && walletRes.value && walletRes.value.success) {
+        setWalletData(walletRes.value);
+      }
+
+      if (esimRes.status === 'fulfilled' && esimRes.value && esimRes.value.success && esimRes.value.esim) {
+        setEsimProfile(esimRes.value.esim);
+        if (esimRes.value.esim.lpaString) {
+          QRCode.toDataURL(esimRes.value.esim.lpaString, { width: 240, margin: 2 })
+            .then(url => setEsimQrUrl(url))
+            .catch(() => {});
+        }
+      }
     } catch (err) {
       console.warn('Failed to load phone data:', err);
     } finally {
@@ -496,6 +551,45 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     }
   };
 
+  // Open Re-subscribe / Recharge Modal
+  const handleOpenRechargeModal = (presetAmount: number = 6) => {
+    setRechargeAmount(presetAmount);
+    setCustomRechargeAmount(String(presetAmount));
+    setRechargeInvoiceUrl(null);
+    setRechargeNotice(null);
+    setRechargeDetails(null);
+    setRechargeModalOpen(true);
+  };
+
+  // Initiate Recharge NOWPayments Invoice ($6 - $100 with 1.5% network fee)
+  const handleProceedWithRecharge = async () => {
+    const num = Number(customRechargeAmount) || rechargeAmount;
+    if (isNaN(num) || num < 6 || num > 100) {
+      setRechargeNotice('Please choose a recharge amount between $6.00 and $100.00.');
+      return;
+    }
+
+    setIsGeneratingRechargeInvoice(true);
+    setRechargeNotice(null);
+
+    try {
+      const res = await rechargeWallet({
+        amount: num,
+        phoneNumber: activeNumber?.phoneNumber
+      });
+      if (res.success && res.invoiceUrl) {
+        setRechargeInvoiceUrl(res.invoiceUrl);
+        setRechargeDetails(res);
+      } else {
+        setRechargeNotice(res.error || 'Failed to create recharge invoice.');
+      }
+    } catch (err: any) {
+      setRechargeNotice(err.message || 'Error creating crypto invoice. Please try again.');
+    } finally {
+      setIsGeneratingRechargeInvoice(false);
+    }
+  };
+
   // Helper: Extract OTP Code from SMS body
   const extractCode = (body: string) => {
     const match = body.match(/\b\d{4,8}\b/);
@@ -512,12 +606,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     <div className={`flex-1 flex flex-col min-h-0 relative select-none ${
       darkMode ? 'bg-[#101114] text-white' : 'bg-[#faf8f6] text-zinc-900'
     }`}>
-      {/* Top Header Banner: Active Phone Number & Controls */}
+      {/* Top Header Banner: Active Phone Number, Coins, Validity & Controls */}
       <div className={`px-4 sm:px-6 py-3.5 border-b flex flex-wrap items-center justify-between gap-4 ${
         darkMode ? 'bg-[#15161a] border-white/10' : 'bg-white border-zinc-200'
       }`}>
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white shadow-md shadow-[#FF6A00]/25">
+        <div className="flex items-center gap-3.5 flex-wrap">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center text-white shadow-md shadow-[#FF6A00]/25 flex-shrink-0">
             <Smartphone className="w-5 h-5 stroke-[2.2]" />
           </div>
           <div>
@@ -527,20 +621,28 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <span className="text-sm sm:text-base font-bold tracking-tight">
                     {activeNumber.friendlyName || activeNumber.phoneNumber}
                   </span>
-                  {isAdmin && (
+                  {isAdmin ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-gradient-to-r from-amber-500 to-yellow-400 text-black shadow-xs">
-                      Free Admin Line
+                      Admin Line · Unlimited Free
                     </span>
+                  ) : (
+                    activeNumber.status === 'suspended' ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500/15 text-red-400 border border-red-500/30 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                        Suspended (Recharge to Reactivate)
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Active
+                      </span>
+                    )
                   )}
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Active
-                  </span>
                 </div>
-                <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 mt-0.5">
-                  <span>Number: {activeNumber.phoneNumber}</span>
+                <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 mt-0.5 flex-wrap">
+                  <span>Number: <strong className="text-white font-mono">{activeNumber.phoneNumber}</strong></span>
                   <span className="text-zinc-500">·</span>
-                  <span className="text-emerald-400 font-medium">SMS & Voice Enabled</span>
+                  <span className="text-emerald-400 font-medium">SMS & Voice</span>
                   <button
                     type="button"
                     onClick={() => handleCopy(activeNumber.phoneNumber)}
@@ -554,22 +656,69 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-bold text-zinc-300">
-                    No Active Phone Number
+                    No Active Phone Line
                   </span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
                     Inactive
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-400 mt-0.5">
-                  Rent a dedicated phone number ($6.00) to send & receive texts and calls.
+                  Get a dedicated line ($6.00 = 300 coins + 30 days) to send & receive texts and calls.
                 </p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* Center / Right: Real-time Validity Badge & Balance & Action Buttons */}
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Validity Badge: "Valid until: Oct 30, 2026 (12 days left)" */}
+          {activeNumber && (
+            <div className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-1.5 ${
+              isAdmin
+                ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+                : activeNumber.status === 'suspended'
+                ? 'bg-red-500/10 border-red-500/20 text-red-300'
+                : 'bg-white/5 border-white/10 text-zinc-300'
+            }`}>
+              <Clock className="w-3.5 h-3.5 text-[#FF8C42]" />
+              <span className="font-medium">
+                {isAdmin ? (
+                  'Lifetime Unlimited'
+                ) : (
+                  <>
+                    Valid until:{' '}
+                    <strong className="text-white">
+                      {new Date(activeNumber.expiresAt || walletData?.expiresAt || Date.now() + 30 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </strong>{' '}
+                    <span className="text-zinc-400">({activeNumber.daysRemaining ?? walletData?.daysRemaining ?? 30} days left)</span>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+
+          {/* Balance Badge: "Balance: 45 / 300 coins" */}
+          <div className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500/15 to-[#FF6A00]/15 border border-[#FF6A00]/30 text-xs flex items-center gap-1.5">
+            <Coins className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-semibold text-zinc-300">Balance:</span>
+            <span className="font-bold font-mono text-amber-400">
+              {isAdmin ? '∞ / Unlimited' : `${walletData?.coins ?? (activeNumber ? 300 : 0)} / 300 coins`}
+            </span>
+          </div>
+
+          {/* Re-subscribe Now Button (ALWAYS VISIBLE) */}
+          <button
+            type="button"
+            onClick={() => handleOpenRechargeModal(6)}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow-md shadow-[#FF6A00]/25 hover:shadow-[#FF6A00]/40 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+            title="Re-subscribe / Recharge with NOWPayments Crypto"
+          >
+            <Zap className="w-3.5 h-3.5 fill-current" />
+            <span>Re-subscribe Now</span>
+          </button>
+
+          {/* Admin "Get New Number" from SignalWire (Free) */}
           {isAdmin && (
             <button
               type="button"
@@ -590,7 +739,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white text-xs font-bold shadow-md hover:opacity-95 transition-all cursor-pointer"
             >
               <Coins className="w-3.5 h-3.5" />
-              <span>Buy Phone Number ($6.00)</span>
+              <span>Buy Number ($6.00)</span>
             </button>
           )}
 
@@ -617,6 +766,8 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
           { id: 'contacts', label: 'Contacts', icon: Users, count: contacts.length },
           { id: 'calls', label: "Call's", icon: PhoneCallIcon },
           { id: 'history', label: 'History', icon: Clock, count: calls.length },
+          { id: 'wallet', label: 'Wallet & Coins', icon: Wallet },
+          ...(!isAdmin ? [{ id: 'esim', label: 'eSIM Card', icon: QrCode }] : []),
           { id: 'buy', label: 'Buy Phone Number', icon: Coins }
         ].map(tab => {
           const isActive = activeTab === tab.id;
@@ -1523,7 +1674,684 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             )}
           </div>
         )}
+
+        {/* ================= TAB 6: WALLET & COINS (MANUAL RENEWAL) ================= */}
+        {activeTab === 'wallet' && (
+          <div className="max-w-4xl mx-auto space-y-6 w-full">
+            {/* Header & Balance Overview */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold flex items-center gap-2">
+                  <Wallet className="w-5 h-5 text-amber-400" />
+                  <span>Wallet & Coin Balance</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400/10 text-amber-400 border border-amber-400/20">
+                    Shared Wallet
+                  </span>
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  {isAdmin
+                    ? 'Admin account (miracle@goldmailer.xyz) has unlimited free coins and lifetime validity.'
+                    : 'Manual renewal via NOWPayments crypto. All your phone numbers draw daily rent from this single shared wallet.'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleOpenRechargeModal(6)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white shadow-md shadow-[#FF6A00]/25 flex items-center gap-2 cursor-pointer"
+              >
+                <Zap className="w-4 h-4 fill-current" />
+                <span>Re-subscribe Now ($6.00)</span>
+              </button>
+            </div>
+
+            {/* Quick Stat Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Card 1: Balance */}
+              <div className={`p-4 rounded-2xl border ${
+                darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+              }`}>
+                <div className="flex items-center justify-between text-zinc-400 text-xs mb-1.5">
+                  <span className="font-medium">Coin Balance</span>
+                  <Coins className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="text-2xl font-black font-mono text-amber-400">
+                  {isAdmin ? '∞ / Unlimited' : `${walletData?.coins ?? (activeNumber ? 300 : 0)} / 300`}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  {isAdmin ? 'Free lifetime master admin' : 'Available coins for rent, SMS & calls'}
+                </p>
+              </div>
+
+              {/* Card 2: Validity */}
+              <div className={`p-4 rounded-2xl border ${
+                darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+              }`}>
+                <div className="flex items-center justify-between text-zinc-400 text-xs mb-1.5">
+                  <span className="font-medium">Validity Period</span>
+                  <Clock className="w-4 h-4 text-[#FF8C42]" />
+                </div>
+                <div className="text-sm font-bold text-white">
+                  {isAdmin ? (
+                    'Lifetime Active'
+                  ) : (
+                    <>
+                      {new Date(activeNumber?.expiresAt || walletData?.expiresAt || Date.now() + 30 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </>
+                  )}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  {isAdmin ? 'Never expires' : `${activeNumber?.daysRemaining ?? walletData?.daysRemaining ?? 30} days remaining`}
+                </p>
+              </div>
+
+              {/* Card 3: Connected Numbers */}
+              <div className={`p-4 rounded-2xl border ${
+                darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+              }`}>
+                <div className="flex items-center justify-between text-zinc-400 text-xs mb-1.5">
+                  <span className="font-medium">Connected Numbers</span>
+                  <Smartphone className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-black font-mono text-white">
+                  {walletData?.numbersCount ?? phoneNumbers.length}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  {walletData?.numbersCount ?? phoneNumbers.length} line(s) drawing 3.3 coins/day rent
+                </p>
+              </div>
+            </div>
+
+            {/* Re-subscribe & Manual Recharge Banner */}
+            <div className="p-5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-[#FF6A00]/10 to-orange-500/10 border border-[#FF6A00]/30 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#FF6A00]" />
+                    <h3 className="text-sm font-bold text-white">Manual Renewal via Crypto (NOWPayments)</h3>
+                  </div>
+                  <p className="text-xs text-zinc-300">
+                    Important: No auto-renewal. Minimum $6 = 300 coins + 30 days. You can pay anytime before expiry to top up.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {[6, 10, 20, 50].map((amt) => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => handleOpenRechargeModal(amt)}
+                      className="px-3 py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/20 text-white border border-white/10 cursor-pointer transition-all"
+                    >
+                      ${amt} ({amt * 50} coins)
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-white/10 text-xs">
+                <div>
+                  <span className="text-zinc-400 block text-[11px]">Recharge Rate</span>
+                  <strong className="text-white">$1 = 50 coins</strong>
+                </div>
+                <div>
+                  <span className="text-zinc-400 block text-[11px]">Validity Extension</span>
+                  <strong className="text-white">1 day = $0.20</strong>
+                </div>
+                <div>
+                  <span className="text-zinc-400 block text-[11px]">Min / Max Recharge</span>
+                  <strong className="text-white">$6.00 / $100.00</strong>
+                </div>
+                <div>
+                  <span className="text-zinc-400 block text-[11px]">Network Fee</span>
+                  <strong className="text-white">1.5% added at checkout</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Coin Usage Rates Card */}
+            <div className={`p-5 rounded-2xl border ${
+              darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+            }`}>
+              <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                <Coins className="w-4 h-4 text-amber-400" />
+                <span>Coin Usage Schedule</span>
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <span className="text-[11px] text-zinc-400 block">Daily Rent (Cron)</span>
+                  <div className="text-base font-bold font-mono text-amber-400 mt-1">3.3 coins</div>
+                  <span className="text-[10px] text-zinc-500">Per day per number</span>
+                </div>
+                <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <span className="text-[11px] text-zinc-400 block">Incoming SMS</span>
+                  <div className="text-base font-bold font-mono text-emerald-400 mt-1">2.5 coins</div>
+                  <span className="text-[10px] text-zinc-500">Per inbound text</span>
+                </div>
+                <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <span className="text-[11px] text-zinc-400 block">Outgoing SMS</span>
+                  <div className="text-base font-bold font-mono text-[#FF8C42] mt-1">5.0 coins</div>
+                  <span className="text-[10px] text-zinc-500">Per sent message</span>
+                </div>
+                <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <span className="text-[11px] text-zinc-400 block">Incoming Call</span>
+                  <div className="text-base font-bold font-mono text-sky-400 mt-1">5.0 coins/min</div>
+                  <span className="text-[10px] text-zinc-500">Per call minute</span>
+                </div>
+                <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <span className="text-[11px] text-zinc-400 block">Outgoing Call</span>
+                  <div className="text-base font-bold font-mono text-purple-400 mt-1">5.0 coins/min</div>
+                  <span className="text-[10px] text-zinc-500">Per call minute</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-3">
+                * Suspension Rule: When coins reach 0 OR your 30-day validity expires, the number suspends. Re-subscribe anytime with $6 or more to resume active service immediately.
+              </p>
+            </div>
+
+            {/* Transaction History */}
+            <div className={`p-5 rounded-2xl border ${
+              darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+            }`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <History className="w-4 h-4 text-zinc-400" />
+                  <span>Wallet Transaction History</span>
+                </h3>
+                <span className="text-xs text-zinc-400">
+                  {walletData?.transactions?.length ?? 0} transaction(s)
+                </span>
+              </div>
+
+              {(!walletData?.transactions || walletData.transactions.length === 0) ? (
+                <div className="py-8 text-center text-xs text-zinc-500">
+                  No transactions yet. Recharge your wallet or purchase a number to see activity.
+                </div>
+              ) : (
+                <div className="divide-y divide-white/5 max-h-96 overflow-y-auto">
+                  {walletData.transactions.map((tx) => (
+                    <div key={tx.id} className="py-2.5 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                          tx.type === 'credit'
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : 'bg-rose-500/15 text-rose-400'
+                        }`}>
+                          {tx.type === 'credit' ? (
+                            <ArrowDownLeft className="w-3.5 h-3.5" />
+                          ) : (
+                            <ArrowUpRight className="w-3.5 h-3.5" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-white">{tx.reason}</p>
+                          <div className="flex items-center gap-2 text-[10px] text-zinc-400">
+                            <span>{new Date(tx.createdAt).toLocaleString()}</span>
+                            {tx.phoneNumber && (
+                              <span className="font-mono text-zinc-300">· {tx.phoneNumber}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`font-mono font-bold text-sm ${
+                        tx.type === 'credit' ? 'text-emerald-400' : 'text-rose-400'
+                      }`}>
+                        {tx.type === 'credit' ? '+' : '-'}{tx.amount} coins
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ================= TAB 7: E-SIM CARD LOGIC (USERS ONLY, NOT ADMIN) ================= */}
+        {activeTab === 'esim' && (
+          <div className="max-w-4xl mx-auto space-y-6 w-full">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold flex items-center gap-2">
+                  <QrCode className="w-5 h-5 text-[#FF6A00]" />
+                  <span>Virtual eSIM Profile</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-400/10 text-emerald-400 border border-emerald-400/20">
+                    User Only Feature
+                  </span>
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Instant digital eSIM activation for your smartphone. Scan QR code or enter manual activation codes.
+                </p>
+              </div>
+
+              {activeNumber && (
+                <div className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${
+                  activeNumber.status === 'suspended'
+                    ? 'bg-red-500/10 border-red-500/30 text-red-300'
+                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${activeNumber.status === 'suspended' ? 'bg-red-400' : 'bg-emerald-400 animate-pulse'}`} />
+                  <span>eSIM Status: {activeNumber.status === 'suspended' ? 'Suspended' : 'Active & Connected'}</span>
+                </div>
+              )}
+            </div>
+
+            {isAdmin ? (
+              <div className="p-6 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs space-y-2">
+                <div className="flex items-center gap-2 font-bold text-sm">
+                  <ShieldCheck className="w-5 h-5" />
+                  <span>Master Administrator Line</span>
+                </div>
+                <p className="text-zinc-300">
+                  The eSIM card feature applies strictly to client user accounts. As administrator (<code className="font-mono text-amber-300">miracle@goldmailer.xyz</code>), your primary line (<code className="font-mono text-amber-300">+1 205 607-6793</code>) routes directly through SignalWire master carrier with unlimited free coins and calls.
+                </p>
+              </div>
+            ) : !activeNumber ? (
+              <div className={`p-10 text-center rounded-2xl border ${
+                darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+              }`}>
+                <Smartphone className="w-12 h-12 mx-auto text-zinc-500 mb-3" />
+                <h3 className="text-base font-bold text-white">No Active Phone Line</h3>
+                <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
+                  You need an active phone number to generate an eSIM profile. Purchase a dedicated line for $6.00 to activate your virtual eSIM immediately.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('buy')}
+                  className="mt-4 px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white hover:opacity-95 shadow-md cursor-pointer"
+                >
+                  Buy Number ($6.00)
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left: Holographic Digital eSIM Card & QR Code */}
+                <div className="lg:col-span-6 space-y-4">
+                  {/* Digital SIM Graphic */}
+                  <div className="relative p-6 rounded-3xl bg-gradient-to-br from-zinc-900 via-[#181a20] to-[#221710] border border-white/15 shadow-2xl overflow-hidden">
+                    <div className="absolute top-0 right-0 w-48 h-48 bg-[#FF6A00]/10 rounded-full blur-3xl -z-0" />
+
+                    <div className="relative z-10 space-y-5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-400 to-[#FF6A00] flex items-center justify-center text-white font-black text-xs shadow-md">
+                            GM
+                          </div>
+                          <div>
+                            <h4 className="text-sm font-bold text-white tracking-wide">GoldMobile eSIM</h4>
+                            <span className="text-[10px] text-zinc-400 font-mono">Carrier: SignalWire US</span>
+                          </div>
+                        </div>
+
+                        {/* Holographic Chip Graphic */}
+                        <div className="w-10 h-8 rounded-lg bg-gradient-to-tr from-amber-200 via-amber-400 to-yellow-600 border border-amber-300/60 shadow-inner flex flex-col justify-around p-1 opacity-90">
+                          <div className="w-full h-0.5 bg-amber-800/40 rounded-full" />
+                          <div className="w-full h-0.5 bg-amber-800/40 rounded-full" />
+                          <div className="w-full h-0.5 bg-amber-800/40 rounded-full" />
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-zinc-400 uppercase tracking-wider block">Assigned Phone Number</span>
+                        <div className="text-xl font-bold font-mono text-white tracking-wider mt-0.5">
+                          {esimProfile?.phoneNumber || activeNumber.phoneNumber}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/10 text-xs">
+                        <div>
+                          <span className="text-[10px] text-zinc-400 uppercase block">ICCID</span>
+                          <span className="font-mono text-zinc-200 text-[11px] truncate block">
+                            {esimProfile?.iccid || '8901410320000000000'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-zinc-400 uppercase block">Profile Status</span>
+                          <span className={`text-[11px] font-bold ${activeNumber.status === 'suspended' ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            {activeNumber.status === 'suspended' ? 'Suspended (Recharge)' : 'Ready for Install'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* QR Code Card */}
+                  <div className={`p-6 rounded-2xl border text-center ${
+                    darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+                  }`}>
+                    <h4 className="text-sm font-bold text-white mb-2">Scan QR Code to Install</h4>
+                    <p className="text-xs text-zinc-400 mb-4">
+                      Point your iPhone or Android camera at the code below to add this line directly to your device cellular plans.
+                    </p>
+
+                    <div className="inline-block p-4 rounded-2xl bg-white shadow-xl">
+                      {esimQrUrl ? (
+                        <img src={esimQrUrl} alt="eSIM Activation QR" className="w-48 h-48 mx-auto" />
+                      ) : (
+                        <div className="w-48 h-48 flex items-center justify-center text-zinc-600">
+                          <QrCode className="w-16 h-16 animate-pulse" />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-center gap-2">
+                      {esimQrUrl && (
+                        <a
+                          href={esimQrUrl}
+                          download={`GoldMobile_eSIM_${(activeNumber.phoneNumber).replace(/\D/g, '')}.png`}
+                          className="px-4 py-2 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-white flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <span>Save QR Code Image</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Manual Configuration Details & Step-by-Step Device Guides */}
+                <div className="lg:col-span-6 space-y-4">
+                  {/* Manual Activation Parameters */}
+                  <div className={`p-5 rounded-2xl border space-y-3.5 ${
+                    darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+                  }`}>
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Smartphone className="w-4 h-4 text-[#FF6A00]" />
+                      <span>Manual Activation Details</span>
+                    </h4>
+                    <p className="text-xs text-zinc-400">
+                      If you cannot scan the QR code, choose "Enter Details Manually" on your smartphone.
+                    </p>
+
+                    {/* SM-DP+ Address */}
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                        <span>SM-DP+ Address:</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(esimProfile?.smdpAddress || 'smdp.goldmailer.xyz')}
+                          className="text-[#FF6A00] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Copy</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-xs font-bold text-white">
+                        {esimProfile?.smdpAddress || 'smdp.goldmailer.xyz'}
+                      </div>
+                    </div>
+
+                    {/* Activation Code / Matching ID */}
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                        <span>Activation Code (LPA String):</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(esimProfile?.activationCode || `LPA:1$smdp.goldmailer.xyz$GM-${activeNumber.phoneNumber.replace(/\D/g, '').slice(-6)}`)}
+                          className="text-[#FF6A00] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Copy</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-xs font-bold text-white break-all">
+                        {esimProfile?.activationCode || `LPA:1$smdp.goldmailer.xyz$GM-${activeNumber.phoneNumber.replace(/\D/g, '').slice(-6)}`}
+                      </div>
+                    </div>
+
+                    {/* ICCID */}
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                        <span>SIM ICCID:</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(esimProfile?.iccid || `890141032${activeNumber.phoneNumber.replace(/\D/g, '')}`)}
+                          className="text-[#FF6A00] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Copy</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-xs font-bold text-white">
+                        {esimProfile?.iccid || `890141032${activeNumber.phoneNumber.replace(/\D/g, '')}`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Device Installation Guides */}
+                  <div className={`p-5 rounded-2xl border space-y-4 ${
+                    darkMode ? 'bg-[#18191d] border-white/10' : 'bg-white border-zinc-200'
+                  }`}>
+                    <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                      <h4 className="text-sm font-bold text-white">Installation Guide</h4>
+                      <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => setEsimGuideTab('ios')}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            esimGuideTab === 'ios'
+                              ? 'bg-[#FF6A00] text-white'
+                              : 'text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          Apple iOS
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEsimGuideTab('android')}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            esimGuideTab === 'android'
+                              ? 'bg-[#FF6A00] text-white'
+                              : 'text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          Android
+                        </button>
+                      </div>
+                    </div>
+
+                    {esimGuideTab === 'ios' ? (
+                      <ol className="space-y-2.5 text-xs text-zinc-300 list-decimal list-inside">
+                        <li>Open <strong className="text-white">Settings</strong> on your iPhone.</li>
+                        <li>Tap <strong className="text-white">Cellular</strong> or <strong className="text-white">Mobile Data</strong>.</li>
+                        <li>Tap <strong className="text-white">Add eSIM</strong> or <strong className="text-white">Add Cellular Plan</strong>.</li>
+                        <li>Select <strong className="text-white">Use QR Code</strong> and scan the code on the left.</li>
+                        <li>If asked, enter the confirmation code or label as <strong className="text-white">GoldMailer Line</strong>.</li>
+                      </ol>
+                    ) : (
+                      <ol className="space-y-2.5 text-xs text-zinc-300 list-decimal list-inside">
+                        <li>Open <strong className="text-white">Settings</strong> on your Android phone.</li>
+                        <li>Tap <strong className="text-white">Network & Internet</strong> → <strong className="text-white">SIMs</strong>.</li>
+                        <li>Tap <strong className="text-white">Add SIM</strong> or <strong className="text-white">Download a SIM instead</strong>.</li>
+                        <li>Scan the QR code shown on the screen.</li>
+                        <li>Confirm and tap <strong className="text-white">Download & Activate</strong>.</li>
+                      </ol>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* ================= MODAL: MANUAL RE-SUBSCRIBE & RECHARGE ================= */}
+      {rechargeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="relative w-full max-w-lg bg-[#18191c] border-2 border-[#FF6A00]/40 text-white rounded-3xl shadow-2xl p-6 sm:p-7">
+            <div className="flex items-center justify-between pb-4 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-[#FF6A00]/15 flex items-center justify-center text-[#FF6A00]">
+                  <Zap className="w-5 h-5 fill-current" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Manual Renewal & Recharge</h3>
+                  <p className="text-xs text-zinc-400">NOWPayments Cryptocurrency Invoice</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRechargeModalOpen(false)}
+                className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Crypto Notice Banner */}
+            <div className="mt-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
+              <span className="font-bold block">Important: No Automatic Subscription</span>
+              <p className="text-zinc-300 text-[11px]">
+                Because we use NOWPayments crypto, renewals cannot be billed automatically. When coins deplete or your 30 days end, your number suspends. Re-subscribe manually anytime to resume service.
+              </p>
+            </div>
+
+            {/* Preset Amount Selector */}
+            <div className="mt-4 space-y-2">
+              <label className="block text-xs font-semibold text-zinc-300">
+                Choose Recharge Amount (Min $6.00, Max $100.00):
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {[6, 10, 20, 50].map((amt) => {
+                  const isSelected = Number(customRechargeAmount) === amt;
+                  return (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => {
+                        setRechargeAmount(amt);
+                        setCustomRechargeAmount(String(amt));
+                        setRechargeInvoiceUrl(null);
+                      }}
+                      className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#FF6A00] text-white border-[#FF6A00] shadow-md shadow-[#FF6A00]/25'
+                          : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10'
+                      }`}
+                    >
+                      ${amt}
+                      <span className="block text-[10px] font-normal opacity-80">
+                        +{amt * 50} coins
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Custom Input */}
+              <div className="pt-2">
+                <span className="text-[11px] text-zinc-400 block mb-1">Or enter custom amount ($USD):</span>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-zinc-400 text-xs font-bold">$</span>
+                  <input
+                    type="number"
+                    min="6"
+                    max="100"
+                    step="1"
+                    value={customRechargeAmount}
+                    onChange={(e) => {
+                      setCustomRechargeAmount(e.target.value);
+                      setRechargeInvoiceUrl(null);
+                    }}
+                    className="w-full pl-7 pr-3 py-2 rounded-xl text-xs font-bold bg-white/5 border border-white/10 text-white outline-none focus:border-[#FF6A00]"
+                    placeholder="e.g. 15"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Live Calculation Card */}
+            {(() => {
+              const val = Number(customRechargeAmount) || 6;
+              const coins = Math.round(val * 50);
+              const days = Math.round(val / 0.20);
+              const netFee = Number((val * 0.015).toFixed(2));
+              const total = Number((val + netFee).toFixed(2));
+
+              return (
+                <div className="mt-4 p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400">Recharge Amount:</span>
+                    <span className="font-mono font-bold text-white">${val.toFixed(2)} USD</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400">Network fee (NOWPayments 1.5%):</span>
+                    <span className="font-mono font-medium text-zinc-300">+${netFee.toFixed(2)} USD</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400">Coins Added:</span>
+                    <span className="font-mono font-bold text-amber-400">+{coins} coins</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400">Validity Extended:</span>
+                    <span className="font-mono font-bold text-emerald-400">+{days} days</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                    <span className="font-semibold text-zinc-200">Total at Checkout:</span>
+                    <span className="text-base font-bold text-amber-400 font-mono">${total.toFixed(2)} USD</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {rechargeNotice && (
+              <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+                {rechargeNotice}
+              </div>
+            )}
+
+            {/* Generated Invoice State */}
+            {rechargeInvoiceUrl ? (
+              <div className="mt-5 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-3">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Invoice Ready on NOWPayments</span>
+                </div>
+                <p className="text-zinc-300">
+                  Complete your payment via NOWPayments. Once confirmed on the blockchain, your coins are credited and expiration extended automatically.
+                </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <a
+                    href={rechargeInvoiceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold text-center flex items-center justify-center gap-1.5 hover:opacity-95 shadow-md"
+                  >
+                    <span>Open NOWPayments Invoice</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(rechargeInvoiceUrl)}
+                    className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium cursor-pointer"
+                    title="Copy checkout link"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-5 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRechargeModalOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold border border-white/10 hover:bg-white/5 cursor-pointer text-zinc-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isGeneratingRechargeInvoice}
+                  onClick={handleProceedWithRecharge}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white hover:opacity-95 cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-[#FF6A00]/25 disabled:opacity-50"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-current" />
+                  <span>{isGeneratingRechargeInvoice ? 'Creating Invoice...' : 'Generate Crypto Invoice'}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ================= MODAL: ADD CONTACT ================= */}
       {showAddContactModal && (
