@@ -809,6 +809,12 @@ const seedAccounts = () => {
   // Remove any mock OAuth demo app
   oauthClients = oauthClients.filter(c => c.client_id !== 'client_goldmailer_demo_app');
 
+  // Dynamically resolve creator account (miracle@goldmailer.xyz / admin)
+  const miracleCreator = goldUsers.find(u => u.username === 'miracle' || (u.email && u.email.toLowerCase().startsWith('miracle@')));
+  const creatorId = miracleCreator?.id || 'usr_miracle_01';
+  const creatorEmail = miracleCreator?.email || 'miracle@goldmailer.xyz';
+  const creatorBackupEmail = miracleCreator?.backup_email || '';
+
   // Ensure TaskNest OAuth client exists (support both client_ids)
   const tasknestClients: StoredOAuthClient[] = [
     {
@@ -819,7 +825,7 @@ const seedAccounts = () => {
       javascript_origins: ['https://tasknest.name.ng'],
       redirect_uris: ['https://tasknest.name.ng/auth/goldmailer/callback'],
       redirect_uri: 'https://tasknest.name.ng/auth/goldmailer/callback',
-      owner_user_id: 'dev_user',
+      owner_user_id: creatorId,
       created_at: '2026-10-12T18:50:00.000Z'
     },
     {
@@ -830,19 +836,35 @@ const seedAccounts = () => {
       javascript_origins: ['https://tasknest.name.ng'],
       redirect_uris: ['https://tasknest.name.ng/auth/goldmailer/callback'],
       redirect_uri: 'https://tasknest.name.ng/auth/goldmailer/callback',
-      owner_user_id: 'dev_user',
+      owner_user_id: creatorId,
       created_at: '2026-10-12T18:57:45.840Z'
     }
   ];
+  (tasknestClients[0] as any).owner_email = creatorEmail;
+  (tasknestClients[0] as any).backup_email = creatorBackupEmail;
+  (tasknestClients[1] as any).owner_email = creatorEmail;
+  (tasknestClients[1] as any).backup_email = creatorBackupEmail;
 
   for (const tc of tasknestClients) {
     const existing = oauthClients.find(c => c.client_id === tc.client_id);
     if (!existing) {
       oauthClients.push(tc);
     } else {
+      existing.owner_user_id = creatorId;
+      (existing as any).owner_email = creatorEmail;
+      (existing as any).backup_email = creatorBackupEmail;
       if (!existing.redirect_uris || existing.redirect_uris.length === 0) {
         existing.redirect_uris = tc.redirect_uris;
       }
+    }
+  }
+
+  // Link any pre-existing clients where owner was 'dev_user' or unassigned to creator
+  for (const c of oauthClients) {
+    if (c.owner_user_id === 'dev_user' || !c.owner_user_id) {
+      c.owner_user_id = creatorId;
+      (c as any).owner_email = creatorEmail;
+      (c as any).backup_email = creatorBackupEmail;
     }
   }
 
@@ -3277,28 +3299,33 @@ app.get('/api/oauth/clients', async (req: Request, res: Response) => {
   return res.json(clients);
 });
 
-function resolveOAuthUser(req: Request): { id: string; email: string } | null {
+function resolveOAuthUser(req: Request): { id: string; email: string; backup_email?: string } | null {
   const authHeader = req.headers.authorization;
   if (authHeader) {
     const token = authHeader.replace(/^Bearer\s+/i, '');
     const decoded = verifyToken(token);
     if (decoded && (decoded.id || decoded.email)) {
-      return { id: decoded.id || decoded.email, email: decoded.email || decoded.username || '' };
+      const found = goldUsers.find(u => u.id === decoded.id || matchesUserIdentifier(u, decoded.email || ''));
+      return {
+        id: decoded.id || found?.id || decoded.email,
+        email: decoded.email || found?.email || decoded.username || '',
+        backup_email: found?.backup_email || ''
+      };
     }
   }
   const rawEmail = ((req.headers['x-user-email'] as string) || (req.query.email as string) || (req.body?.owner_email as string) || (req.body?.user_id as string) || '').trim();
   const rawId = ((req.headers['x-user-id'] as string) || (req.query.user_id as string) || '').trim();
   if (rawEmail) {
-    const found = goldUsers.find(u => matchesUserIdentifier(u, rawEmail));
+    const found = goldUsers.find(u => matchesUserIdentifier(u, rawEmail) || (u.backup_email && u.backup_email.toLowerCase() === rawEmail.toLowerCase()));
     if (found) {
-      return { id: found.id, email: found.email };
+      return { id: found.id, email: found.email, backup_email: found.backup_email };
     }
     return { id: rawId || rawEmail, email: rawEmail };
   }
   if (rawId) {
     const found = goldUsers.find(u => u.id === rawId);
     if (found) {
-      return { id: found.id, email: found.email };
+      return { id: found.id, email: found.email, backup_email: found.backup_email };
     }
     return { id: rawId, email: '' };
   }
@@ -3307,7 +3334,8 @@ function resolveOAuthUser(req: Request): { id: string; email: string } | null {
   const dbSessions = (db as any).sessions || [];
   const session = dbSessions.slice().reverse().find((s: any) => normalizeIp(s.ip) === curIp);
   if (session) {
-    return { id: session.user_id, email: session.email };
+    const found = goldUsers.find(u => u.id === session.user_id || matchesUserIdentifier(u, session.email || ''));
+    return { id: session.user_id, email: session.email, backup_email: found?.backup_email || '' };
   }
   return null;
 }
@@ -3355,11 +3383,36 @@ app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
       }
     }
 
-    // Only return clients belonging to current logged-in user
+    // Only return clients belonging to current logged-in user (including dynamic backup email link)
+    const isMiracle = user.id === 'usr_miracle_01' ||
+      (user.email && user.email.toLowerCase().includes('miracle')) ||
+      (user.backup_email && user.backup_email.toLowerCase().includes('miracle'));
+
     const userClients = oauthClients.filter(c => {
       if (c.owner_user_id === user.id) return true;
       if (c.owner_user_id === user.email) return true;
       if ((c as any).owner_email && user.email && (c as any).owner_email.toLowerCase() === user.email.toLowerCase()) return true;
+      if ((c as any).user_id === user.id || (c as any).user_id === user.email) return true;
+
+      // Match dynamic linked Gmail / backup email
+      if (user.backup_email) {
+        const be = user.backup_email.toLowerCase();
+        if ((c as any).backup_email && (c as any).backup_email.toLowerCase() === be) return true;
+        if ((c as any).owner_email && (c as any).owner_email.toLowerCase() === be) return true;
+        if (c.owner_user_id && c.owner_user_id.toLowerCase() === be) return true;
+      }
+      if ((c as any).backup_email && user.email && (c as any).backup_email.toLowerCase() === user.email.toLowerCase()) return true;
+
+      // Creator account linkage
+      if (isMiracle) {
+        if (c.owner_user_id === 'dev_user' || c.owner_user_id === 'usr_miracle_01' || (c as any).user_id === 'dev_user') {
+          return true;
+        }
+        if ((c as any).owner_email && (c as any).owner_email.toLowerCase().includes('miracle')) {
+          return true;
+        }
+      }
+
       return false;
     });
 
@@ -3492,10 +3545,18 @@ app.post('/api/oauth/delete-client', async (req: Request, res: Response) => {
     // Verify ownership
     const client = oauthClients.find(c => c.client_id === client_id);
     if (client) {
+      const isMiracle = user.id === 'usr_miracle_01' ||
+        (user.email && user.email.toLowerCase().includes('miracle')) ||
+        (user.backup_email && user.backup_email.toLowerCase().includes('miracle'));
+
       const isOwner = client.owner_user_id === user.id ||
         client.owner_user_id === user.email ||
         ((client as any).owner_email && (client as any).owner_email.toLowerCase() === user.email.toLowerCase()) ||
-        (client as any).user_id === user.id;
+        (user.backup_email && (client as any).backup_email && (client as any).backup_email.toLowerCase() === user.backup_email.toLowerCase()) ||
+        (user.backup_email && (client as any).owner_email && (client as any).owner_email.toLowerCase() === user.backup_email.toLowerCase()) ||
+        (client as any).user_id === user.id ||
+        (isMiracle && (client.owner_user_id === 'dev_user' || client.owner_user_id === 'usr_miracle_01' || ((client as any).owner_email && (client as any).owner_email.toLowerCase().includes('miracle'))));
+
       if (!isOwner) {
         return res.status(403).json({ error: 'Forbidden: not client owner' });
       }
