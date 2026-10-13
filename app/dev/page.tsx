@@ -443,108 +443,16 @@ export default function DevPortal() {
             </div>
           ) : (
             <div className="space-y-4">
-              {apps.map((app) => (
-                <div
-                  key={app.client_id}
-                  className="p-4 sm:p-5 bg-white/5 border border-white/10 rounded-xl space-y-3.5 hover:border-white/20 transition-all"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-3">
-                    <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        {app.app_name}
-                        <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded text-zinc-300 font-normal">
-                          {app.app_type || "Web application"}
-                        </span>
-                      </h3>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        Created: {new Date(app.created_at || Date.now()).toLocaleDateString()}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={regeneratingId === app.client_id}
-                        onClick={() => handleRegenerateSecret(app)}
-                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-amber-300 hover:text-amber-200 font-medium transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                      >
-                        {regeneratingId === app.client_id ? (
-                          <>
-                            <span className="w-3 h-3 border-2 border-amber-300 border-t-transparent rounded-full animate-spin" />
-                            <span>Regenerating...</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>🔄</span>
-                            <span>REGENERATE SECRET</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs font-mono">
-                    {/* Client ID: Always visible and copyable */}
-                    <div className="flex items-center justify-between bg-black/40 p-2.5 rounded-lg border border-white/5">
-                      <div className="min-w-0 flex-1 mr-3">
-                        <span className="text-zinc-500 font-sans text-[11px] block">
-                          Client ID (Permanent):
-                        </span>
-                        <span className="text-zinc-200 truncate block font-semibold select-all">
-                          {app.client_id}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => copyToClipboard(app.client_id, `app_${app.client_id}`)}
-                        className="px-3 py-1.5 rounded-lg bg-[#FF6A00]/20 hover:bg-[#FF6A00]/30 text-[#FF8C42] font-sans text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer"
-                      >
-                        {copiedKey === `app_${app.client_id}` ? "✓ Copied" : "Copy Client ID"}
-                      </button>
-                    </div>
-
-                    {/* Client Secret: NOT viewable or copyable after modal closed */}
-                    <div className="flex items-center justify-between bg-black/40 p-2.5 rounded-lg border border-white/5">
-                      <div className="min-w-0 flex-1 mr-3">
-                        <span className="text-zinc-500 font-sans text-[11px] block">
-                          Client Secret:
-                        </span>
-                        <span className="text-zinc-500 tracking-widest select-none">
-                          ••••••••••••••••••••••••••••••••
-                        </span>
-                      </div>
-                      <span className="text-[11px] text-zinc-500 font-sans bg-white/5 px-2.5 py-1 rounded-lg">
-                        Hidden for security
-                      </span>
-                    </div>
-
-                    {/* Redirect URIs */}
-                    {app.redirect_uris && app.redirect_uris.length > 0 && (
-                      <div className="bg-black/30 p-2.5 rounded-lg border border-white/5 space-y-1">
-                        <span className="text-zinc-500 font-sans text-[11px]">Authorized Redirect URIs:</span>
-                        <div className="space-y-0.5">
-                          {app.redirect_uris.map((u: string, idx: number) => (
-                            <div key={idx} className="text-[#FF8C42] break-all text-[11px]">
-                              {u}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* JavaScript Origins */}
-                    {app.javascript_origins && app.javascript_origins.length > 0 && (
-                      <div className="bg-black/30 p-2.5 rounded-lg border border-white/5 space-y-1">
-                        <span className="text-zinc-500 font-sans text-[11px]">Authorized JavaScript Origins:</span>
-                        <div className="space-y-0.5">
-                          {app.javascript_origins.map((o: string, idx: number) => (
-                            <div key={idx} className="text-emerald-400 break-all text-[11px]">
-                              {o}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+              {apps.map(app=>(
+                <div key={app.client_id} style={{border:"1px solid #ccc", padding:12, margin:8, display:"flex", justifyContent:"space-between"}}>
+                  <div><b>{app.app_name}</b><br/><small>{app.client_id}</small></div>
+                  <div>
+                    <button onClick={()=>navigator.clipboard.writeText(app.client_id)}>Copy ID</button>
+                    <button onClick={async()=>{
+                      if(!confirm(`Delete ${app.app_name}? This will break any site using it.`)) return;
+                      await fetch('/api/oauth/delete-client',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({client_id:app.client_id})});
+                      loadApps();
+                    }} style={{background:'red', color:'white', marginLeft:8}}>DELETE</button>
                   </div>
                 </div>
               ))}
