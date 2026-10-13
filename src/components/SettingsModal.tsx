@@ -37,6 +37,7 @@ interface SettingsModalProps {
   onUserUpdated: (u: UserProfile) => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
+  initialTab?: 'general' | 'security' | 'devices';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -46,9 +47,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   user,
   onUserUpdated,
   darkMode,
-  onToggleDarkMode
+  onToggleDarkMode,
+  initialTab = 'devices'
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices'>('security');
+  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices'>(initialTab);
 
   // 2FA state
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(Boolean(user?.two_factor_enabled));
@@ -80,15 +82,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      if (initialTab) {
+        setActiveTab(initialTab);
+      }
       loadDevices();
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
 
   const loadDevices = async () => {
     setIsLoadingDevices(true);
     try {
       const list = await fetchUserDevices();
-      setDevices(list);
+      if (list && list.length > 0) {
+        setDevices(list);
+      } else {
+        // Fallback: Detect and display the current active device
+        const curUa = navigator.userAgent;
+        let browser = 'Browser';
+        if (curUa.includes('Edg')) browser = 'Edge';
+        else if (curUa.includes('Chrome')) browser = 'Chrome';
+        else if (curUa.includes('Safari')) browser = 'Safari';
+        else if (curUa.includes('Firefox')) browser = 'Firefox';
+
+        let os = 'Device';
+        if (curUa.includes('Android')) os = 'Android';
+        else if (curUa.includes('iPhone') || curUa.includes('iPad')) os = 'iOS';
+        else if (curUa.includes('Windows')) os = 'Windows 11';
+        else if (curUa.includes('Mac')) os = 'macOS';
+        else if (curUa.includes('Linux')) os = 'Linux';
+
+        setDevices([{
+          id: 'dev_curr_' + Date.now(),
+          user_id: user?.id || 'current',
+          device_name: `${browser} on ${os}`,
+          browser,
+          os,
+          ip: 'Current IP',
+          ip_address: 'Current IP',
+          city: '',
+          country: '',
+          location: 'Current Device',
+          last_active: new Date().toISOString(),
+          is_trusted: true,
+          is_current: true,
+          created_at: new Date().toISOString()
+        }]);
+      }
+    } catch {
+      setDevices([]);
     } finally {
       setIsLoadingDevices(false);
     }
@@ -548,12 +589,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               <div className="pt-2 text-center">
-                <a
-                  href="/account/security"
-                  className="text-xs text-[#FF8C42] hover:underline font-medium"
+                <button
+                  type="button"
+                  onClick={loadDevices}
+                  className="text-xs text-[#FF8C42] hover:underline font-medium cursor-pointer"
                 >
-                  View full Google-style Security & Devices page &rarr;
-                </a>
+                  Refresh Devices list &rarr;
+                </button>
               </div>
             </div>
           )}

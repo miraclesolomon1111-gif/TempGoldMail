@@ -3348,12 +3348,48 @@ app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request
 
     const curIp = getClientIP(req);
     const curUa = getClientUserAgent(req);
-    const rawSessions = await db.getSessionsForUser(userId || userIdentifier);
+    let rawSessions = await db.getSessionsForUser(userId || userIdentifier);
 
-    const sessions = rawSessions.map(s => {
-      const isCurrent = Boolean(
+    if (rawSessions.length === 0) {
+      const { device, browser, os, city, country: geoCountry } = await detectDeviceAndLocation(curUa, curIp);
+      const nowIso = new Date().toISOString();
+      const currentToken = sessionCookie || (authHeader ? authHeader.replace(/^Bearer\s+/i, '') : crypto.randomBytes(32).toString('hex'));
+      const userObj = goldUsers.find(u => u.id === userId || (u.email && u.email.toLowerCase() === userIdentifier.toLowerCase()));
+      const targetEmail = userObj?.email || (userIdentifier.includes('@') ? userIdentifier : '');
+      const newSess = await db.createSession({
+        id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+        session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+        user_id: userObj?.id || userId || userIdentifier,
+        email: targetEmail,
+        session_token: currentToken,
+        token: currentToken,
+        ip_address: curIp,
+        ip: curIp,
+        city: city || 'Unknown',
+        country: geoCountry || 'Unknown',
+        device: device || `${browser} on ${os}`,
+        browser: browser || 'Browser',
+        os: os || 'Device',
+        user_agent: curUa,
+        is_current: true,
+        last_active: nowIso,
+        created_at: nowIso
+      });
+      rawSessions = [newSess];
+    }
+
+    const hasExplicitCurrent = rawSessions.some(s =>
+      Boolean(
         (sessionCookie && (s.session_token === sessionCookie || s.token === sessionCookie)) ||
         (s.ip_address === curIp || s.ip === curIp)
+      )
+    );
+
+    const sessions = rawSessions.map((s, idx) => {
+      const isCurrent = Boolean(
+        (sessionCookie && (s.session_token === sessionCookie || s.token === sessionCookie)) ||
+        (s.ip_address === curIp || s.ip === curIp) ||
+        (!hasExplicitCurrent && idx === 0)
       );
       return {
         id: s.id || s.session_id,
@@ -3361,8 +3397,8 @@ app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request
         user_id: s.user_id,
         email: s.email,
         session_token: s.session_token,
-        ip_address: s.ip_address || s.ip || '127.0.0.1',
-        ip: s.ip_address || s.ip || '127.0.0.1',
+        ip_address: s.ip_address || s.ip || curIp || '127.0.0.1',
+        ip: s.ip_address || s.ip || curIp || '127.0.0.1',
         city: s.city || 'Unknown',
         country: s.country || 'Unknown',
         device: s.device || `${s.browser || 'Browser'} on ${s.os || 'Device'}`,

@@ -270,6 +270,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState<string>('');
   const [resetEmail, setResetEmail] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'security' | 'devices'>('devices');
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isOAuthDevOpen, setIsOAuthDevOpen] = useState(false);
 
@@ -344,6 +345,18 @@ export default function App() {
       // Developer Portal route
       if (path === '/dev' || path === '/developer' || path === '/dashboard/dev' || hash === '#dev' || hash === '#developer') {
         setIsOAuthDevOpen(true);
+      }
+
+      // Account Security & Devices route
+      if (
+        path === '/account/security' ||
+        path.startsWith('/account/security') ||
+        hash === '#security' ||
+        hash === '#account-security' ||
+        hash === '#devices'
+      ) {
+        setSettingsInitialTab('devices');
+        setIsSettingsOpen(true);
       }
     };
 
@@ -927,7 +940,10 @@ export default function App() {
             notifPermission={notifPermission}
             onToggleNotifications={handleToggleNotifications}
             activity={activity}
-            onOpenSecurity={() => setIsSettingsOpen(true)}
+            onOpenSecurity={() => {
+              setSettingsInitialTab('devices');
+              setIsSettingsOpen(true);
+            }}
           />
 
           {/* Push Notification Banner */}
@@ -989,69 +1005,74 @@ export default function App() {
               }}
             />
 
-            {/* Main Content Area: Phone Hub or Email Inbox */}
-            {mainTab === 'phone' ? (
-              <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-                <PhoneHubView
-                  user={user}
-                  darkMode={darkMode}
-                  onOpenEmail={() => {
-                    setMainTab('email');
-                    window.location.hash = '#email';
-                  }}
-                />
-              </main>
-            ) : (
-              <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <EmailListView
-                  currentFolder={currentFolder}
-                  emails={filteredEmails}
-                  drafts={drafts}
-                  activeEmail={activeEmail}
-                  isLoading={isLoadingEmails}
-                  isRefreshing={isSyncing}
-                  onRefresh={handleSyncEmails}
-                  onSelectEmail={(m) => setSelectedEmail(m)}
-                  onSelectDraft={handleSelectDraft}
-                  onDeleteDraft={handleDeleteDraft}
-                  onToggleStar={handleToggleStar}
-                  onOpenCompose={handleOpenCompose}
-                  isCopied={isCopied}
-                  onCopyEmail={handleCopyEmail}
-                  darkMode={darkMode}
-                  onSelectFolder={(folder) => setCurrentFolder(folder)}
-                  unreadCounts={unreadCounts}
-                  onMoveToTrash={handleMoveToTrash}
-                  onDeletePermanently={handleDeleteEmail}
-                  onRestoreEmail={handleRestoreEmail}
-                  onBatchMoveToTrash={handleBatchMoveToTrash}
-                  onBatchDeletePermanently={handleBatchDeletePermanently}
-                  onBatchRestore={handleBatchRestore}
-                  onEmptyTrash={handleEmptyTrash}
-                />
-              </main>
-            )}
+            {/* Main Content Area: Phone Hub or Email Inbox + Activity Footer */}
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              {mainTab === 'phone' ? (
+                <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+                  <PhoneHubView
+                    user={user}
+                    darkMode={darkMode}
+                    onOpenEmail={() => {
+                      setMainTab('email');
+                      window.location.hash = '#email';
+                    }}
+                  />
+                </main>
+              ) : (
+                <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  <EmailListView
+                    currentFolder={currentFolder}
+                    emails={filteredEmails}
+                    drafts={drafts}
+                    activeEmail={activeEmail}
+                    isLoading={isLoadingEmails}
+                    isRefreshing={isSyncing}
+                    onRefresh={handleSyncEmails}
+                    onSelectEmail={(m) => setSelectedEmail(m)}
+                    onSelectDraft={handleSelectDraft}
+                    onDeleteDraft={handleDeleteDraft}
+                    onToggleStar={handleToggleStar}
+                    onOpenCompose={handleOpenCompose}
+                    isCopied={isCopied}
+                    onCopyEmail={handleCopyEmail}
+                    darkMode={darkMode}
+                    onSelectFolder={(folder) => setCurrentFolder(folder)}
+                    unreadCounts={unreadCounts}
+                    onMoveToTrash={handleMoveToTrash}
+                    onDeletePermanently={handleDeleteEmail}
+                    onRestoreEmail={handleRestoreEmail}
+                    onBatchMoveToTrash={handleBatchMoveToTrash}
+                    onBatchDeletePermanently={handleBatchDeletePermanently}
+                    onBatchRestore={handleBatchRestore}
+                    onEmptyTrash={handleEmptyTrash}
+                  />
+                </main>
+              )}
 
-            {/* Gmail-style Last Account Activity Footer (Requirement 5) */}
-            {activity?.ip && (
-              <div className={`px-4 py-1.5 border-t text-[11px] flex items-center justify-between ${
-                darkMode ? 'border-white/5 bg-[#151619]/60 text-zinc-400' : 'border-orange-100 bg-orange-50/50 text-zinc-600'
-              }`}>
-                <span className="hidden sm:inline">GoldMailer security protection active</span>
-                <div className="flex items-center gap-2 ml-auto">
-                  <span>
-                    Last account activity: <strong className="font-mono text-white dark:text-zinc-200">IP {activity.ip} ({activity.city || activity.country || 'Location'})</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setIsSettingsOpen(true)}
-                    className="text-[#FF8C42] hover:underline font-semibold cursor-pointer"
-                  >
-                    Details
-                  </button>
+              {/* Gmail-style Last Account Activity Footer (Requirement 5) */}
+              {activity?.ip && (
+                <div className={`px-4 py-1.5 border-t text-[11px] flex items-center justify-between flex-shrink-0 ${
+                  darkMode ? 'border-white/5 bg-[#151619]/90 text-zinc-400' : 'border-orange-100 bg-orange-50/80 text-zinc-600'
+                }`}>
+                  <span className="hidden sm:inline">GoldMailer security protection active</span>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <span>
+                      Last account activity: <strong className="font-mono text-white dark:text-zinc-200">IP {activity.ip} ({activity.city || activity.country || 'Location'})</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettingsInitialTab('devices');
+                        setIsSettingsOpen(true);
+                      }}
+                      className="text-[#FF8C42] hover:underline font-semibold cursor-pointer"
+                    >
+                      Details
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Down-side Navigation Bar (Email & Phone Tabs) - Compact & Sleek */}
@@ -1254,6 +1275,7 @@ export default function App() {
         }}
         darkMode={darkMode}
         onToggleDarkMode={toggleDarkMode}
+        initialTab={settingsInitialTab}
       />
 
       {/* Admin Panel Modal */}
