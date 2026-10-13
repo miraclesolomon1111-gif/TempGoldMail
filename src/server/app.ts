@@ -712,6 +712,9 @@ const seedAccounts = () => {
   if (existingMiracle) {
     existingMiracle.email = miracleEmail;
     existingMiracle.password_hash = defaultPasswordHash;
+    if (existingMiracle.phone === '+234 801 234 5678') existingMiracle.phone = '';
+    if (existingMiracle.recovery_phone === '+234 801 234 5678') existingMiracle.recovery_phone = '';
+    if (existingMiracle.backup_email === 'miracle.backup@gmail.com') existingMiracle.backup_email = '';
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingMiracle.is_banned === undefined) {
       existingMiracle.is_banned = false;
@@ -726,9 +729,9 @@ const seedAccounts = () => {
       last_name: 'Solomon',
       dob: '1998-05-14',
       gender: 'Male',
-      phone: '+234 801 234 5678',
-      recovery_phone: '+234 801 234 5678',
-      backup_email: 'miracle.backup@gmail.com',
+      phone: '',
+      recovery_phone: '',
+      backup_email: '',
       two_factor_enabled: false,
       backup_codes: generateBackupCodes(),
       role: 'admin',
@@ -744,17 +747,19 @@ const seedAccounts = () => {
   const dorisUsername = 'dorisokoh109';
   const dorisEmail = 'dorisokoh109@goldmailer.xyz';
   const existingDoris = goldUsers.find(
-    u => u.username.toLowerCase() === dorisUsername || u.email.toLowerCase() === dorisEmail || (u.backup_email && u.backup_email.toLowerCase() === 'dorisokoh109@gmail.com')
+    u => u.username.toLowerCase() === dorisUsername || u.email.toLowerCase() === dorisEmail
   );
   if (existingDoris) {
     existingDoris.email = dorisEmail;
     existingDoris.password_hash = defaultPasswordHash;
     existingDoris.role = 'user';
+    if (existingDoris.phone === '+1 555 019 2834') existingDoris.phone = '';
+    if (existingDoris.recovery_phone === '+1 555 019 2834') existingDoris.recovery_phone = '';
+    if (existingDoris.backup_email === 'dorisokoh109@gmail.com') existingDoris.backup_email = '';
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingDoris.is_banned === undefined) {
       existingDoris.is_banned = false;
     }
-    if (!existingDoris.backup_email) existingDoris.backup_email = 'dorisokoh109@gmail.com';
   } else {
     goldUsers.push({
       id: 'usr_doris_01',
@@ -765,9 +770,9 @@ const seedAccounts = () => {
       last_name: 'Okoh',
       dob: '1999-07-22',
       gender: 'Female',
-      phone: '+1 555 019 2834',
-      recovery_phone: '+1 555 019 2834',
-      backup_email: 'dorisokoh109@gmail.com',
+      phone: '',
+      recovery_phone: '',
+      backup_email: '',
       two_factor_enabled: false,
       backup_codes: generateBackupCodes(),
       role: 'user',

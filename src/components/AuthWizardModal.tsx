@@ -240,10 +240,10 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       if (res.requires_2fa) {
         setTempAuthToken(res.temp_auth_token || '');
         setTwoFaTargetEmail(res.email || loginIdentifier);
-        setMaskedBackupEmail(res.masked_backup_email || '');
-        if (res.backup_email) {
-          setBackupEmailInput(res.backup_email);
-        }
+        const rawMasked = res.masked_backup_email || '';
+        const isDummy = rawMasked.includes('m***p') || rawMasked.includes('d***9') || rawMasked.includes('a***p');
+        setMaskedBackupEmail(isDummy ? '' : rawMasked);
+        setBackupEmailInput('');
         setTwoFaMethod('totp');
         setShowTryAnotherWay(false);
         setEmailCodeSent(false);
@@ -798,7 +798,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                           autoFocus
                           value={backupEmailInput}
                           onChange={(e) => setBackupEmailInput(e.target.value)}
-                          placeholder="example@gmail.com"
+                          placeholder="Enter your backup Gmail (e.g. name@gmail.com)"
                           className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00] focus:ring-1 focus:ring-[#FF6A00]"
                         />
                         <Mail className="absolute right-3.5 top-3 w-4 h-4 text-zinc-500" />

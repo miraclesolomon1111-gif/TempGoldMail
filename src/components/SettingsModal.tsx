@@ -66,8 +66,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [verifyCode, setVerifyCode] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>(user?.backup_codes || []);
   const [copiedCodes, setCopiedCodes] = useState(false);
-  const [recoveryPhone, setRecoveryPhone] = useState(user?.phone || user?.recovery_phone || '');
-  const [backupEmail, setBackupEmail] = useState(user?.backup_email || '');
+  const sanitizeRecoveryPhone = (val?: string) => {
+    if (!val) return '';
+    if (val === '+234 801 234 5678' || val === '+1 555 019 2834' || val === '+1 267 230 1662') return '';
+    return val;
+  };
+
+  const sanitizeBackupEmail = (val?: string) => {
+    if (!val) return '';
+    if (val === 'miracle.backup@gmail.com' || val === 'dorisokoh109@gmail.com' || val === 'admin.backup@goldmailer.xyz') return '';
+    return val;
+  };
+
+  const [recoveryPhone, setRecoveryPhone] = useState(sanitizeRecoveryPhone(user?.recovery_phone || user?.phone));
+  const [backupEmail, setBackupEmail] = useState(sanitizeBackupEmail(user?.backup_email));
 
   // Devices state
   const [devices, setDevices] = useState<UserDevice[]>([]);
@@ -81,8 +93,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (user) {
       setTwoFactorEnabled(Boolean(user.two_factor_enabled));
       setBackupCodes(user.backup_codes || []);
-      setRecoveryPhone(user.phone || user.recovery_phone || '');
-      setBackupEmail(user.backup_email || '');
+      setRecoveryPhone(sanitizeRecoveryPhone(user.recovery_phone || user.phone));
+      setBackupEmail(sanitizeBackupEmail(user.backup_email));
     }
   }, [user]);
 
@@ -500,8 +512,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="tel"
                       value={recoveryPhone}
                       onChange={(e) => setRecoveryPhone(e.target.value)}
-                      placeholder="+234 801 234 5678"
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00]"
+                      placeholder="Add recovery phone (e.g. +1 555 000 0000)"
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00] placeholder-zinc-600 text-xs"
                     />
                   </div>
                   <div>
@@ -510,8 +522,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="email"
                       value={backupEmail}
                       onChange={(e) => setBackupEmail(e.target.value)}
-                      placeholder="backup@gmail.com"
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00]"
+                      placeholder="Add recovery email (e.g. name@gmail.com)"
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00] placeholder-zinc-600 text-xs"
                     />
                   </div>
                 </div>
