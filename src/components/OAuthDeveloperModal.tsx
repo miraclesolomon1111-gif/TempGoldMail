@@ -20,7 +20,8 @@ import {
   regenerateOAuthClientSecret,
   authorizeOAuthConsent,
   exchangeOAuthToken,
-  fetchOAuthUserInfo
+  fetchOAuthUserInfo,
+  getHeaders
 } from '../lib/api';
 
 interface OAuthDeveloperModalProps {
@@ -59,12 +60,12 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
     if (isOpen) {
       loadClients();
     }
-  }, [isOpen]);
+  }, [isOpen, activeEmail]);
 
   const loadClients = async () => {
     setIsLoading(true);
     try {
-      const data = await fetchOAuthClients();
+      const data = await fetchOAuthClients(activeEmail);
       setClients(data);
       if (data.length > 0 && !testSelectedClient) {
         setTestSelectedClient(data[0].client_id);
@@ -81,14 +82,17 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
     try {
       const cleanOrigins = origins.filter(Boolean);
       const cleanRedirects = redirects.filter(Boolean);
+      const headers = getHeaders() as Record<string, string>;
       const res = await fetch('/api/oauth/create-client', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...headers, 'x-user-email': activeEmail },
         body: JSON.stringify({
           app_name: appName.trim(),
           app_type: appType,
           javascript_origins: cleanOrigins,
-          redirect_uris: cleanRedirects
+          redirect_uris: cleanRedirects,
+          user_id: activeEmail,
+          owner_email: activeEmail
         })
       });
       const data = await res.json();
@@ -262,10 +266,34 @@ export const OAuthDeveloperModal: React.FC<OAuthDeveloperModalProps> = ({
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        onClick={() => copyToClipboard(c.client_id, c.client_id)}
+                        className="text-[10px] bg-white/10 hover:bg-white/15 text-zinc-300 px-2 py-1 rounded transition-colors cursor-pointer"
+                      >
+                        Copy ID
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleRegenerateSecret(c.client_id)}
-                        className="text-[10px] bg-white/10 hover:bg-white/15 text-amber-300 px-2 py-1 rounded transition-colors"
+                        className="text-[10px] bg-white/10 hover:bg-white/15 text-amber-300 px-2 py-1 rounded transition-colors cursor-pointer"
                       >
                         Regenerate Secret
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!confirm(`Delete ${c.app_name}? This will break any site using it.`)) return;
+                          const headers = getHeaders() as Record<string, string>;
+                          await fetch('/api/oauth/delete-client', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', ...headers, 'x-user-email': activeEmail },
+                            body: JSON.stringify({ client_id: c.client_id })
+                          });
+                          loadClients();
+                        }}
+                        style={{ background: 'red', color: 'white', marginLeft: 8 }}
+                        className="text-[10px] bg-red-600 hover:bg-red-700 text-white font-bold px-2.5 py-1 rounded transition-colors cursor-pointer"
+                      >
+                        DELETE
                       </button>
                       <span className="text-[10px] text-zinc-400">
                         {new Date(c.created_at).toLocaleDateString()}

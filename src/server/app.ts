@@ -3277,14 +3277,55 @@ app.get('/api/oauth/clients', async (req: Request, res: Response) => {
   return res.json(clients);
 });
 
-// List all clients for dev portal
+function resolveOAuthUser(req: Request): { id: string; email: string } | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const decoded = verifyToken(token);
+    if (decoded && (decoded.id || decoded.email)) {
+      return { id: decoded.id || decoded.email, email: decoded.email || decoded.username || '' };
+    }
+  }
+  const rawEmail = ((req.headers['x-user-email'] as string) || (req.query.email as string) || (req.body?.owner_email as string) || (req.body?.user_id as string) || '').trim();
+  const rawId = ((req.headers['x-user-id'] as string) || (req.query.user_id as string) || '').trim();
+  if (rawEmail) {
+    const found = goldUsers.find(u => matchesUserIdentifier(u, rawEmail));
+    if (found) {
+      return { id: found.id, email: found.email };
+    }
+    return { id: rawId || rawEmail, email: rawEmail };
+  }
+  if (rawId) {
+    const found = goldUsers.find(u => u.id === rawId);
+    if (found) {
+      return { id: found.id, email: found.email };
+    }
+    return { id: rawId, email: '' };
+  }
+  const rawIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+  const curIp = normalizeIp(rawIp);
+  const dbSessions = (db as any).sessions || [];
+  const session = dbSessions.slice().reverse().find((s: any) => normalizeIp(s.ip) === curIp);
+  if (session) {
+    return { id: session.user_id, email: session.email };
+  }
+  return null;
+}
+
+// List clients for dev portal - Private to owner only
 app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
   try {
+    const user = resolveOAuthUser(req);
+    if (!user) {
+      return res.json({ clients: [] });
+    }
+
     if (supabase) {
       try {
         const { data } = await supabase
           .from('oauth_clients')
           .select('*')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false });
         if (Array.isArray(data)) {
           for (const item of data) {
@@ -3298,11 +3339,14 @@ app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
                 javascript_origins: Array.isArray(item.javascript_origins) ? item.javascript_origins : [],
                 redirect_uris: Array.isArray(item.redirect_uris) ? item.redirect_uris : [],
                 redirect_uri: Array.isArray(item.redirect_uris) && item.redirect_uris[0] ? item.redirect_uris[0] : '',
-                owner_user_id: item.user_id || 'dev_user',
+                owner_user_id: item.user_id || user.id,
                 created_at: item.created_at || new Date().toISOString()
               });
+              (oauthClients[0] as any).owner_email = item.owner_email || user.email;
             } else {
               oauthClients[idx].client_secret = item.client_secret;
+              if (item.user_id) oauthClients[idx].owner_user_id = item.user_id;
+              if (item.owner_email) (oauthClients[idx] as any).owner_email = item.owner_email;
             }
           }
         }
@@ -3311,19 +3355,23 @@ app.get('/api/oauth/list-clients', async (req: Request, res: Response) => {
       }
     }
 
-    // Mask client_secret for Google OAuth console security compliance (only visible upon creation or regeneration)
-    const sanitizedClients = oauthClients.map(c => ({
+    // Only return clients belonging to current logged-in user
+    const userClients = oauthClients.filter(c => {
+      if (c.owner_user_id === user.id) return true;
+      if (c.owner_user_id === user.email) return true;
+      if ((c as any).owner_email && user.email && (c as any).owner_email.toLowerCase() === user.email.toLowerCase()) return true;
+      return false;
+    });
+
+    // Mask client_secret for Google OAuth console security compliance
+    const sanitizedClients = userClients.map(c => ({
       ...c,
       client_secret: '••••••••••••••••••••••••••••••••'
     }));
 
     return res.json({ clients: sanitizedClients });
   } catch (err: any) {
-    const sanitizedClients = oauthClients.map(c => ({
-      ...c,
-      client_secret: '••••••••••••••••••••••••••••••••'
-    }));
-    return res.status(500).json({ clients: sanitizedClients, error: err.message });
+    return res.status(500).json({ clients: [], error: err.message });
   }
 });
 
@@ -3358,15 +3406,21 @@ app.post('/api/oauth/regenerate-secret', async (req: Request, res: Response) => 
   }
 });
 
-// Create client standard endpoint (as specified by Google Console style Dev Portal)
+// Create client standard endpoint - dynamically records owner
 app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
   try {
-    const { app_name, app_type, javascript_origins, redirect_uris, user_id } = req.body;
-    const client_id = 'gld_' + crypto.randomBytes(12).toString('hex');
-    const client_secret = 'sec_' + crypto.randomBytes(24).toString('hex');
+    const user = resolveOAuthUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Not auth' });
+    }
+
+    const { app_name, app_type, javascript_origins, redirect_uris } = req.body;
+    const random = crypto.randomBytes(12).toString('hex');
+    const secRandom = crypto.randomBytes(24).toString('hex');
+    const client_id = 'gld_' + random;
+    const client_secret = 'sec_' + secRandom;
     const appType = app_type || 'Web application';
     const appName = (app_name || 'My App').trim();
-    const userId = user_id || 'dev_user';
     const createdAt = new Date().toISOString();
 
     const cleanOrigins = Array.isArray(javascript_origins)
@@ -3385,7 +3439,8 @@ app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
           app_type: appType,
           javascript_origins: cleanOrigins,
           redirect_uris: cleanRedirects,
-          user_id: userId,
+          user_id: user.id,
+          owner_email: user.email,
           created_at: createdAt
         });
       } catch (err: any) {
@@ -3401,9 +3456,10 @@ app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
       javascript_origins: cleanOrigins,
       redirect_uris: cleanRedirects,
       redirect_uri: cleanRedirects[0] || '',
-      owner_user_id: userId,
+      owner_user_id: user.id,
       created_at: createdAt
     };
+    (newClient as any).owner_email = user.email;
 
     oauthClients.unshift(newClient);
     saveData();
@@ -3415,9 +3471,56 @@ app.post('/api/oauth/create-client', async (req: Request, res: Response) => {
       app_type: appType,
       javascript_origins: cleanOrigins,
       redirect_uris: cleanRedirects,
-      user_id: userId,
+      user_id: user.id,
+      owner_email: user.email,
       created_at: createdAt
     });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete client API endpoint
+app.post('/api/oauth/delete-client', async (req: Request, res: Response) => {
+  try {
+    const { client_id } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'Missing client_id' });
+
+    const user = resolveOAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Not auth' });
+
+    // Verify ownership
+    const client = oauthClients.find(c => c.client_id === client_id);
+    if (client) {
+      const isOwner = client.owner_user_id === user.id ||
+        client.owner_user_id === user.email ||
+        ((client as any).owner_email && (client as any).owner_email.toLowerCase() === user.email.toLowerCase()) ||
+        (client as any).user_id === user.id;
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Forbidden: not client owner' });
+      }
+    }
+
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('oauth_clients')
+          .delete()
+          .eq('client_id', client_id)
+          .eq('user_id', user.id);
+        if (error) return res.status(400).json({ error: error.message });
+      } catch (err: any) {
+        console.warn('Supabase delete client note:', err.message);
+      }
+    }
+
+    const idx = oauthClients.findIndex(c => c.client_id === client_id);
+    if (idx !== -1) {
+      oauthClients.splice(idx, 1);
+      saveData();
+    }
+
+    return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

@@ -31,9 +31,25 @@ export default function DevPortal() {
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  const getAuthHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (typeof window !== "undefined") {
+      const token = localStorage.getItem("goldmail_token") || localStorage.getItem("goldmailer_token");
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const userRaw = localStorage.getItem("goldmail_user");
+      try {
+        if (userRaw) {
+          const u = JSON.parse(userRaw);
+          if (u.email) headers["x-user-email"] = u.email;
+        }
+      } catch {}
+    }
+    return headers;
+  };
+
   const loadApps = async () => {
     try {
-      const res = await fetch("/api/oauth/list-clients");
+      const res = await fetch("/api/oauth/list-clients", { headers: getAuthHeaders() });
       const data = await res.json();
       setApps(data.clients || []);
     } catch (e) {
@@ -57,7 +73,7 @@ export default function DevPortal() {
       const cleanRedirects = redirects.filter(Boolean);
       const res = await fetch("/api/oauth/create-client", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           app_name: appName.trim(),
           app_type: appType,

@@ -358,7 +358,7 @@ export function setStoredUser(user: UserProfile | null): void {
   }
 }
 
-function getHeaders(extra: HeadersInit = {}): HeadersInit {
+export function getHeaders(extra: HeadersInit = {}): HeadersInit {
   const token = getAuthToken();
   return {
     'Content-Type': 'application/json',
@@ -940,14 +940,18 @@ export async function batchEmailAction(
 
 // ================= OAUTH 2.0 PROVIDER =================
 
-export async function fetchOAuthClients(): Promise<OAuthClient[]> {
+export async function fetchOAuthClients(activeEmail?: string): Promise<OAuthClient[]> {
   try {
-    const res = await fetch('/api/oauth/list-clients');
+    const headers: Record<string, string> = { ...(getHeaders() as Record<string, string>) };
+    if (activeEmail) {
+      headers['x-user-email'] = activeEmail;
+    }
+    const res = await fetch('/api/oauth/list-clients', { headers });
     const data = await safeJsonParse(res);
     if (data && Array.isArray(data.clients)) {
       return data.clients;
     }
-    const res2 = await fetch('/api/oauth/clients', { headers: getHeaders() });
+    const res2 = await fetch('/api/oauth/clients', { headers });
     return await safeJsonParse(res2);
   } catch {
     return [];
