@@ -21,6 +21,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { COUNTRIES_LIST } from '../lib/emailGenerator';
+import { PrivacyModal, TermsModal } from './LegalModals';
 import {
   checkUsernameAvailability,
   suggestUsernames,
@@ -85,6 +86,11 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   const [otpCode, setOtpCode] = useState('');
   const [otpVerified, setOtpVerified] = useState(false);
   const [mockOtpHint, setMockOtpHint] = useState<string | null>(null);
+
+  // Terms and Privacy Agreement
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
 
   // Step 6: Success & Backup Codes
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
@@ -170,6 +176,10 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
 
   // Step 5: Direct account creation without phone verification code
   const handleCompleteRegistration = async () => {
+    if (!agreedToTerms) {
+      setError('Please agree to the Terms of Service and Privacy Policy to create your account.');
+      return;
+    }
     setError(null);
     setIsLoading(true);
     try {
@@ -1056,6 +1066,37 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                   <p className="text-[11px] text-zinc-400 mt-1">No verification code required. Your account is secured with your permanent password.</p>
                 </div>
 
+                {/* Privacy and Terms Agreement Field */}
+                <div className="pt-2 border-t border-white/10">
+                  <label className="flex items-start gap-2.5 cursor-pointer text-xs text-zinc-300 select-none group">
+                    <input
+                      type="checkbox"
+                      checked={agreedToTerms}
+                      onChange={(e) => setAgreedToTerms(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded accent-[#FF6A00] cursor-pointer"
+                      required
+                    />
+                    <span className="leading-relaxed">
+                      I agree to the{' '}
+                      <button
+                        type="button"
+                        onClick={() => setShowTermsModal(true)}
+                        className="text-[#FF8C42] hover:underline font-medium cursor-pointer inline"
+                      >
+                        Terms of Service
+                      </button>{' '}
+                      and{' '}
+                      <button
+                        type="button"
+                        onClick={() => setShowPrivacyModal(true)}
+                        className="text-[#FF8C42] hover:underline font-medium cursor-pointer inline"
+                      >
+                        Privacy Policy
+                      </button>
+                    </span>
+                  </label>
+                </div>
+
                 <div className="flex gap-2 pt-2">
                   <button
                     type="button"
@@ -1066,9 +1107,9 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={isLoading}
+                    disabled={isLoading || !agreedToTerms}
                     onClick={handleCompleteRegistration}
-                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white font-semibold text-xs shadow-md shadow-[#FF6A00]/25 flex items-center justify-center gap-1.5 disabled:opacity-50 transition-all"
+                    className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white font-semibold text-xs shadow-md shadow-[#FF6A00]/25 flex items-center justify-center gap-1.5 disabled:opacity-50 transition-all cursor-pointer"
                   >
                     {isLoading ? (
                       <>
@@ -1149,6 +1190,10 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
           </div>
         )}
       </div>
+
+      {/* Embedded Terms & Privacy Modals */}
+      <PrivacyModal isOpen={showPrivacyModal} onClose={() => setShowPrivacyModal(false)} />
+      <TermsModal isOpen={showTermsModal} onClose={() => setShowTermsModal(false)} />
     </div>
   );
 };

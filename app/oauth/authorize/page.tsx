@@ -14,6 +14,10 @@ interface OAuthAccount {
   email: string;
   username: string;
   name?: string;
+  first_name?: string;
+  last_name?: string;
+  dob?: string;
+  date_of_birth?: string;
   avatar_url?: string;
 }
 
@@ -244,6 +248,13 @@ export default function OAuthAuthorizePage() {
         target.searchParams.set("goldmailer_id", selectedAccount.id);
         target.searchParams.set("user_id", selectedAccount.id);
         target.searchParams.set("email", selectedAccount.email);
+        if (selectedAccount.name) target.searchParams.set("name", selectedAccount.name);
+        if (selectedAccount.username) target.searchParams.set("username", selectedAccount.username);
+        const dobVal = selectedAccount.dob || selectedAccount.date_of_birth;
+        if (dobVal) {
+          target.searchParams.set("dob", dobVal);
+          target.searchParams.set("date_of_birth", dobVal);
+        }
         if (params.state) target.searchParams.set("state", params.state);
         try {
           if (window.top && window.top !== window.self) {
@@ -454,7 +465,10 @@ export default function OAuthAuthorizePage() {
           </div>
           <div className="text-white font-medium flex items-center gap-2">
             <span className="text-[#FF8C42]">•</span>
-            <span>Permanent GoldMailer ID & profile</span>
+            <span>Personal Information: Name, username, date of birth, and account details</span>
+          </div>
+          <div className="text-[11px] text-zinc-400 pt-1 border-t border-white/5">
+            By clicking <strong className="text-white font-semibold">Agree and Continue</strong>, you authorize this application to access your GoldMailer personal information.
           </div>
         </div>
 
@@ -473,9 +487,7 @@ export default function OAuthAuthorizePage() {
           >
             {approving
               ? "Redirecting..."
-              : selectedAccount
-              ? `Continue as ${(selectedAccount.name || selectedAccount.username).split(" ")[0]}`
-              : "Allow & Continue"}
+              : "Agree and Continue"}
           </button>
         </div>
       </div>

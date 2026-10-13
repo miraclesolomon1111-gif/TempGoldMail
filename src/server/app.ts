@@ -4027,6 +4027,12 @@ app.get('/api/oauth/accounts', async (req: Request, res: Response) => {
     email: u.email,
     username: u.username,
     name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username,
+    first_name: u.first_name || '',
+    last_name: u.last_name || '',
+    dob: u.dob || '',
+    date_of_birth: u.dob || '',
+    gender: u.gender || '',
+    phone: u.phone || '',
     avatar_url: u.avatar_url || ''
   }));
 
@@ -4077,6 +4083,7 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
 
     saveData();
 
+    const fullName = `${selectedUser.first_name || ''} ${selectedUser.last_name || ''}`.trim() || selectedUser.username;
     let redirectTargetUrl = chosenRedirect;
     try {
       const redirectTarget = new URL(chosenRedirect);
@@ -4088,10 +4095,18 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
       if (finalEmail) {
         redirectTarget.searchParams.set('email', finalEmail);
       }
+      redirectTarget.searchParams.set('name', fullName);
+      if (selectedUser.username) {
+        redirectTarget.searchParams.set('username', selectedUser.username);
+      }
+      if (selectedUser.dob) {
+        redirectTarget.searchParams.set('dob', selectedUser.dob);
+        redirectTarget.searchParams.set('date_of_birth', selectedUser.dob);
+      }
       if (state) redirectTarget.searchParams.set('state', String(state));
       redirectTargetUrl = redirectTarget.toString();
     } catch {
-      redirectTargetUrl = `${chosenRedirect}?code=${code}&goldmailer_id=${encodeURIComponent(finalUserId)}&user_id=${encodeURIComponent(finalUserId)}&email=${encodeURIComponent(finalEmail)}${state ? `&state=${encodeURIComponent(String(state))}` : ''}`;
+      redirectTargetUrl = `${chosenRedirect}?code=${code}&goldmailer_id=${encodeURIComponent(finalUserId)}&user_id=${encodeURIComponent(finalUserId)}&email=${encodeURIComponent(finalEmail)}&name=${encodeURIComponent(fullName)}&username=${encodeURIComponent(selectedUser.username || '')}&dob=${encodeURIComponent(selectedUser.dob || '')}&date_of_birth=${encodeURIComponent(selectedUser.dob || '')}${state ? `&state=${encodeURIComponent(String(state))}` : ''}`;
     }
 
     return res.json({
@@ -4099,7 +4114,24 @@ app.post('/api/oauth/authorize', async (req: Request, res: Response) => {
       redirect_url: redirectTargetUrl,
       code,
       goldmailer_id: finalUserId,
-      email: finalEmail
+      user_id: finalUserId,
+      email: finalEmail,
+      name: fullName,
+      username: selectedUser.username,
+      dob: selectedUser.dob || '',
+      date_of_birth: selectedUser.dob || '',
+      user: {
+        id: finalUserId,
+        email: finalEmail,
+        name: fullName,
+        first_name: selectedUser.first_name || '',
+        last_name: selectedUser.last_name || '',
+        username: selectedUser.username,
+        dob: selectedUser.dob || '',
+        date_of_birth: selectedUser.dob || '',
+        gender: selectedUser.gender,
+        phone: selectedUser.phone
+      }
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -4154,7 +4186,18 @@ app.post(['/api/oauth/token', '/oauth/token'], async (req: Request, res: Respons
         goldmailer_id: user.id,
         email: user.email,
         name: `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.username,
-        username: user.username
+        first_name: user.first_name || '',
+        given_name: user.first_name || '',
+        last_name: user.last_name || '',
+        family_name: user.last_name || '',
+        username: user.username,
+        preferred_username: user.username,
+        dob: user.dob || '',
+        date_of_birth: user.dob || '',
+        birthdate: user.dob || '',
+        gender: user.gender || undefined,
+        phone: user.phone || undefined,
+        avatar_url: user.avatar_url || ''
       }
     });
   } catch (err: any) {
@@ -4163,7 +4206,7 @@ app.post(['/api/oauth/token', '/oauth/token'], async (req: Request, res: Respons
 });
 
 
-app.all(['/api/oauth/userinfo', '/oauth/userinfo'], (req: Request, res: Response) => {
+app.all(['/api/oauth/userinfo', '/oauth/userinfo'], async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ error: 'invalid_token' });
@@ -4180,21 +4223,35 @@ app.all(['/api/oauth/userinfo', '/oauth/userinfo'], (req: Request, res: Response
 
     if (!userId) return res.status(401).json({ error: 'invalid_token' });
 
-    const user = goldUsers.find(u => u.id === userId);
+    let user = goldUsers.find(u => u.id === userId);
+    if (!user) {
+      user = (await db.findAccount(userId)) as any;
+    }
     if (!user) return res.status(404).json({ error: 'user_not_found' });
+
+    const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.username;
 
     return res.json({
       sub: user.id,
       id: user.id,
+      goldmailer_id: user.id,
       email: user.email,
       email_verified: true,
-      name: `${user.first_name} ${user.last_name}`.trim() || user.username,
-      first_name: user.first_name,
-      last_name: user.last_name,
+      name: fullName,
+      first_name: user.first_name || '',
+      given_name: user.first_name || '',
+      last_name: user.last_name || '',
+      family_name: user.last_name || '',
+      username: user.username,
       preferred_username: user.username,
-      picture: user.avatar_url || '',
-      phone: user.phone || undefined,
+      dob: user.dob || '',
+      date_of_birth: user.dob || '',
+      birthdate: user.dob || '',
       gender: user.gender || undefined,
+      phone: user.phone || undefined,
+      phone_number: user.phone || undefined,
+      picture: user.avatar_url || '',
+      avatar_url: user.avatar_url || '',
       locale: 'en',
       updated_at: new Date().toISOString()
     });

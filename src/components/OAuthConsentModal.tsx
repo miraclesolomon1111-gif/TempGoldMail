@@ -294,13 +294,16 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
               <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 flex items-center gap-2.5">
                 <User className="w-4 h-4 text-[#FF8C42] flex-shrink-0" />
                 <div className="min-w-0">
-                  <p className="font-semibold text-white">Basic profile & user ID</p>
+                  <p className="font-semibold text-white">Personal Information</p>
                   <p className="text-[11px] text-zinc-400 truncate">
-                    Name, username, and permanent GoldMailer ID
+                    Name, username, date of birth, and account details
                   </p>
                 </div>
               </div>
             </div>
+            <p className="text-[11px] text-zinc-400 pt-1 leading-relaxed">
+              By clicking <strong className="text-white font-semibold">Agree and Continue</strong>, you authorize <strong className="text-white">{validatedName || appName}</strong> to access your GoldMailer personal information.
+            </p>
           </div>
 
           <div className="pt-2 flex gap-2">
@@ -315,16 +318,14 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
               type="button"
               disabled={isApproving || isValidating || !isClientValid || !selectedAccount}
               onClick={handleAllow}
-              className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-semibold text-xs shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-95 text-white font-semibold text-xs shadow-lg shadow-[#FF6A00]/30 hover:shadow-[#FF6A00]/50 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               <CheckCircle className="w-3.5 h-3.5" />
               {isValidating
                 ? 'Validating...'
                 : isApproving
                 ? 'Redirecting to App...'
-                : selectedAccount
-                ? `Continue as ${(selectedAccount.name || selectedAccount.username).split(' ')[0]}`
-                : 'Allow & Continue'}
+                : 'Agree and Continue'}
             </button>
           </div>
         </div>

@@ -111,6 +111,10 @@ export async function GET(req: Request) {
       email: u.email,
       username: u.username,
       name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username,
+      first_name: u.first_name || '',
+      last_name: u.last_name || '',
+      dob: u.dob || '',
+      date_of_birth: u.dob || '',
       avatar_url: u.avatar_url || ''
     }));
 
