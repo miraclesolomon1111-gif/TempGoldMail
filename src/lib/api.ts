@@ -9,7 +9,7 @@ import {
   SMSMessage,
   UserPhoneNumber,
   AvailablePhoneNumber,
-  TwilioLogItem,
+  SignalWireLogItem,
   PhoneCall,
   PhoneContact,
   AdminOverviewStats,
@@ -1468,7 +1468,7 @@ export async function fetchUserPhoneNumbers(): Promise<{
   numbers: UserPhoneNumber[];
   isAdmin?: boolean;
   adminNumber?: string;
-  isTwilioConfigured: boolean;
+  isSignalWireConfigured: boolean;
 }> {
   try {
     const res = await fetch('/api/phone/numbers', { headers: getHeaders() });
@@ -1477,7 +1477,7 @@ export async function fetchUserPhoneNumbers(): Promise<{
     return {
       success: false,
       numbers: [],
-      isTwilioConfigured: false
+      isSignalWireConfigured: false
     };
   }
 }
@@ -1649,56 +1649,76 @@ export async function clearAllPhoneCalls(): Promise<void> {
   });
 }
 
-export async function fetchAdminTwilioStatus(): Promise<{
-  isConfigured: boolean;
-  accountSid: string;
-  hasAuthToken: boolean;
-  trialNumber: string;
-  webhookUrl: string;
-  voiceWebhookUrl: string;
-}> {
-  const res = await fetch('/api/admin/twilio/status', {
-    headers: getHeaders()
-  });
-  return safeJsonParse(res);
-}
-
-export async function updateAdminTwilioConfig(payload: {
-  accountSid?: string;
-  authToken?: string;
-  trialNumber?: string;
-}): Promise<{ success: boolean; message: string; isConfigured: boolean; trialNumber: string }> {
-  const res = await fetch('/api/admin/twilio/config', {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload)
-  });
-  const data = await safeJsonParse(res);
-  if (!res.ok) throw new Error(data.error || 'Failed to update Twilio configuration');
-  return data;
-}
-
-export async function testAdminTwilioConnection(payload?: {
-  accountSid?: string;
-  authToken?: string;
-  trialNumber?: string;
-}): Promise<{
+export async function provisionAdminNumber(payload?: { phoneNumber?: string; friendlyName?: string }): Promise<{
   success: boolean;
-  account?: any;
-  trialNumbers?: any[];
-  availableNumbersCount?: number;
-  isTrial?: boolean;
-  error?: string;
   message?: string;
+  error?: string;
+  number?: UserPhoneNumber;
 }> {
-  const res = await fetch('/api/admin/twilio/test', {
+  const res = await fetch('/api/admin/provision-number', {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload || {})
   });
   const data = await safeJsonParse(res);
-  if (!res.ok) throw new Error(data.error || 'Failed to test Twilio connection');
+  if (!res.ok) throw new Error(data.error || 'Failed to provision number');
   return data;
 }
+
+export async function fetchAdminSignalWireStatus(): Promise<{
+  isConfigured: boolean;
+  projectId: string;
+  spaceUrl: string;
+  hasApiToken: boolean;
+  phoneNumber: string;
+  webhookUrl: string;
+}> {
+  const res = await fetch('/api/admin/signalwire/status', {
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}
+
+export async function updateAdminSignalWireConfig(payload: {
+  projectId?: string;
+  apiToken?: string;
+  spaceUrl?: string;
+  phoneNumber?: string;
+}): Promise<{ success: boolean; message: string; isConfigured: boolean; phoneNumber: string }> {
+  const res = await fetch('/api/admin/signalwire/config', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to update SignalWire configuration');
+  return data;
+}
+
+export async function testAdminSignalWireConnection(payload?: {
+  projectId?: string;
+  apiToken?: string;
+  spaceUrl?: string;
+  phoneNumber?: string;
+}): Promise<{
+  success: boolean;
+  account?: any;
+  activeNumbers?: any[];
+  availableNumbersCount?: number;
+  error?: string;
+  message?: string;
+}> {
+  const res = await fetch('/api/admin/signalwire/test', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(payload || {})
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to test SignalWire connection');
+  return data;
+}
+
+
+
 
 

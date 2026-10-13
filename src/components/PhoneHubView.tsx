@@ -53,7 +53,8 @@ import {
   clearAllPhoneCalls,
   fetchPhoneContacts,
   savePhoneContact,
-  deletePhoneContact
+  deletePhoneContact,
+  provisionAdminNumber
 } from '../lib/api';
 
 interface PhoneHubViewProps {
@@ -119,6 +120,8 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
   const [invoiceUrl, setInvoiceUrl] = useState<string | null>(null);
   const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [isAdminProvisioning, setIsAdminProvisioning] = useState(false);
+  const [adminProvisionNotice, setAdminProvisionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const isAdmin = user?.email === 'miracle@goldmailer.xyz' || user?.role === 'admin';
   const activeNumber = phoneNumbers[0] || null;
@@ -253,7 +256,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     };
   }, [activeThreadNumber, conversationThreads, contacts, messages]);
 
-  // Place Call Handler (Direct Twilio Voice Calling, No TTS)
+  // Place Call Handler (Direct SignalWire Voice Calling)
   const handleMakeCall = async (e?: React.FormEvent, directNumber?: string) => {
     if (e) e.preventDefault();
     const rawTarget = directNumber || callRecipient.trim();
@@ -463,6 +466,36 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     }
   };
 
+  // Admin Free Number Provisioning (miracle@goldmailer.xyz bypasses payment, old numbers remain active)
+  const handleAdminGetNewNumber = async (numToProvision?: string) => {
+    setIsAdminProvisioning(true);
+    setAdminProvisionNotice(null);
+    try {
+      const res = await provisionAdminNumber({
+        phoneNumber: numToProvision || (availableNumbers[0]?.phoneNumber)
+      });
+      if (res.success) {
+        setAdminProvisionNotice({
+          type: 'success',
+          message: res.message || 'New number provisioned from SignalWire. Existing lines remain active!'
+        });
+        await loadPhoneData();
+      } else {
+        setAdminProvisionNotice({
+          type: 'error',
+          message: res.error || 'Failed to provision number from SignalWire'
+        });
+      }
+    } catch (err: any) {
+      setAdminProvisionNotice({
+        type: 'error',
+        message: err.message || 'Network error provisioning number'
+      });
+    } finally {
+      setIsAdminProvisioning(false);
+    }
+  };
+
   // Helper: Extract OTP Code from SMS body
   const extractCode = (body: string) => {
     const match = body.match(/\b\d{4,8}\b/);
@@ -537,6 +570,19 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => handleAdminGetNewNumber()}
+              disabled={isAdminProvisioning}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-bold shadow-md hover:opacity-95 transition-all cursor-pointer disabled:opacity-50"
+              title="Provision a new number directly from SignalWire without charging"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isAdminProvisioning ? 'Provisioning...' : 'Get New Number'}</span>
+            </button>
+          )}
+
           {!activeNumber && !isAdmin && (
             <button
               type="button"
@@ -856,7 +902,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     <span className="font-mono">
-                      Carrier Line: {selectedFromNumber || activeNumber?.phoneNumber || (isAdmin ? '+1 (737) 250-8034' : 'Direct Twilio Line')}
+                      Carrier Line: {selectedFromNumber || activeNumber?.phoneNumber || (isAdmin ? '+1 (205) 607-6793' : 'Direct SignalWire Line')}
                     </span>
                   </div>
                   <div className="font-mono">
@@ -1341,7 +1387,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                 <h2 className="text-base font-bold flex items-center gap-2">
                   <span>Available Phone Numbers</span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400/10 text-amber-400 border border-amber-400/20">
-                    Twilio Carrier
+                    SignalWire Carrier
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
@@ -1368,11 +1414,37 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             </div>
 
             {isAdmin && (
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between gap-3 text-amber-300">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 flex-shrink-0" />
-                  <span>Admin Account: miracle@goldmailer.xyz has exclusive access to the dedicated admin line.</span>
+              <div className="space-y-3">
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-300">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-5 h-5 flex-shrink-0" />
+                    <div>
+                      <span className="font-bold">Admin Account (miracle@goldmailer.xyz):</span>
+                      <p className="text-[11px] text-zinc-300 mt-0.5">
+                        Free direct provisioning from SignalWire without charging. Existing numbers remain active for clients with no disruption.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleAdminGetNewNumber()}
+                    disabled={isAdminProvisioning}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md hover:opacity-95 transition-all disabled:opacity-50 cursor-pointer flex-shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isAdminProvisioning ? 'Provisioning...' : 'Get New Number'}</span>
+                  </button>
                 </div>
+
+                {adminProvisionNotice && (
+                  <div className={`p-3 rounded-xl border text-xs font-medium ${
+                    adminProvisionNotice.type === 'success'
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-red-500/10 border-red-500/30 text-red-300'
+                  }`}>
+                    {adminProvisionNotice.message}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1382,9 +1454,9 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                 darkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white border-zinc-200'
               }`}>
                 <Coins className="w-10 h-10 mx-auto text-amber-400 mb-2 stroke-[1.5]" />
-                <h3 className="text-sm font-bold">Querying Twilio Inventory</h3>
+                <h3 className="text-sm font-bold">Querying SignalWire Inventory</h3>
                 <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
-                  Available numbers are queried live from Twilio API. If no numbers appear, configure your Twilio account credentials in the environment.
+                  Available numbers are queried live from SignalWire API. If no numbers appear, configure your SignalWire account credentials in the environment.
                 </p>
               </div>
             ) : (
@@ -1402,12 +1474,12 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                           {num.friendlyName || num.phoneNumber}
                         </span>
                         <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-400">
-                          $6.00
+                          {isAdmin ? 'Free (Admin)' : '$6.00'}
                         </span>
                       </div>
 
                       <p className="text-xs text-zinc-400">
-                        Carrier: Twilio US · SMS & Voice Enabled
+                        Carrier: SignalWire US · SMS & Voice Enabled
                       </p>
 
                       <div className="flex items-center gap-2 pt-1 text-[11px] text-zinc-400">
@@ -1424,14 +1496,26 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                     </div>
 
                     <div className="pt-3 border-t border-white/5">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenCheckout(num)}
-                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-95 cursor-pointer shadow-sm"
-                      >
-                        <Coins className="w-3.5 h-3.5" />
-                        <span>Buy with NOWPayments ($6.00)</span>
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => handleAdminGetNewNumber(num.phoneNumber)}
+                          disabled={isAdminProvisioning}
+                          className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-95 cursor-pointer shadow-sm disabled:opacity-50"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{isAdminProvisioning ? 'Activating...' : 'Activate for Admin (Free)'}</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCheckout(num)}
+                          className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-95 cursor-pointer shadow-sm"
+                        >
+                          <Coins className="w-3.5 h-3.5" />
+                          <span>Buy with NOWPayments ($6.00)</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1555,7 +1639,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-400">Carrier:</span>
-                <span className="font-medium text-emerald-400">Twilio US Carrier</span>
+                <span className="font-medium text-emerald-400">SignalWire US Carrier</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-400">Capabilities:</span>

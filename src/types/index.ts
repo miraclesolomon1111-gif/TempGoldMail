@@ -207,7 +207,7 @@ export interface UserPhoneNumber {
   userId: string;
   phoneNumber: string;
   friendlyName?: string;
-  provider: 'twilio';
+  provider: 'signalwire';
   status: 'active' | 'expired' | 'pending';
   purchasedAt: string;
   expiresAt: string;
@@ -232,7 +232,7 @@ export interface AvailablePhoneNumber {
   };
 }
 
-export interface TwilioLogItem {
+export interface SignalWireLogItem {
   sid: string;
   from: string;
   to: string;
@@ -282,7 +282,7 @@ export interface AdminOverviewStats {
   activeDomainsCount: number;
   monthlyRevenueUsd: number;
   adminPhoneNumber: string;
-  isTwilioConfigured: boolean;
+  isSignalWireConfigured: boolean;
   isResendConfigured: boolean;
   isDatabaseConnected: boolean;
   dbType: string;
@@ -374,7 +374,7 @@ export interface AdminSystemHealth {
   cpuLoadPercent: number;
   activeSockets: number;
   smtpStatus: 'connected' | 'not_configured';
-  twilioStatus: 'connected' | 'not_configured';
+  signalwireStatus: 'connected' | 'not_configured';
   resendStatus: 'connected' | 'not_configured';
   lastHealthCheck: string;
 }
@@ -393,9 +393,11 @@ export interface AdminSiteSettings {
   smtp_user: string;
   smtp_pass: string;
   smtp_secure: boolean;
-  twilio_account_sid: string;
-  twilio_auth_token: string;
-  twilio_trial_number: string;
+  signalwire_project_id: string;
+  signalwire_api_token: string;
+  signalwire_space_url: string;
+  signalwire_phone_number: string;
+  signalwire_signing_key?: string;
   resend_api_key: string;
   resend_from: string;
   nowpayments_api_key: string;

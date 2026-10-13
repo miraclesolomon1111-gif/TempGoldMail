@@ -85,9 +85,10 @@ import {
   fetchAdminApiKeys,
   updateAdminApiKeys,
   fetchAdminActivityLogs,
-  fetchAdminTwilioStatus,
-  updateAdminTwilioConfig,
-  testAdminTwilioConnection,
+  fetchAdminSignalWireStatus,
+  updateAdminSignalWireConfig,
+  testAdminSignalWireConnection,
+  provisionAdminNumber,
   fetchSmsInbox,
   deleteSms
 } from '../lib/api';
@@ -174,12 +175,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const [storageEditModal, setStorageEditModal] = useState<{ open: boolean; user: any | null; limitGb: number }>({ open: false, user: null, limitGb: 15 });
   const [newRoleForm, setNewRoleForm] = useState({ email: '', name: '', role: 'support_admin' });
 
-  // Twilio & SMTP Settings state
-  const [twilioAccountSid, setTwilioAccountSid] = useState('');
-  const [twilioAuthToken, setTwilioAuthToken] = useState('');
-  const [twilioTrialNumber, setTwilioTrialNumber] = useState('+1 (737) 250-8034');
+  // SignalWire & SMTP Settings state
+  const [signalwireProjectId, setSignalwireProjectId] = useState('c4c9559f-11f4-4125-9c81-ae5aba970a12');
+  const [signalwireApiToken, setSignalwireApiToken] = useState('swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg');
+  const [signalwireSpaceUrl, setSignalwireSpaceUrl] = useState('tasknest.signalwire.com');
+  const [signalwireNumber, setSignalwireNumber] = useState('+1 (205) 607-6793');
   const [showAuthToken, setShowAuthToken] = useState(false);
-  const [isTestingTwilio, setIsTestingTwilio] = useState(false);
+  const [isTestingSignalWire, setIsTestingSignalWire] = useState(false);
+  const [isProvisioningNumber, setIsProvisioningNumber] = useState(false);
   const [smtpHost, setSmtpHost] = useState('smtp.goldmailer.xyz');
   const [smtpPort, setSmtpPort] = useState('587');
   const [smtpUser, setSmtpUser] = useState('postmaster@goldmailer.xyz');
@@ -272,8 +275,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         if (ak?.smtp_host) setSmtpHost(ak.smtp_host);
         if (ak?.smtp_port) setSmtpPort(String(ak.smtp_port));
         if (ak?.smtp_user) setSmtpUser(ak.smtp_user);
-        const tw = await fetchAdminTwilioStatus().catch(() => null);
-        if (tw?.trialNumber) setTwilioTrialNumber(tw.trialNumber);
+        const sw = await fetchAdminSignalWireStatus().catch(() => null);
+        if (sw?.projectId) setSignalwireProjectId(sw.projectId);
+        if (sw?.spaceUrl) setSignalwireSpaceUrl(sw.spaceUrl);
+        if (sw?.phoneNumber) setSignalwireNumber(sw.phoneNumber);
       } else if (tab === 'activity_logs') {
         const logs = await fetchAdminActivityLogs();
         setActivityLogs(logs);
@@ -299,7 +304,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       group: 'Core Management',
       items: [
         { id: 'overview' as SidebarTab, label: 'Dashboard Overview', icon: LayoutDashboard },
-        { id: 'admin_sms' as SidebarTab, label: 'Admin SMS Box (Twilio)', icon: Smartphone, badge: adminSmsMessages.length || undefined },
+        { id: 'admin_sms' as SidebarTab, label: 'Admin SMS Box (SignalWire)', icon: Smartphone, badge: adminSmsMessages.length || undefined },
         { id: 'users' as SidebarTab, label: 'User Management', icon: Users, badge: users.length || undefined },
         { id: 'email_accounts' as SidebarTab, label: 'Email Accounts', icon: Mail },
         { id: 'ban_users' as SidebarTab, label: 'Ban / Suspend Users', icon: Ban, badge: users.filter(u => u.is_banned).length || undefined }
@@ -337,7 +342,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         { id: 'settings' as SidebarTab, label: 'System Settings', icon: Settings },
         { id: 'roles' as SidebarTab, label: 'Admin Roles & Staff', icon: UserCheck },
         { id: 'backup' as SidebarTab, label: 'Backup & Restore', icon: Database },
-        { id: 'api_keys' as SidebarTab, label: 'API Keys (Twilio/Resend)', icon: KeyRound },
+        { id: 'api_keys' as SidebarTab, label: 'API Keys (SignalWire/SMTP)', icon: KeyRound },
         { id: 'activity_logs' as SidebarTab, label: 'Admin Activity Logs', icon: Clock }
       ]
     }
@@ -486,10 +491,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     e.preventDefault();
     try {
       await Promise.all([
-        updateAdminTwilioConfig({
-          accountSid: twilioAccountSid.trim() || undefined,
-          authToken: twilioAuthToken.trim() || undefined,
-          trialNumber: twilioTrialNumber.trim() || undefined
+        updateAdminSignalWireConfig({
+          projectId: signalwireProjectId.trim() || undefined,
+          apiToken: signalwireApiToken.trim() || undefined,
+          spaceUrl: signalwireSpaceUrl.trim() || undefined,
+          phoneNumber: signalwireNumber.trim() || undefined
         }),
         updateAdminApiKeys({
           smtp_host: smtpHost.trim() || 'smtp.goldmailer.xyz',
@@ -499,29 +505,56 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         })
       ]);
       loadTabContent('api_keys');
-      setFeedbackNotice({ type: 'success', message: 'SMTP (goldmailer.xyz), Twilio & API keys saved successfully.' });
+      setFeedbackNotice({ type: 'success', message: 'SMTP (goldmailer.xyz), SignalWire & API keys saved successfully.' });
     } catch (err: any) {
       setFeedbackNotice({ type: 'error', message: err.message });
     }
   };
 
-  const handleTestTwilio = async () => {
-    setIsTestingTwilio(true);
+  const handleTestSignalWire = async () => {
+    setIsTestingSignalWire(true);
     try {
-      const res = await testAdminTwilioConnection({
-        accountSid: twilioAccountSid.trim() || undefined,
-        authToken: twilioAuthToken.trim() || undefined,
-        trialNumber: twilioTrialNumber.trim() || undefined
+      const res = await testAdminSignalWireConnection({
+        projectId: signalwireProjectId.trim() || undefined,
+        apiToken: signalwireApiToken.trim() || undefined,
+        spaceUrl: signalwireSpaceUrl.trim() || undefined,
+        phoneNumber: signalwireNumber.trim() || undefined
       });
       if (res.success) {
-        setFeedbackNotice({ type: 'success', message: `Twilio operational! Live numbers found: ${res.trialNumbers?.length || 0}` });
+        setFeedbackNotice({ type: 'success', message: `SignalWire operational! Live numbers found: ${res.activeNumbers?.length || 0}` });
       } else {
-        setFeedbackNotice({ type: 'error', message: res.error || 'Connection failed' });
+        setFeedbackNotice({ type: 'error', message: res.error || 'SignalWire connection failed' });
       }
     } catch (err: any) {
       setFeedbackNotice({ type: 'error', message: err.message });
     } finally {
-      setIsTestingTwilio(false);
+      setIsTestingSignalWire(false);
+    }
+  };
+
+  const handleAdminProvisionNewNumber = async () => {
+    setIsProvisioningNumber(true);
+    try {
+      const res = await provisionAdminNumber();
+      if (res.success) {
+        setFeedbackNotice({
+          type: 'success',
+          message: res.message || 'New number provisioned from SignalWire. Existing lines remain active!'
+        });
+        loadTabContent('overview');
+      } else {
+        setFeedbackNotice({
+          type: 'error',
+          message: res.error || 'Failed to provision number from SignalWire'
+        });
+      }
+    } catch (err: any) {
+      setFeedbackNotice({
+        type: 'error',
+        message: err.message || 'Error provisioning number'
+      });
+    } finally {
+      setIsProvisioningNumber(false);
     }
   };
 
@@ -543,19 +576,19 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     setTimeout(() => setCopiedCodeId(null), 2500);
   };
 
-  const handleSyncTwilioSms = async () => {
+  const handleSyncSignalWireSms = async () => {
     setIsSyncingSms(true);
     try {
       const msgs = await fetchSmsInbox();
       setAdminSmsMessages(msgs);
       setFeedbackNotice({
         type: 'success',
-        message: `Synced with Twilio. Total messages in admin box: ${msgs.length}`
+        message: `Synced with SignalWire. Total messages in admin box: ${msgs.length}`
       });
     } catch (e: any) {
       setFeedbackNotice({
         type: 'error',
-        message: 'Failed to sync with Twilio: ' + (e.message || 'Network error')
+        message: 'Failed to sync with SignalWire: ' + (e.message || 'Network error')
       });
     } finally {
       setIsSyncingSms(false);
@@ -567,12 +600,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     if (!testSmsBody.trim()) return;
     setIsSubmittingTestSms(true);
     try {
-      const res = await fetch('/api/webhook/twilio/sms', {
+      const res = await fetch('/api/signalwire/inbound', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           From: testSmsSender.trim() || 'Google',
-          To: '+17372508034',
+          To: '+12056076793',
           Body: testSmsBody.trim(),
           MessageSid: 'SM_admin_test_' + Date.now()
         }).toString()
@@ -1054,14 +1087,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <span className="font-mono text-zinc-200">{systemHealth?.memoryUsageMb || 85} MB</span>
                     </div>
                     <div className="flex justify-between items-center text-zinc-400">
-                      <span>Admin Twilio Line</span>
+                      <span>Admin SignalWire Line</span>
                       <button
                         type="button"
                         onClick={() => setActiveTab('admin_sms')}
                         className="font-mono text-emerald-400 hover:text-emerald-300 underline underline-offset-2 flex items-center gap-1 cursor-pointer transition-colors"
                         title="Click to open Admin SMS Box"
                       >
-                        {overview?.adminPhoneNumber || '+1 (737) 250-8034'}
+                        {overview?.adminPhoneNumber || '+1 (205) 607-6793'}
                         <ChevronRight className="w-3 h-3" />
                       </button>
                     </div>
@@ -1139,10 +1172,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             </div>
           )}
 
-          {/* ADMIN SMS BOX (TWILIO GATEWAY & VERIFICATION CODES) */}
+          {/* ADMIN SMS BOX (SIGNALWIRE GATEWAY & VERIFICATION CODES) */}
           {activeTab === 'admin_sms' && (
             <div className="space-y-6">
-              {/* Header card with Live Status & Twilio info */}
+              {/* Header card with Live Status & SignalWire info */}
               <div className="p-6 rounded-3xl bg-gradient-to-r from-zinc-900 via-zinc-900/90 to-zinc-950 border border-zinc-800 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="space-y-1">
@@ -1150,26 +1183,36 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
                         <Smartphone className="w-4 h-4" />
                       </div>
-                      <h2 className="text-lg font-black text-white">Admin SMS Box (Twilio Live)</h2>
+                      <h2 className="text-lg font-black text-white">Admin SMS Box (SignalWire Live)</h2>
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                         Active Webhook
                       </span>
                     </div>
                     <p className="text-xs text-zinc-400">
                       Real-time SMS inbox for the admin line{' '}
-                      <span className="font-mono text-emerald-400 font-bold">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</span>.
+                      <span className="font-mono text-emerald-400 font-bold">{overview?.adminPhoneNumber || '+1 (205) 607-6793'}</span>.
                       Google verification codes, OTPs, and incoming messages are captured here.
                     </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
                     <button
-                      onClick={handleSyncTwilioSms}
+                      type="button"
+                      onClick={handleAdminProvisionNewNumber}
+                      disabled={isProvisioningNumber}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:opacity-90 text-xs font-bold text-white flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+                      title="Provisions a new number directly from SignalWire without charging"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      {isProvisioningNumber ? 'Provisioning...' : 'Get New Number'}
+                    </button>
+                    <button
+                      onClick={handleSyncSignalWireSms}
                       disabled={isSyncingSms}
                       className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white border border-zinc-700 flex items-center gap-2 transition-all disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSms ? 'animate-spin' : ''}`} />
-                      {isSyncingSms ? 'Syncing...' : 'Sync from Twilio'}
+                      {isSyncingSms ? 'Syncing...' : 'Sync from SignalWire'}
                     </button>
                     <button
                       onClick={() => setTestSmsModalOpen(true)}
@@ -1185,15 +1228,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-zinc-800/80 text-xs">
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
                     <p className="text-[11px] text-zinc-400">Admin Line</p>
-                    <p className="font-mono font-bold text-white mt-0.5">{overview?.adminPhoneNumber || '+1 (737) 250-8034'}</p>
+                    <p className="font-mono font-bold text-white mt-0.5">{overview?.adminPhoneNumber || '+1 (205) 607-6793'}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
-                    <p className="text-[11px] text-zinc-400">Twilio Account SID</p>
-                    <p className="font-mono font-bold text-zinc-300 mt-0.5">{twilioAccountSid ? `${twilioAccountSid.slice(0, 6)}••••${twilioAccountSid.slice(-4)}` : 'Twilio Gateway (Active)'}</p>
+                    <p className="text-[11px] text-zinc-400">SignalWire Project ID</p>
+                    <p className="font-mono font-bold text-zinc-300 mt-0.5">{signalwireProjectId ? `${signalwireProjectId.slice(0, 8)}••••` : 'SignalWire Gateway'}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
-                    <p className="text-[11px] text-zinc-400">Twilio Webhook URL</p>
-                    <p className="font-mono text-[11px] text-emerald-400 truncate mt-0.5">https://goldmailer.xyz/api/webhook/twilio/sms</p>
+                    <p className="text-[11px] text-zinc-400">SignalWire Webhook URL</p>
+                    <p className="font-mono text-[11px] text-emerald-400 truncate mt-0.5">https://goldmailer.xyz/api/signalwire/inbound</p>
                   </div>
                 </div>
               </div>
@@ -1241,26 +1284,26 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <div className="max-w-md mx-auto space-y-2">
                         <h4 className="font-bold text-white text-base">No Incoming SMS Messages Yet</h4>
                         <p className="text-xs text-zinc-400 leading-relaxed">
-                          We verified your Twilio account <span className="font-mono text-zinc-300">{twilioAccountSid ? `${twilioAccountSid.slice(0, 6)}••••${twilioAccountSid.slice(-4)}` : 'Twilio Gateway'}</span> via the Twilio REST API.
-                          Twilio currently reports 0 messages received for this account.
+                          Connected to SignalWire Space <span className="font-mono text-zinc-300">{signalwireSpaceUrl}</span>.
+                          Active admin number is <span className="font-mono text-emerald-400 font-bold">{signalwireNumber}</span>.
                         </p>
                         <div className="p-3.5 rounded-2xl bg-zinc-950/80 border border-zinc-800 text-left text-[11px] text-zinc-400 space-y-1.5 mt-3">
                           <p className="font-bold text-zinc-300 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                            Twilio Setup Note:
+                            SignalWire Webhook Configuration:
                           </p>
                           <p>
-                            Twilio requires that the phone number <code className="text-emerald-400 font-mono">+1 (737) 250-8034</code> is assigned to this Account SID in your Twilio Console (Phone Numbers &gt; Manage &gt; Active numbers) with SMS Webhook pointed to <code className="text-emerald-400 font-mono">https://goldmailer.xyz/api/webhook/twilio/sms</code>.
+                            Ensure your SignalWire space has the phone number <code className="text-emerald-400 font-mono">+1 (205) 607-6793</code> configured with webhook URL pointing to <code className="text-emerald-400 font-mono">https://goldmailer.xyz/api/signalwire/inbound</code>.
                           </p>
                         </div>
                       </div>
                       <div className="flex justify-center gap-2 pt-2">
                         <button
-                          onClick={handleSyncTwilioSms}
+                          onClick={handleSyncSignalWireSms}
                           disabled={isSyncingSms}
                           className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-zinc-200 border border-zinc-700"
                         >
-                          Check Twilio Again
+                          Check SignalWire Again
                         </button>
                         <button
                           onClick={() => setTestSmsModalOpen(true)}
@@ -1822,8 +1865,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <span className="text-emerald-400 font-bold uppercase">{systemHealth?.databaseStatus || 'connected'}</span>
                     </div>
                     <div className="flex justify-between text-zinc-400">
-                      <span>Twilio SMS Gateway</span>
-                      <span className="font-mono text-emerald-400 font-bold">{systemHealth?.twilioStatus || 'connected'}</span>
+                      <span>SignalWire SMS Gateway</span>
+                      <span className="font-mono text-emerald-400 font-bold">{systemHealth?.signalwireStatus || 'connected'}</span>
                     </div>
                     <div className="flex justify-between text-zinc-400">
                       <span>SMTP Outbound</span>
@@ -2159,32 +2202,42 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 </h3>
                 <div className="space-y-3 text-xs">
                   <div>
-                    <label className="text-zinc-400 block mb-1">Twilio Account SID</label>
+                    <label className="text-zinc-400 block mb-1">SignalWire Project ID</label>
                     <input
                       type="text"
-                      placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      value={twilioAccountSid}
-                      onChange={(e) => setTwilioAccountSid(e.target.value)}
+                      placeholder="c4c9559f-11f4-4125-9c81-ae5aba970a12"
+                      value={signalwireProjectId}
+                      onChange={(e) => setSignalwireProjectId(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
                   <div>
-                    <label className="text-zinc-400 block mb-1">Twilio Auth Token</label>
+                    <label className="text-zinc-400 block mb-1">SignalWire API Token</label>
                     <input
                       type={showAuthToken ? 'text' : 'password'}
-                      placeholder="••••••••••••••••••••••••••••••••"
-                      value={twilioAuthToken}
-                      onChange={(e) => setTwilioAuthToken(e.target.value)}
+                      placeholder="swapi_••••••••••••••••••••••••••••••"
+                      value={signalwireApiToken}
+                      onChange={(e) => setSignalwireApiToken(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
                   <div>
-                    <label className="text-zinc-400 block mb-1">Twilio Primary Phone Number</label>
+                    <label className="text-zinc-400 block mb-1">SignalWire Space URL</label>
                     <input
                       type="text"
-                      placeholder="+1 (737) 250-8034"
-                      value={twilioTrialNumber}
-                      onChange={(e) => setTwilioTrialNumber(e.target.value)}
+                      placeholder="tasknest.signalwire.com"
+                      value={signalwireSpaceUrl}
+                      onChange={(e) => setSignalwireSpaceUrl(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 block mb-1">SignalWire Admin Phone Number</label>
+                    <input
+                      type="text"
+                      placeholder="+1 (205) 607-6793"
+                      value={signalwireNumber}
+                      onChange={(e) => setSignalwireNumber(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
@@ -2246,11 +2299,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     </button>
                     <button
                       type="button"
-                      onClick={handleTestTwilio}
-                      disabled={isTestingTwilio}
+                      onClick={handleTestSignalWire}
+                      disabled={isTestingSignalWire}
                       className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 border border-zinc-700 font-bold"
                     >
-                      {isTestingTwilio ? 'Testing...' : 'Test Connection'}
+                      {isTestingSignalWire ? 'Testing...' : 'Test Connection'}
                     </button>
                   </div>
                 </div>
@@ -2490,7 +2543,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Dispatches a simulated inbound SMS to the live webhook endpoint (<code className="text-emerald-400 font-mono text-[11px]">/api/webhook/twilio/sms</code>) targeting your admin phone line <span className="font-mono text-emerald-400 font-bold">+1 (737) 250-8034</span>.
+              Dispatches a simulated inbound SMS to the live webhook endpoint (<code className="text-emerald-400 font-mono text-[11px]">/api/signalwire/inbound</code>) targeting your admin phone line <span className="font-mono text-emerald-400 font-bold">+1 (205) 607-6793</span>.
             </p>
 
             <form onSubmit={handleSimulateIncomingSms} className="space-y-3 text-xs">

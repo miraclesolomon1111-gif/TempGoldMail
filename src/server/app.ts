@@ -18,17 +18,18 @@ import {
   StoredPhoneNumber,
   StoredPhonePurchase,
   StoredCall,
-  sendSmsViaTwilio,
-  makeCallViaTwilio,
+  sendSmsViaSignalWire,
+  makeCallViaSignalWire,
   listAvailablePhoneNumbers,
-  buyTwilioPhoneNumber,
-  getTwilioLogs,
+  buySignalWirePhoneNumber,
+  getSignalWireLogs,
+  getSignalWireCallLogs,
   verifyNowPaymentsSignature,
   createNowPaymentsInvoice,
-  getTwilioConfig,
-  getTwilioClient,
-  setTwilioCredentials,
-  testTwilioConnection,
+  getSignalWireConfig,
+  getSignalWireClient,
+  setSignalWireCredentials,
+  testSignalWireConnection,
   normalizePhoneNumber
 } from './phoneService.js';
 import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo.js';
@@ -526,10 +527,11 @@ const saveData = () => {
         broadcasts: db.getBroadcasts(),
         payments: db.getPayments(),
         settings: db.getSettings(),
-        twilioConfig: {
-          accountSid: getTwilioConfig().accountSid,
-          authToken: getTwilioConfig().authToken,
-          trialNumber: getTwilioConfig().trialNumber
+        signalwireConfig: {
+          projectId: getSignalWireConfig().projectId,
+          apiToken: getSignalWireConfig().apiToken,
+          spaceUrl: getSignalWireConfig().spaceUrl,
+          phoneNumber: getSignalWireConfig().phoneNumber
         }
       },
       null,
@@ -775,11 +777,12 @@ export const ensureDataLoaded = () => {
       if (Array.isArray(parsed.phoneContacts)) {
         phoneContacts = parsed.phoneContacts;
       }
-      if (parsed.twilioConfig && typeof parsed.twilioConfig === 'object') {
-        setTwilioCredentials(
-          parsed.twilioConfig.accountSid || '',
-          parsed.twilioConfig.authToken || '',
-          parsed.twilioConfig.trialNumber || ''
+      if (parsed.signalwireConfig && typeof parsed.signalwireConfig === 'object') {
+        setSignalWireCredentials(
+          parsed.signalwireConfig.projectId || '',
+          parsed.signalwireConfig.apiToken || '',
+          parsed.signalwireConfig.spaceUrl || '',
+          parsed.signalwireConfig.phoneNumber || ''
         );
       }
     } catch (parseErr) {
@@ -987,33 +990,49 @@ const seedAccounts = () => {
     }
   }
 
-  // Ensure admin phone number is exclusively assigned to admin (miracle@goldmailer.xyz / admin)
-  const defaultTrialNumber = getTwilioConfig().trialNumber || '+17372508034';
-  const adminPhone = userPhoneNumbers.find(p => (p.id === 'phone_free_miracle_admin' || p.phoneNumber === defaultTrialNumber || p.phoneNumber.includes('267') || p.phoneNumber.includes('737')) && (p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz'));
-  if (!adminPhone) {
-    userPhoneNumbers.unshift({
+  // Hardcode active admin number to +1 (205) 607-6793 and remove old numbers from DB
+  const adminActiveNumber = '+1 (205) 607-6793';
+  userPhoneNumbers = userPhoneNumbers.filter(p => {
+    const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz';
+    if (!isMiracle) return true;
+    const digits = p.phoneNumber.replace(/\D/g, '');
+    // Delete any old numbers previously assigned to admin
+    if (digits.includes('7372508034') || digits.includes('2672301662')) {
+      return false;
+    }
+    return true;
+  });
+
+  // Ensure +1 (205) 607-6793 is active in DB as primary admin line
+  let adminPrimary = userPhoneNumbers.find(p => {
+    const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz';
+    const digits = p.phoneNumber.replace(/\D/g, '');
+    return isMiracle && digits === '12056076793';
+  });
+
+  if (!adminPrimary) {
+    adminPrimary = {
       id: 'phone_free_miracle_admin',
       userId: 'usr_miracle_01',
       userEmail: 'miracle@goldmailer.xyz',
-      phoneNumber: defaultTrialNumber,
-      friendlyName: `${defaultTrialNumber} (Admin Line)`,
-      provider: 'twilio',
+      phoneNumber: adminActiveNumber,
+      friendlyName: `${adminActiveNumber} (Primary Line)`,
+      provider: 'signalwire',
       status: 'active',
-      purchasedAt: '2026-10-08T00:00:00.000Z',
+      purchasedAt: '2026-10-13T00:00:00.000Z',
       expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
       autoRenew: true,
       capabilities: { sms: true, voice: true }
-    });
+    };
+    userPhoneNumbers.unshift(adminPrimary);
   } else {
-    adminPhone.phoneNumber = defaultTrialNumber;
-    adminPhone.friendlyName = `${defaultTrialNumber} (Admin Line)`;
-    adminPhone.status = 'active';
-    adminPhone.userId = 'usr_miracle_01';
-    adminPhone.userEmail = 'miracle@goldmailer.xyz';
-    adminPhone.capabilities = { sms: true, voice: true };
-    const exp = new Date(adminPhone.expiresAt).getTime();
+    adminPrimary.provider = 'signalwire';
+    adminPrimary.status = 'active';
+    adminPrimary.friendlyName = `${adminActiveNumber} (Primary Line)`;
+    adminPrimary.capabilities = { sms: true, voice: true };
+    const exp = new Date(adminPrimary.expiresAt).getTime();
     if (exp < Date.now() + 30 * 86400000) {
-      adminPhone.expiresAt = new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString();
+      adminPrimary.expiresAt = new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString();
     }
   }
 
@@ -5011,7 +5030,7 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
   const allEmails = db.getAllEmails();
   const emailBytes = allEmails.reduce((acc, e) => acc + Buffer.byteLength((e.body_html || '') + (e.body_text || '') + (e.subject || ''), 'utf8'), 0);
   const totalStorage = accounts.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0) + emailBytes;
-  const twilioCfg = getTwilioConfig();
+  const signalwireCfg = getSignalWireConfig();
   const activeAccounts = accounts.filter(u => !u.is_banned);
   const openTickets = db.getTickets().filter(t => t.status === 'open' || t.status === 'in_progress');
   const domains = db.getDomains();
@@ -5035,8 +5054,8 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     activeDomainsCount: domains.filter(d => d.is_verified).length,
     monthlyRevenueUsd: Number(revenueTotal.toFixed(2)),
     recentLogins: userDevices.slice(0, 10),
-    adminPhoneNumber: twilioCfg.trialNumber || '+1 (267) 230-1662',
-    isTwilioConfigured: twilioCfg.isConfigured,
+    adminPhoneNumber: signalwireCfg.phoneNumber || '+1 (205) 607-6793',
+    isSignalWireConfigured: signalwireCfg.isConfigured,
     isResendConfigured: Boolean(process.env.RESEND_API_KEY),
     isDatabaseConnected: true,
     dbType: 'Supabase + Persistent Dual-File DB Engine'
@@ -5384,7 +5403,7 @@ app.get('/api/admin/system-health', requireAdmin, (_req: Request, res: Response)
     cpuLoadPercent: 4.2,
     activeSockets: sseClients.length,
     smtpStatus: (process.env.SMTP_HOST || db.getSettings().smtp_host) ? 'connected' : 'not_configured',
-    twilioStatus: getTwilioConfig().isConfigured ? 'connected' : 'not_configured',
+    signalwireStatus: getSignalWireConfig().isConfigured ? 'connected' : 'not_configured',
     resendStatus: process.env.RESEND_API_KEY ? 'connected' : 'not_configured',
     lastHealthCheck: new Date().toISOString()
   });
@@ -5606,9 +5625,11 @@ app.get('/api/admin/api-keys', requireAdmin, (_req: Request, res: Response) => {
   const settings = db.getSettings();
   const mask = (s: string) => (s && s.length > 8 ? `${s.slice(0, 4)}...${s.slice(-4)}` : s ? '••••••••' : '');
   res.json({
-    twilioAccountSid: mask(settings.twilio_account_sid),
-    twilioAuthTokenConfigured: Boolean(settings.twilio_auth_token),
-    twilioPhoneNumber: settings.twilio_trial_number,
+    signalwireProjectId: mask(settings.signalwire_project_id),
+    signalwireApiTokenConfigured: Boolean(settings.signalwire_api_token),
+    signalwireSpaceUrl: settings.signalwire_space_url,
+    signalwirePhoneNumber: settings.signalwire_phone_number,
+    signalwireSigningKey: settings.signalwire_signing_key ? mask(settings.signalwire_signing_key) : '',
     resendApiKeyConfigured: Boolean(settings.resend_api_key || process.env.RESEND_API_KEY),
     nowpaymentsKeyConfigured: Boolean(settings.nowpayments_api_key),
     supabaseUrl: settings.supabase_url || '',
@@ -5623,11 +5644,35 @@ app.get('/api/admin/api-keys', requireAdmin, (_req: Request, res: Response) => {
 
 app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { twilioSid, twilioToken, twilioPhone, resendKey, nowpaymentsKey, nowpaymentsIpn, supabaseUrl, supabaseKey, smtpHost, smtpPort, smtpUser, smtpPass } = req.body;
+    const {
+      signalwireProjectId,
+      signalwireApiToken,
+      signalwireSpaceUrl,
+      signalwirePhoneNumber,
+      signalwireSigningKey,
+      resendKey,
+      nowpaymentsKey,
+      nowpaymentsIpn,
+      supabaseUrl,
+      supabaseKey,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpPass
+    } = req.body;
+
+    const projectId = signalwireProjectId;
+    const apiToken = signalwireApiToken;
+    const phone = signalwirePhoneNumber;
+    const space = signalwireSpaceUrl;
+    const signingKey = signalwireSigningKey;
+
     const updates: Partial<StoredSettings> = {};
-    if (twilioSid !== undefined) updates.twilio_account_sid = twilioSid;
-    if (twilioToken !== undefined) updates.twilio_auth_token = twilioToken;
-    if (twilioPhone !== undefined) updates.twilio_trial_number = twilioPhone;
+    if (projectId !== undefined) updates.signalwire_project_id = projectId;
+    if (apiToken !== undefined) updates.signalwire_api_token = apiToken;
+    if (space !== undefined) updates.signalwire_space_url = space;
+    if (phone !== undefined) updates.signalwire_phone_number = phone;
+    if (signingKey !== undefined) updates.signalwire_signing_key = signingKey;
     if (resendKey !== undefined) updates.resend_api_key = resendKey;
     if (nowpaymentsKey !== undefined) updates.nowpayments_api_key = nowpaymentsKey;
     if (nowpaymentsIpn !== undefined) updates.nowpayments_ipn_secret = nowpaymentsIpn;
@@ -5639,14 +5684,14 @@ app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response
     if (smtpPass !== undefined) updates.smtp_pass = smtpPass;
 
     await db.updateSettings(updates);
-    if (twilioSid || twilioToken || twilioPhone) {
-      setTwilioCredentials(twilioSid, twilioToken, twilioPhone);
+    if (projectId || apiToken || space || phone) {
+      setSignalWireCredentials(projectId, apiToken, space, phone);
     }
 
     const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
-    await db.logAdminActivity(adminEmail, 'UPDATE_API_KEYS', 'system', undefined, 'Updated third-party integration API keys');
+    await db.logAdminActivity(adminEmail, 'UPDATE_API_KEYS', 'system', undefined, 'Updated SignalWire and third-party API keys');
 
-    return res.json({ success: true, message: 'API Keys updated securely.' });
+    return res.json({ success: true, message: 'SignalWire and API keys updated securely.' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -5657,79 +5702,129 @@ app.get('/api/admin/activity-logs', requireAdmin, (_req: Request, res: Response)
   res.json(db.getActivityLogs(200));
 });
 
-// Admin Twilio Gateway & Free Trial Endpoints
-app.get('/api/admin/twilio/status', requireAdmin, async (_req: Request, res: Response) => {
-  const cfg = getTwilioConfig();
+// Admin SignalWire Gateway Endpoints
+const handleSignalWireStatus = async (_req: Request, res: Response) => {
+  const cfg = getSignalWireConfig();
   res.json({
     isConfigured: cfg.isConfigured,
-    accountSid: cfg.accountSid ? `${cfg.accountSid.slice(0, 8)}...${cfg.accountSid.slice(-4)}` : '',
-    hasAuthToken: Boolean(cfg.authToken),
-    trialNumber: cfg.trialNumber,
-    webhookUrl: cfg.webhookUrl,
-    voiceWebhookUrl: cfg.voiceWebhookUrl
+    projectId: cfg.projectId ? `${cfg.projectId.slice(0, 8)}...${cfg.projectId.slice(-4)}` : '',
+    spaceUrl: cfg.spaceUrl,
+    hasApiToken: Boolean(cfg.apiToken),
+    phoneNumber: cfg.phoneNumber,
+    webhookUrl: cfg.webhookUrl
   });
-});
+};
 
-app.post('/api/admin/twilio/config', requireAdmin, (req: Request, res: Response) => {
-  const { accountSid, authToken, trialNumber } = req.body || {};
-  if (!accountSid && !authToken && !trialNumber) {
+app.get('/api/admin/signalwire/status', requireAdmin, handleSignalWireStatus);
+
+const handleSignalWireConfig = (req: Request, res: Response) => {
+  const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
+
+  if (!projectId && !apiToken && !spaceUrl && !phoneNumber) {
     return res.status(400).json({ error: 'At least one field is required.' });
   }
 
-  setTwilioCredentials(accountSid, authToken, trialNumber);
+  setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
 
-  // Sync to admin phone number record
-  if (trialNumber) {
+  // Sync to admin primary number record
+  if (phoneNumber) {
     const adminNum = userPhoneNumbers.find(p => p.id === 'phone_free_miracle_admin');
     if (adminNum) {
-      adminNum.phoneNumber = trialNumber.trim();
-      adminNum.friendlyName = `${trialNumber.trim()} (Admin Line)`;
+      adminNum.phoneNumber = phoneNumber.trim();
+      adminNum.friendlyName = `${phoneNumber.trim()} (Admin Line)`;
     }
   }
 
   saveData();
 
-  const cfg = getTwilioConfig();
+  const cfg = getSignalWireConfig();
   return res.json({
     success: true,
-    message: 'Twilio configuration successfully saved.',
+    message: 'SignalWire configuration successfully saved.',
     isConfigured: cfg.isConfigured,
-    trialNumber: cfg.trialNumber
+    phoneNumber: cfg.phoneNumber
   });
-});
+};
 
-app.post('/api/admin/twilio/test', requireAdmin, async (req: Request, res: Response) => {
+app.post('/api/admin/signalwire/config', requireAdmin, handleSignalWireConfig);
+
+const handleSignalWireTest = async (req: Request, res: Response) => {
   try {
-    const { accountSid, authToken, trialNumber } = req.body || {};
-    if (accountSid || authToken || trialNumber) {
-      setTwilioCredentials(accountSid, authToken, trialNumber);
+    const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
+
+    if (projectId || apiToken || spaceUrl || phoneNumber) {
+      setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
       saveData();
     }
 
-    const testRes = await testTwilioConnection();
-
-    if (testRes.success && testRes.trialNumbers && testRes.trialNumbers.length > 0) {
-      const liveNumber = testRes.trialNumbers[0].phoneNumber;
-      if (liveNumber) {
-        setTwilioCredentials(undefined as any, undefined as any, liveNumber);
-        const adminNum = userPhoneNumbers.find(p => p.id === 'phone_free_miracle_admin');
-        if (adminNum) {
-          adminNum.phoneNumber = liveNumber;
-          adminNum.friendlyName = `${liveNumber} (Admin Trial Line)`;
-        }
-        saveData();
-      }
-    }
-
+    const testRes = await testSignalWireConnection();
     return res.json(testRes);
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || 'Twilio diagnostic failed' });
+    return res.status(500).json({ success: false, error: err.message || 'SignalWire diagnostic failed' });
+  }
+};
+
+app.post('/api/admin/signalwire/test', requireAdmin, handleSignalWireTest);
+
+// TASK 4: Admin Free Number Provisioning
+// Provisions a number directly from SignalWire WITHOUT charging.
+// Check: if (session.user.email === 'miracle@goldmailer.xyz') { bypass payment }
+// The free provisioning is ONLY for admin email.
+// When admin taps get new number, the old number remains and is still active.
+app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const authUser = resolveUserIdFromReq(req);
+    const sessionEmail = (authUser.email || '').toLowerCase().trim();
+
+    // Check: if (session.user.email === 'miracle@goldmailer.xyz') { bypass payment }
+    if (sessionEmail !== 'miracle@goldmailer.xyz' && authUser.id !== 'usr_miracle_01') {
+      return res.status(403).json({
+        error: 'Forbidden. Free number provisioning is exclusively reserved for miracle@goldmailer.xyz.'
+      });
+    }
+
+    const requestedNumber = req.body?.phoneNumber;
+    const friendlyName = req.body?.friendlyName;
+
+    // Direct provision from SignalWire without charging
+    const provisionResult = await buySignalWirePhoneNumber(requestedNumber);
+    const targetNum = provisionResult.phoneNumber || requestedNumber || '+12056076793';
+
+    // The old number remains and still active for existing clients
+    const newRecord: StoredPhoneNumber = {
+      id: 'phone_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      userId: authUser.id || 'usr_miracle_01',
+      userEmail: 'miracle@goldmailer.xyz',
+      phoneNumber: targetNum,
+      friendlyName: friendlyName || `${targetNum} (Admin Line)`,
+      provider: 'signalwire',
+      status: 'active',
+      purchasedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
+      autoRenew: true,
+      capabilities: { sms: true, voice: true }
+    };
+
+    userPhoneNumbers.push(newRecord);
+    saveData();
+
+    console.log(`[ADMIN PROVISION] Miracle provisioned new number ${targetNum}. Existing numbers remain active.`);
+
+    return res.json({
+      success: true,
+      message: `New phone number ${targetNum} provisioned directly from SignalWire without charging. Previous numbers remain active.`,
+      number: newRecord
+    });
+  } catch (err: any) {
+    console.error('[ADMIN PROVISION ERROR]', err);
+    return res.status(500).json({ error: err.message || 'Failed to provision number from SignalWire' });
   }
 });
 
-// ================= PHONE & SMS APIS (TWILIO & NOWPAYMENTS) =================
+// ================= PHONE & SMS APIS (SIGNALWIRE & NOWPAYMENTS) =================
 
-// Helper to get active user ID from token safely (does NOT default unauthenticated requests to admin!)
+// Helper to get active user ID from token safely
 const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?: string } => {
   const authHeader = req.headers.authorization;
   if (authHeader) {
@@ -5770,9 +5865,8 @@ const isReqAdmin = (authUser: { id: string; email: string; role?: string }): boo
   return email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
 };
 
-// TASK 1: TWILIO WEBHOOK (Receive From, To, Body, MessageSid, save to sms_inbox, return TwiML)
-// Supports both HTTP POST and GET, form-urlencoded, JSON, raw streams, and query parameters
-export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
+// TASK 1 & 3: SIGNALWIRE INBOUND WEBHOOK (Receive SMS or Voice Calls, save to DB, return LAML)
+export const handleSignalWireInboundWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     let bodyObj: Record<string, any> = {};
@@ -5807,17 +5901,41 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
 
     const queryObj = (req.query || {}) as Record<string, any>;
     const payload = { ...queryObj, ...bodyObj };
+
     const from = String(payload.From || payload.from || '').trim();
-    const to = String(payload.To || payload.to || '').trim();
+    const to = String(payload.To || payload.to || '+12056076793').trim();
     const text = String(payload.Body || payload.body || '').trim();
-    const messageSid = String(payload.MessageSid || payload.messageSid || payload.SmsSid || '').trim();
+    const messageSid = String(payload.MessageSid || payload.messageSid || payload.SmsSid || payload.sid || '').trim();
+    const callSid = String(payload.CallSid || payload.callSid || '').trim();
+    const callStatus = String(payload.CallStatus || payload.callStatus || '').trim();
 
-    console.log(`[TWILIO WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
+    // Check if this is an incoming Voice Call
+    if (callSid || (callStatus && !text)) {
+      console.log(`[SIGNALWIRE VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
+      const newCall: StoredCall = {
+        id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        userId: 'usr_miracle_01',
+        from: from || 'Caller',
+        to: to || '+12056076793',
+        direction: 'inbound',
+        status: (callStatus.toLowerCase() as any) || 'in-progress',
+        callSid: callSid || 'CA_' + Date.now(),
+        startedAt: new Date().toISOString()
+      };
+      calls_history.unshift(newCall);
+      saveData();
+      broadcastNewCall(newCall);
 
-    const { trialNumber } = getTwilioConfig();
+      res.setHeader('Content-Type', 'text/xml');
+      return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Pause length="30"/>
+</Response>`);
+    }
+
+    // Inbound SMS
+    console.log(`[SIGNALWIRE SMS WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
     const cleanToDigits = to.replace(/\D/g, '');
-
-    // Normalize 'To' number to find user in database
     const matchedNumber = userPhoneNumbers.find(p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits);
     const targetUser = matchedNumber
       ? goldUsers.find(u => u.id === matchedNumber.userId)
@@ -5829,7 +5947,7 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       userId: targetUserId,
       from: from || 'Unknown Sender',
-      to: to || trialNumber || '+17372508034',
+      to: to || '+12056076793',
       body: text,
       receivedAt: new Date().toISOString(),
       messageSid: messageSid || 'SM_' + Date.now(),
@@ -5838,7 +5956,6 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
       is_read: false
     };
 
-    // Deduplicate by messageSid if present
     if (messageSid) {
       const existingIdx = sms_inbox.findIndex(s => s.messageSid === messageSid);
       if (existingIdx !== -1) {
@@ -5853,21 +5970,55 @@ export const handleTwilioSmsWebhook = async (req: Request, res: Response) => {
     saveData();
     broadcastNewSMS(newSms);
 
-    console.log(`[TWILIO WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId} with content: "${text}"`);
-
-    // Return HTTP 200 with standard TwiML <Response></Response>
+    console.log(`[SIGNALWIRE WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}: "${text}"`);
     res.setHeader('Content-Type', 'text/xml');
     return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
   } catch (err: any) {
-    console.error('[TWILIO WEBHOOK] Exception handling webhook:', err);
+    console.error('[SIGNALWIRE WEBHOOK] Exception handling webhook:', err);
     res.setHeader('Content-Type', 'text/xml');
     return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
   }
 };
 
 app.all(
-  ['/api/webhook/twilio/sms', '/api/webhooks/twilio/sms', '/api/webhook/twilio', '/api/webhooks/twilio'],
-  handleTwilioSmsWebhook
+  [
+    '/api/signalwire/inbound',
+    '/api/webhook/signalwire/inbound',
+    '/api/webhook/signalwire/sms',
+    '/api/sms/incoming'
+  ],
+  handleSignalWireInboundWebhook
+);
+
+// Voice Call Status Callback
+export const handleSignalWireVoiceStatusWebhook = async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const body = { ...(req.query || {}), ...(req.body || {}) };
+    const callSid = String(body.CallSid || body.callSid || '');
+    const callStatus = String(body.CallStatus || body.callStatus || 'completed').toLowerCase() as any;
+    const duration = parseInt(body.CallDuration || body.Duration || '0', 10);
+
+    const call = calls_history.find(c => c.callSid === callSid);
+    if (call) {
+      call.status = callStatus;
+      if (duration > 0) call.durationSeconds = duration;
+      call.endedAt = new Date().toISOString();
+      saveData();
+      broadcastNewCall(call);
+    }
+    return res.status(200).send('OK');
+  } catch (err: any) {
+    return res.status(200).send('OK');
+  }
+};
+
+app.all(
+  [
+    '/api/signalwire/voice/status',
+    '/api/webhook/signalwire/voice/status'
+  ],
+  handleSignalWireVoiceStatusWebhook
 );
 
 // TASK 2: NOWPAYMENTS WEBHOOK (Verify IPN_SECRET, extend 30 days if payment_status=finished)
@@ -5918,7 +6069,7 @@ export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
         userId: phoneRecord?.userId || 'usr_miracle_01',
         paymentId: String(body.payment_id || ''),
         orderId: orderId,
-        phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+17372508034',
+        phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
         amount: Number(body.price_amount || 6.0),
         currency: String(body.price_currency || 'usd'),
         status: 'finished',
@@ -5946,43 +6097,38 @@ app.post(
 app.get('/api/phone/numbers', (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const { trialNumber } = getTwilioConfig();
+  const { phoneNumber: adminPhoneNumber } = getSignalWireConfig();
   const isAdmin = isReqAdmin(authUser);
 
-  // Ensure admin has the configured primary phone line
+  // Ensure admin has the configured primary phone line (+1 205 607-6793)
   if (isAdmin) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
-      p => p.id === 'phone_free_miracle_admin' || p.phoneNumber === trialNumber || (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
+      p => p.id === 'phone_free_miracle_admin' || p.phoneNumber === adminPhoneNumber || (p.userId === authUser.id || p.userEmail === 'miracle@goldmailer.xyz')
     );
     if (adminPhoneIndex === -1) {
       userPhoneNumbers.unshift({
         id: 'phone_free_miracle_admin',
         userId: authUser.id || 'usr_miracle_01',
         userEmail: authUser.email || 'miracle@goldmailer.xyz',
-        phoneNumber: trialNumber,
-        friendlyName: `${trialNumber} (Primary Line)`,
-        provider: 'twilio',
+        phoneNumber: adminPhoneNumber,
+        friendlyName: `${adminPhoneNumber} (Primary Line)`,
+        provider: 'signalwire',
         status: 'active',
-        purchasedAt: '2026-10-08T00:00:00.000Z',
+        purchasedAt: '2026-10-13T00:00:00.000Z',
         expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
         autoRenew: true,
         capabilities: { sms: true, voice: true }
       });
       saveData();
     } else {
-      if (userPhoneNumbers[adminPhoneIndex].phoneNumber !== trialNumber) {
-        userPhoneNumbers[adminPhoneIndex].phoneNumber = trialNumber;
-        userPhoneNumbers[adminPhoneIndex].friendlyName = `${trialNumber} (Primary Line)`;
-        userPhoneNumbers[adminPhoneIndex].status = 'active';
-        saveData();
-      }
+      userPhoneNumbers[adminPhoneIndex].provider = 'signalwire';
+      userPhoneNumbers[adminPhoneIndex].status = 'active';
     }
   }
 
-  // Strictly do NOT give free trial numbers to regular users!
   // Only return numbers the user actually owns/purchased (or admin's line if admin)
   const list = userPhoneNumbers.filter(
-    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber === trialNumber || p.id === 'phone_free_miracle_admin'))
+    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber === adminPhoneNumber || p.id === 'phone_free_miracle_admin'))
   );
 
   const enriched = list.map(p => {
@@ -5999,20 +6145,18 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: isAdmin ? trialNumber : undefined,
-    isTwilioConfigured: getTwilioConfig().isConfigured
+    adminNumber: isAdmin ? adminPhoneNumber : undefined,
+    isSignalWireConfigured: getSignalWireConfig().isConfigured
   });
 });
 
-// 4. GET /api/phone/available - Search available numbers to buy directly from Twilio API
-// Exclude any phone number that has already been bought
-app.get('/api/phone/available', async (_req: Request, res: Response) => {
+// 4. GET /api/phone/available & GET /api/numbers/available - Search available numbers to buy directly from SignalWire API
+const handleAvailableNumbers = async (_req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const list = await listAvailablePhoneNumbers(16);
-    const { trialNumber } = getTwilioConfig();
+    const { phoneNumber: adminNumber } = getSignalWireConfig();
 
-    // Any phone number that has been bought should not display again
     const boughtSet = new Set<string>();
     userPhoneNumbers.forEach(p => {
       if (p.phoneNumber) boughtSet.add(p.phoneNumber.replace(/[^\d+]/g, ''));
@@ -6020,21 +6164,23 @@ app.get('/api/phone/available', async (_req: Request, res: Response) => {
     phonePurchases.forEach(p => {
       if (p.phoneNumber) boughtSet.add(p.phoneNumber.replace(/[^\d+]/g, ''));
     });
-    // Never display admin dedicated trial number in the purchase list
-    if (trialNumber) {
-      boughtSet.add(trialNumber.replace(/[^\d+]/g, ''));
+    if (adminNumber) {
+      boughtSet.add(adminNumber.replace(/[^\d+]/g, ''));
     }
 
     const availableNumbers = list.filter(n => !boughtSet.has(n.phoneNumber.replace(/[^\d+]/g, '')));
 
     return res.json({
       success: true,
-      availableNumbers
+      availableNumbers,
+      numbers: availableNumbers
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.get(['/api/phone/available', '/api/numbers/available'], handleAvailableNumbers);
 
 // 5. POST /api/phone/buy-intent - Create NOWPayments crypto invoice for phone rental
 app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
@@ -6048,13 +6194,13 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
       return res.json({
         success: true,
         isAdmin: true,
-        message: 'Admin account has free lifetime direct activation.'
+        message: 'Admin account has free lifetime direct activation from SignalWire.'
       });
     }
 
-    const targetNum = phoneNumber || '+17372508034';
+    const targetNum = phoneNumber || '+12056076793';
     const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const description = `Phone Subscription for ${targetNum} (${authUser.email})`;
+    const description = `SignalWire Phone Subscription for ${targetNum} (${authUser.email})`;
 
     const invoiceResult = await createNowPaymentsInvoice({
       priceAmount: 6.0,
@@ -6077,17 +6223,17 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
   }
 });
 
-// 6. POST /api/phone/buy-number - Direct provision / activation of purchased phone number
-app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
+// 6. POST /api/phone/buy-number & POST /api/numbers/buy - Direct provision / activation of purchased phone number via SignalWire
+const handleBuyNumber = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { phoneNumber, friendlyName } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
-    // Purchase via Twilio API
-    const buyResult = await buyTwilioPhoneNumber(phoneNumber);
-    const targetNum = buyResult.phoneNumber || phoneNumber || '+17372508034';
+    // Purchase via SignalWire API
+    const buyResult = await buySignalWirePhoneNumber(phoneNumber);
+    const targetNum = buyResult.phoneNumber || phoneNumber || '+12056076793';
 
     let existing = userPhoneNumbers.find(p => p.phoneNumber === targetNum && p.userId === authUser.id);
     if (existing) {
@@ -6102,7 +6248,7 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
         userEmail: authUser.email,
         phoneNumber: targetNum,
         friendlyName: friendlyName || targetNum,
-        provider: 'twilio',
+        provider: 'signalwire',
         status: 'active',
         purchasedAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + (isAdmin ? 3650 : 30) * 24 * 3600 * 1000).toISOString(),
@@ -6115,13 +6261,15 @@ app.post('/api/phone/buy-number', async (req: Request, res: Response) => {
     saveData();
     return res.json({
       success: true,
-      message: `Phone number ${targetNum} activated successfully.`,
+      message: `Phone number ${targetNum} activated successfully on SignalWire.`,
       number: existing
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.post(['/api/phone/buy-number', '/api/numbers/buy'], handleBuyNumber);
 
 // 7. POST /api/phone/extend - Extend subscription
 app.post('/api/phone/extend', (req: Request, res: Response) => {
@@ -6187,58 +6335,54 @@ app.delete('/api/phone/contacts/:id', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 11. GET /api/phone/sms - Retrieve user's SMS inbox (with live Twilio sync for admin)
-app.get('/api/phone/sms', async (req: Request, res: Response) => {
+// 11. GET /api/phone/sms & GET /api/sms/inbox - Retrieve user's SMS inbox (with live SignalWire sync for admin)
+const handleGetSmsInbox = async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const isAdmin = isReqAdmin(authUser);
-  const { trialNumber } = getTwilioConfig();
+  const { phoneNumber: adminNumber } = getSignalWireConfig();
 
-  // Active sync from live Twilio API to guarantee incoming SMS is immediately displayed
-  const client = getTwilioClient();
-  if (client) {
-    try {
-      const liveMessages = await client.messages.list({ limit: 40 });
-      let hasNew = false;
-      for (const tm of liveMessages) {
-        if (!sms_inbox.some(s => s.messageSid === tm.sid)) {
-          const newLiveSms: StoredSMS = {
-            id: 'sms_live_' + tm.sid,
-            userId: authUser.id || 'usr_miracle_01',
-            from: tm.from || 'Unknown',
-            to: tm.to || trialNumber || '+17372508034',
-            body: tm.body || '',
-            receivedAt: tm.dateSent ? tm.dateSent.toISOString() : (tm.dateCreated ? tm.dateCreated.toISOString() : new Date().toISOString()),
-            messageSid: tm.sid,
-            direction: (tm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
-            status: tm.status,
-            is_read: false
-          };
-          sms_inbox.unshift(newLiveSms);
-          broadcastNewSMS(newLiveSms);
-          hasNew = true;
-        }
+  // Active sync from live SignalWire API
+  try {
+    const liveMessages = await getSignalWireLogs(40);
+    let hasNew = false;
+    for (const sm of liveMessages) {
+      if (!sms_inbox.some(s => s.messageSid === sm.sid)) {
+        const newLiveSms: StoredSMS = {
+          id: 'sms_live_' + sm.sid,
+          userId: authUser.id || 'usr_miracle_01',
+          from: sm.from || 'Unknown',
+          to: sm.to || adminNumber || '+12056076793',
+          body: sm.body || '',
+          receivedAt: sm.dateSent || new Date().toISOString(),
+          messageSid: sm.sid,
+          direction: (sm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
+          status: sm.status,
+          is_read: false
+        };
+        sms_inbox.unshift(newLiveSms);
+        broadcastNewSMS(newLiveSms);
+        hasNew = true;
       }
-      if (hasNew) {
-        saveData();
-      }
-    } catch (syncErr: any) {
-      console.warn('[TWILIO ACTIVE SYNC] Note:', syncErr.message || syncErr);
     }
+    if (hasNew) {
+      saveData();
+    }
+  } catch (syncErr: any) {
+    console.warn('[SIGNALWIRE ACTIVE SYNC] Note:', syncErr.message || syncErr);
   }
 
   const userPhonesDigits = new Set<string>();
   userPhoneNumbers
-    .filter(p => p.userId === authUser.id || (isAdmin && (p.id === 'phone_free_miracle_admin' || p.phoneNumber === trialNumber)))
+    .filter(p => p.userId === authUser.id || (isAdmin && (p.id === 'phone_free_miracle_admin' || p.phoneNumber === adminNumber)))
     .forEach(p => {
       if (p.phoneNumber) userPhonesDigits.add(p.phoneNumber.replace(/\D/g, ''));
     });
-  if (trialNumber && isAdmin) {
-    userPhonesDigits.add(trialNumber.replace(/\D/g, ''));
+  if (adminNumber && isAdmin) {
+    userPhonesDigits.add(adminNumber.replace(/\D/g, ''));
   }
 
   const list = sms_inbox.filter(s => {
-    // Admin inbox displays all platform and Twilio trial SMS
     if (isAdmin) return true;
     if (authUser.id && s.userId === authUser.id) return true;
     const toDigits = (s.to || '').replace(/\D/g, '');
@@ -6251,22 +6395,23 @@ app.get('/api/phone/sms', async (req: Request, res: Response) => {
     success: true,
     messages: list
   });
-});
+};
 
-// 12. POST /api/phone/send-sms - Send outbound SMS through Twilio
-app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
+app.get(['/api/phone/sms', '/api/sms/inbox'], handleGetSmsInbox);
+
+// 12. POST /api/phone/send-sms & POST /api/sms/send - Send outbound SMS through SignalWire
+const handleSendSms = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { to, body, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { trialNumber } = getTwilioConfig();
-    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== trialNumber));
+    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
 
-    // Non-admin users cannot use the Twilio free trial!
     if (!isAdmin && userPhones.length === 0) {
       return res.status(403).json({
-        error: 'You must have an active purchased phone number to send SMS. Twilio trial is reserved for system admin.'
+        error: 'You must have an active purchased phone number to send SMS.'
       });
     }
 
@@ -6274,7 +6419,7 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recipient phone number (to) and message (body) are required.' });
     }
 
-    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '');
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to send SMS.' });
@@ -6282,7 +6427,7 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
 
     const normalizedTo = normalizePhoneNumber(to, '+234');
 
-    const twilioResult = await sendSmsViaTwilio({
+    const swResult = await sendSmsViaSignalWire({
       to: normalizedTo,
       from: fromNumber,
       body
@@ -6295,9 +6440,9 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
       to: normalizedTo,
       body,
       receivedAt: new Date().toISOString(),
-      messageSid: twilioResult.messageSid || 'SM_' + Date.now(),
+      messageSid: swResult.messageSid || 'SM_' + Date.now(),
       direction: 'outbound',
-      status: twilioResult.success ? (twilioResult.status || 'sent') : 'failed',
+      status: swResult.success ? (swResult.status || 'sent') : 'failed',
       is_read: true
     };
 
@@ -6305,23 +6450,25 @@ app.post('/api/phone/send-sms', async (req: Request, res: Response) => {
     saveData();
     broadcastNewSMS(outboundSms);
 
-    if (!twilioResult.success) {
+    if (!swResult.success) {
       return res.status(400).json({
         success: false,
-        error: twilioResult.error || 'Failed to send SMS through Twilio',
+        error: swResult.error || 'Failed to send SMS through SignalWire',
         sms: outboundSms
       });
     }
 
     return res.json({
       success: true,
-      messageSid: twilioResult.messageSid,
+      messageSid: swResult.messageSid,
       sms: outboundSms
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
+
+app.post(['/api/phone/send-sms', '/api/sms/send'], handleSendSms);
 
 // 13. PATCH /api/phone/sms/:id/read - Mark SMS as read
 app.patch('/api/phone/sms/:id/read', (req: Request, res: Response) => {
@@ -6354,93 +6501,19 @@ app.delete('/api/phone/sms', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// ================= TWILIO VOICE CALLING (INCOMING & OUTGOING) =================
-
-// 16. INCOMING VOICE WEBHOOK: /api/webhook/twilio/voice
-export const handleTwilioVoiceWebhook = async (req: Request, res: Response) => {
-  try {
-    ensureDataLoaded();
-    const body = { ...(req.query || {}), ...(req.body || {}) };
-    const from = String(body.From || body.from || 'Caller').trim();
-    const to = String(body.To || body.to || '+17372508034').trim();
-    const callSid = String(body.CallSid || body.callSid || 'CA_' + Date.now()).trim();
-
-    console.log(`[TWILIO VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
-
-    const newCall: StoredCall = {
-      id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      userId: 'usr_miracle_01',
-      from,
-      to,
-      direction: 'inbound',
-      status: 'in-progress',
-      callSid,
-      startedAt: new Date().toISOString()
-    };
-
-    calls_history.unshift(newCall);
-    saveData();
-    broadcastNewCall(newCall);
-
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Pause length="30"/>
-</Response>`);
-  } catch (err: any) {
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<Response></Response>');
-  }
-};
-
-app.all(
-  ['/api/webhook/twilio/voice', '/api/webhooks/twilio/voice'],
-  handleTwilioVoiceWebhook
-);
-
-// 17. VOICE CALL STATUS CALLBACK: /api/webhook/twilio/voice/status
-export const handleTwilioVoiceStatusWebhook = async (req: Request, res: Response) => {
-  try {
-    ensureDataLoaded();
-    const body = { ...(req.query || {}), ...(req.body || {}) };
-    const callSid = String(body.CallSid || body.callSid || '');
-    const callStatus = String(body.CallStatus || body.callStatus || 'completed').toLowerCase() as any;
-    const duration = parseInt(body.CallDuration || body.Duration || '0', 10);
-
-    const call = calls_history.find(c => c.callSid === callSid);
-    if (call) {
-      call.status = callStatus;
-      if (duration > 0) call.durationSeconds = duration;
-      call.endedAt = new Date().toISOString();
-      saveData();
-      broadcastNewCall(call);
-    }
-
-    return res.status(200).send('OK');
-  } catch (err: any) {
-    return res.status(200).send('OK');
-  }
-};
-
-app.all(
-  ['/api/webhook/twilio/voice/status', '/api/webhooks/twilio/voice/status'],
-  handleTwilioVoiceStatusWebhook
-);
-
-// 18. OUTGOING CALL: POST /api/phone/call (Direct voice call without text-to-speech)
-app.post('/api/phone/call', async (req: Request, res: Response) => {
+// 18. OUTGOING CALL: POST /api/phone/call & POST /api/voice/call (Direct SignalWire voice call)
+const handleMakeVoiceCall = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const { to, from } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { trialNumber } = getTwilioConfig();
-    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== trialNumber));
+    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
 
-    // Non-admin users cannot use the Twilio free trial!
     if (!isAdmin && userPhones.length === 0) {
       return res.status(403).json({
-        error: 'You must have an active purchased phone number to place calls. Twilio trial is reserved for system admin.'
+        error: 'You must have an active purchased phone number to place calls.'
       });
     }
 
@@ -6448,7 +6521,7 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recipient phone number (to) is required.' });
     }
 
-    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? trialNumber : '');
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '');
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to place calls.' });
@@ -6456,7 +6529,7 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
 
     const normalizedTo = normalizePhoneNumber(to, '+234');
 
-    const callResult = await makeCallViaTwilio({
+    const callResult = await makeCallViaSignalWire({
       to: normalizedTo,
       from: fromNumber
     });
@@ -6479,7 +6552,7 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
     if (!callResult.success) {
       return res.status(400).json({
         success: false,
-        error: callResult.error || 'Failed to place call through Twilio',
+        error: callResult.error || 'Failed to place call through SignalWire',
         call: outboundCall
       });
     }
@@ -6492,10 +6565,12 @@ app.post('/api/phone/call', async (req: Request, res: Response) => {
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
 
-// 19. GET /api/phone/calls - Retrieve user's call history
-app.get('/api/phone/calls', (req: Request, res: Response) => {
+app.post(['/api/phone/call', '/api/voice/call'], handleMakeVoiceCall);
+
+// 19. GET /api/phone/calls & GET /api/voice/logs - Retrieve user's call history
+const handleGetCalls = async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
@@ -6505,7 +6580,31 @@ app.get('/api/phone/calls', (req: Request, res: Response) => {
       .map(p => p.phoneNumber)
   );
 
+  // Sync calls from SignalWire for admin
+  if (isAdmin) {
+    try {
+      const swCalls = await getSignalWireCallLogs(20);
+      for (const sc of swCalls) {
+        if (!calls_history.some(c => c.callSid === sc.callSid)) {
+          calls_history.unshift({
+            id: 'call_live_' + sc.callSid,
+            userId: authUser.id || 'usr_miracle_01',
+            from: sc.from,
+            to: sc.to,
+            direction: sc.direction,
+            status: sc.status,
+            durationSeconds: sc.durationSeconds,
+            callSid: sc.callSid,
+            startedAt: sc.startedAt,
+            endedAt: sc.endedAt
+          });
+        }
+      }
+    } catch {}
+  }
+
   const list = calls_history.filter(c => {
+    if (isAdmin) return true;
     if (c.userId === authUser.id) return true;
     if (userPhones.has(c.to) || userPhones.has(c.from)) return true;
     return false;
@@ -6515,7 +6614,9 @@ app.get('/api/phone/calls', (req: Request, res: Response) => {
     success: true,
     calls: list
   });
-});
+};
+
+app.get(['/api/phone/calls', '/api/voice/logs', '/api/voice/calls'], handleGetCalls);
 
 // 20. DELETE /api/phone/calls/:id - Delete single call record
 app.delete('/api/phone/calls/:id', (req: Request, res: Response) => {

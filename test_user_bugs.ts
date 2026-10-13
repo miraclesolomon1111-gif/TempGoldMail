@@ -345,7 +345,7 @@ async function runBugsVerification() {
 
     // 19. API Keys
     const f19 = await fetch(`${baseUrl}/api/admin/api-keys`, { headers: adminHeaders });
-    assert(f19.status === 200, 'Feature 19: API Keys (Twilio, Resend, NOWPayments keys)');
+    assert(f19.status === 200, 'Feature 19: API Keys (SignalWire, Resend, NOWPayments keys)');
 
     // 20. Activity Logs
     const f20 = await fetch(`${baseUrl}/api/admin/activity-logs`, { headers: adminHeaders });

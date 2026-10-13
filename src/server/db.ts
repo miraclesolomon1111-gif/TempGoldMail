@@ -179,10 +179,11 @@ export interface StoredSettings {
   smtp_port: number;
   smtp_user: string;
   smtp_pass: string;
-  smtp_secure: boolean;
-  twilio_account_sid: string;
-  twilio_auth_token: string;
-  twilio_trial_number: string;
+  signalwire_project_id: string;
+  signalwire_api_token: string;
+  signalwire_space_url: string;
+  signalwire_phone_number: string;
+  signalwire_signing_key?: string;
   resend_api_key: string;
   resend_from: string;
   nowpayments_api_key: string;
@@ -224,9 +225,11 @@ class GoldDatabase {
     smtp_user: process.env.SMTP_USER || 'postmaster@goldmailer.xyz',
     smtp_pass: process.env.SMTP_PASS || '',
     smtp_secure: process.env.SMTP_SECURE === 'true',
-    twilio_account_sid: process.env.TWILIO_ACCOUNT_SID || '',
-    twilio_auth_token: process.env.TWILIO_AUTH_TOKEN || '',
-    twilio_trial_number: process.env.TWILIO_PHONE_NUMBER || '+1 (737) 250-8034',
+    signalwire_project_id: process.env.SIGNALWIRE_PROJECT_ID || 'c4c9559f-11f4-4125-9c81-ae5aba970a12',
+    signalwire_api_token: process.env.SIGNALWIRE_API_TOKEN || 'swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg',
+    signalwire_space_url: process.env.SIGNALWIRE_SPACE_URL || 'tasknest.signalwire.com',
+    signalwire_phone_number: process.env.SIGNALWIRE_PHONE_NUMBER || '+1 (205) 607-6793',
+    signalwire_signing_key: process.env.SIGNALWIRE_SIGNING_KEY || 'PSK_zd8NAKiZku142b86cW8CDkDU',
     resend_api_key: process.env.RESEND_API_KEY || '',
     resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>',
     nowpayments_api_key: process.env.NOWPAYMENTS_API_KEY || '',
