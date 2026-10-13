@@ -471,7 +471,11 @@ const saveData = () => {
       2
     );
 
-    const targets = [DATA_FILE_ROOT, DATA_FILE_TMP];
+    const targets = [
+      DATA_FILE_ROOT,
+      DATA_FILE_TMP,
+      path.join(process.cwd(), 'goldmailer_db_backup.json')
+    ];
     for (const file of targets) {
       try {
         const dir = path.dirname(file);
@@ -546,12 +550,12 @@ export const ensureDataLoaded = () => {
               ...u,
               recovery_phone: u.recovery_phone || goldUsers[idx].recovery_phone || '',
               backup_email: u.backup_email || goldUsers[idx].backup_email || '',
-              two_factor_enabled: u.two_factor_enabled !== undefined ? u.two_factor_enabled : (goldUsers[idx].two_factor_enabled || false),
+              two_factor_enabled: Boolean(u.two_factor_enabled || goldUsers[idx].two_factor_enabled),
               two_factor_secret: u.two_factor_secret || goldUsers[idx].two_factor_secret,
               backup_codes: (u.backup_codes && u.backup_codes.length > 0) ? u.backup_codes : (goldUsers[idx].backup_codes || [])
             };
           }
-          db.upsertAccount(u);
+          db.upsertAccount(goldUsers[idx === -1 ? goldUsers.length - 1 : idx]);
         }
       }
       // Also sync any accounts from db.listAccounts() into goldUsers
@@ -570,8 +574,8 @@ export const ensureDataLoaded = () => {
             ...du,
             recovery_phone: du.recovery_phone || existing.recovery_phone || '',
             backup_email: du.backup_email || existing.backup_email || '',
-            two_factor_enabled: du.two_factor_enabled !== undefined ? du.two_factor_enabled : (existing.two_factor_enabled || false),
-            two_factor_secret: du.two_factor_secret || existing.two_factor_secret,
+            two_factor_enabled: Boolean(existing.two_factor_enabled || du.two_factor_enabled),
+            two_factor_secret: existing.two_factor_secret || du.two_factor_secret,
             backup_codes: (du.backup_codes && du.backup_codes.length > 0) ? du.backup_codes : (existing.backup_codes || [])
           };
         }
@@ -733,10 +737,6 @@ const seedAccounts = () => {
   );
   if (existingMiracle) {
     existingMiracle.email = miracleEmail;
-    existingMiracle.password_hash = defaultPasswordHash;
-    if (existingMiracle.phone === '+234 801 234 5678') existingMiracle.phone = '';
-    if (existingMiracle.recovery_phone === '+234 801 234 5678') existingMiracle.recovery_phone = '';
-    if (existingMiracle.backup_email === 'miracle.backup@gmail.com') existingMiracle.backup_email = '';
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingMiracle.is_banned === undefined) {
       existingMiracle.is_banned = false;
@@ -773,11 +773,6 @@ const seedAccounts = () => {
   );
   if (existingDoris) {
     existingDoris.email = dorisEmail;
-    existingDoris.password_hash = defaultPasswordHash;
-    existingDoris.role = 'user';
-    if (existingDoris.phone === '+1 555 019 2834') existingDoris.phone = '';
-    if (existingDoris.recovery_phone === '+1 555 019 2834') existingDoris.recovery_phone = '';
-    if (existingDoris.backup_email === 'dorisokoh109@gmail.com') existingDoris.backup_email = '';
     // CRITICAL FIX: NEVER reset is_banned if the account was banned by admin!
     if (existingDoris.is_banned === undefined) {
       existingDoris.is_banned = false;
@@ -1109,7 +1104,12 @@ export const recordActiveDeviceLogin = (user: StoredGoldUser, req: Request): Sto
 
 const sanitizeUser = (u: StoredGoldUser) => {
   const { password_hash, two_factor_secret, ...safe } = u;
-  return safe;
+  return {
+    ...safe,
+    recovery_phone: u.recovery_phone || '',
+    backup_email: u.backup_email || '',
+    recovery_email: u.backup_email || ''
+  };
 };
 
 // ================= AUTHENTICATION & MULTI-ACCOUNT ENDPOINTS =================
@@ -1221,14 +1221,32 @@ app.post('/api/auth/sync-client-accounts', (req: Request, res: Response) => {
     if (Array.isArray(accounts)) {
       let added = 0;
       for (const acc of accounts) {
-        if (!acc.email) continue;
-        const cleanEmail = acc.email.toLowerCase().trim();
-        const cleanUser = (acc.username || cleanEmail.split('@')[0] || '').toLowerCase().trim();
-        const existing = goldUsers.find(u => u.email.toLowerCase() === cleanEmail);
+        if (!acc.email && !acc.username) continue;
+        const inputId = (acc.id || '').trim();
+        const rawEmail = (acc.email || '').toLowerCase().trim();
+        const rawUser = (acc.username || rawEmail.split('@')[0] || '').toLowerCase().trim();
+
+        let existing = (inputId ? goldUsers.find(u => u.id === inputId) : null)
+          || goldUsers.find(u => matchesUserIdentifier(u, rawEmail) || matchesUserIdentifier(u, rawUser))
+          || (db.findAccountSync ? (db.findAccountSync(rawEmail) || db.findAccountSync(rawUser)) : null)
+          || null;
+
         if (existing) {
           db.upsertAccount(existing);
           recordActiveDeviceLogin(existing, req);
         } else {
+          const { usernamePart, asGoldXyz } = normalizeUserIdentifier(rawUser || rawEmail);
+          const cleanEmail = asGoldXyz;
+          const cleanUser = usernamePart || cleanEmail.split('@')[0];
+
+          // Secondary safety check before creating a new user
+          const existingSecondary = goldUsers.find(u => matchesUserIdentifier(u, cleanEmail) || matchesUserIdentifier(u, cleanUser));
+          if (existingSecondary) {
+            db.upsertAccount(existingSecondary);
+            recordActiveDeviceLogin(existingSecondary, req);
+            continue;
+          }
+
           const newUser: StoredGoldUser = {
             id: acc.id || ('usr_' + crypto.randomBytes(8).toString('hex')),
             email: cleanEmail,
@@ -2390,17 +2408,36 @@ app.put('/api/auth/profile', async (req: Request, res: Response) => {
   }
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { first_name, last_name, phone, recovery_phone, backup_email, avatar_url } = req.body;
+  const { first_name, last_name, phone, recovery_phone, backup_email, avatar_url, recovery_email } = req.body;
   const updates: Partial<StoredGoldUser> = {};
   if (first_name !== undefined) { user.first_name = first_name; updates.first_name = first_name; }
   if (last_name !== undefined) { user.last_name = last_name; updates.last_name = last_name; }
   if (phone !== undefined) { user.phone = phone; updates.phone = phone; }
-  if (recovery_phone !== undefined) { user.recovery_phone = recovery_phone; updates.recovery_phone = recovery_phone; }
-  if (backup_email !== undefined) { user.backup_email = backup_email; updates.backup_email = backup_email; }
+
+  const recPhone = recovery_phone !== undefined ? recovery_phone : req.body.recoveryPhone;
+  if (recPhone !== undefined) {
+    const cleanPhone = String(recPhone).trim();
+    user.recovery_phone = cleanPhone;
+    updates.recovery_phone = cleanPhone;
+    if (!user.phone && cleanPhone) user.phone = cleanPhone;
+  }
+
+  const recEmail = backup_email !== undefined ? backup_email : (recovery_email !== undefined ? recovery_email : req.body.recoveryEmail);
+  if (recEmail !== undefined) {
+    const cleanEmail = String(recEmail).trim();
+    user.backup_email = cleanEmail;
+    updates.backup_email = cleanEmail;
+  }
+
   if (avatar_url !== undefined) { user.avatar_url = avatar_url; updates.avatar_url = avatar_url; }
 
   await db.updateAccount(user.id, updates);
+  // Ensure disk files and in-memory caches are strictly synced
   saveData();
+  try {
+    db.saveToDiskSync();
+  } catch {}
+
   return res.json({ success: true, user: sanitizeUser(user) });
 });
 

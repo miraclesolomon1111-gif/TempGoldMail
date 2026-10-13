@@ -393,6 +393,20 @@ export default function App() {
           clearAuthToken();
           setUser(null);
           setViewMode('hero');
+        } else {
+          setUser(prev => {
+            if (!prev) return fresh;
+            if (
+              prev.two_factor_enabled !== fresh.two_factor_enabled ||
+              prev.recovery_phone !== fresh.recovery_phone ||
+              prev.backup_email !== fresh.backup_email ||
+              (prev as any).recovery_email !== (fresh as any).recovery_email ||
+              JSON.stringify(prev.backup_codes) !== JSON.stringify(fresh.backup_codes)
+            ) {
+              return { ...prev, ...fresh };
+            }
+            return prev;
+          });
         }
       } catch {}
     }, 10000);

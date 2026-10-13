@@ -77,6 +77,7 @@ export interface UserProfile {
   phone?: string;
   recovery_phone?: string;
   backup_email?: string;
+  recovery_email?: string;
   avatar_url?: string;
   isPremium?: boolean;
   role?: 'user' | 'admin';

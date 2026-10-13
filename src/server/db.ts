@@ -685,9 +685,10 @@ class GoldDatabase {
 
   // Cron: auto-delete emails trashed over 30 days ago
   private startTrashCleanerCron() {
-    setInterval(() => {
+    const timer = setInterval(() => {
       this.purgeExpiredTrash();
     }, 60 * 60 * 1000); // Check hourly
+    if (timer && typeof timer.unref === 'function') timer.unref();
   }
 
   public purgeExpiredTrash(): number {
@@ -864,7 +865,28 @@ class GoldDatabase {
            (cleanUser && u.username.toLowerCase() === cleanUser)
     );
     if (idx !== -1) {
-      this.users[idx] = { ...this.users[idx], ...user, email: cleanEmail, role: enforcedRole };
+      const existing = this.users[idx];
+      // CRITICAL: Preserve 2FA credentials & recovery contacts from being wiped by sync objects!
+      const twoFaEnabled = user.two_factor_enabled !== undefined
+        ? (user.two_factor_enabled || existing.two_factor_enabled)
+        : existing.two_factor_enabled;
+      const twoFaSecret = user.two_factor_secret || existing.two_factor_secret;
+      const backupCodes = (user.backup_codes && user.backup_codes.length > 0) ? user.backup_codes : (existing.backup_codes || []);
+      const recoveryPhone = user.recovery_phone || existing.recovery_phone || '';
+      const backupEmail = user.backup_email || existing.backup_email || '';
+
+      this.users[idx] = {
+        ...existing,
+        ...user,
+        email: existing.email || cleanEmail,
+        two_factor_enabled: Boolean(twoFaEnabled),
+        two_factor_secret: twoFaSecret,
+        backup_codes: backupCodes,
+        recovery_phone: recoveryPhone,
+        backup_email: backupEmail,
+        role: enforcedRole
+      };
+      this.scheduleDiskSave();
       return this.users[idx];
     } else {
       const formatted: StoredGoldUser = {

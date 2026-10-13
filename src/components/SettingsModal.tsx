@@ -67,20 +67,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [verifyCode, setVerifyCode] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>(user?.backup_codes || []);
   const [copiedCodes, setCopiedCodes] = useState(false);
-  const sanitizeRecoveryPhone = (val?: string) => {
-    if (!val) return '';
-    if (val === '+234 801 234 5678' || val === '+1 555 019 2834' || val === '+1 267 230 1662') return '';
-    return val;
-  };
-
-  const sanitizeBackupEmail = (val?: string) => {
-    if (!val) return '';
-    if (val === 'miracle.backup@gmail.com' || val === 'dorisokoh109@gmail.com' || val === 'admin.backup@goldmailer.xyz') return '';
-    return val;
-  };
-
-  const [recoveryPhone, setRecoveryPhone] = useState(sanitizeRecoveryPhone(user?.recovery_phone || user?.phone));
-  const [backupEmail, setBackupEmail] = useState(sanitizeBackupEmail(user?.backup_email));
+  const [recoveryPhone, setRecoveryPhone] = useState(user?.recovery_phone || user?.phone || '');
+  const [backupEmail, setBackupEmail] = useState(user?.backup_email || (user as any)?.recovery_email || '');
 
   // Devices state
   const [devices, setDevices] = useState<UserDevice[]>([]);
@@ -94,8 +82,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (user) {
       setTwoFactorEnabled(Boolean(user.two_factor_enabled));
       setBackupCodes(user.backup_codes || []);
-      setRecoveryPhone(sanitizeRecoveryPhone(user.recovery_phone || user.phone));
-      setBackupEmail(sanitizeBackupEmail(user.backup_email));
+      setRecoveryPhone(user.recovery_phone || user.phone || '');
+      setBackupEmail(user.backup_email || (user as any).recovery_email || '');
     }
   }, [user]);
 
@@ -113,11 +101,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           if (freshUser.backup_codes && freshUser.backup_codes.length > 0) {
             setBackupCodes(freshUser.backup_codes);
           }
-          if (freshUser.recovery_phone) {
-            setRecoveryPhone(sanitizeRecoveryPhone(freshUser.recovery_phone));
+          if (freshUser.recovery_phone !== undefined) {
+            setRecoveryPhone(freshUser.recovery_phone || freshUser.phone || '');
           }
-          if (freshUser.backup_email) {
-            setBackupEmail(sanitizeBackupEmail(freshUser.backup_email));
+          if (freshUser.backup_email !== undefined) {
+            setBackupEmail(freshUser.backup_email || (freshUser as any).recovery_email || '');
           }
         }
       }).catch(() => {});
@@ -320,12 +308,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       const updated = await updateUserProfile({
         recovery_phone: recoveryPhone.trim(),
-        backup_email: backupEmail.trim()
+        backup_email: backupEmail.trim(),
+        recovery_email: backupEmail.trim()
       });
       onUserUpdated(updated);
-      setRecoveryPhone(sanitizeRecoveryPhone(updated.recovery_phone || recoveryPhone.trim()));
-      setBackupEmail(sanitizeBackupEmail(updated.backup_email || backupEmail.trim()));
-      setSuccessMsg('Recovery details saved.');
+      setRecoveryPhone(updated.recovery_phone || recoveryPhone.trim());
+      setBackupEmail(updated.backup_email || (updated as any).recovery_email || backupEmail.trim());
+      setSuccessMsg('Recovery details saved successfully.');
     } catch (err: any) {
       setError(err.message || 'Failed to save recovery details');
     } finally {
