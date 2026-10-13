@@ -34,7 +34,7 @@ export interface StoredPhoneNumber {
   phoneNumber: string; // E.164 format e.g. "+12056076793"
   friendlyName?: string;
   provider: 'signalwire';
-  status: 'active' | 'expired' | 'pending';
+  status: 'active' | 'suspended' | 'expired' | 'pending';
   purchasedAt: string;
   expiresAt: string;
   daysRemaining?: number;

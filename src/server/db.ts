@@ -19,6 +19,8 @@ export interface StoredGoldUser {
   backup_email?: string;
   two_factor_enabled: boolean;
   two_factor_secret?: string;
+  is_2fa_enabled?: boolean;
+  recovery_email?: string;
   backup_codes: string[];
   role: 'user' | 'admin';
   created_at: string;
@@ -179,6 +181,7 @@ export interface StoredSettings {
   smtp_port: number;
   smtp_user: string;
   smtp_pass: string;
+  smtp_secure?: boolean;
   signalwire_project_id: string;
   signalwire_api_token: string;
   signalwire_space_url: string;
@@ -238,7 +241,7 @@ class GoldDatabase {
     supabase_anon_key: process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || ''
   };
 
-  private supabase: SupabaseClient | null = null;
+  public supabase: SupabaseClient | null = null;
   private isLoaded = false;
   private saveTimeout: NodeJS.Timeout | null = null;
 
@@ -1394,19 +1397,27 @@ class GoldDatabase {
       .sort((a, b) => new Date(b.last_active || b.last_active_at || 0).getTime() - new Date(a.last_active || a.last_active_at || 0).getTime());
   }
 
-  public async updateSessionActivity(tokenOrId: string): Promise<void> {
+  public async updateSessionActivity(tokenOrId: string, ipAddress?: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const sess = this.sessions.find(s => s.session_token === tokenOrId || s.token === tokenOrId || s.session_id === tokenOrId || s.id === tokenOrId);
     if (sess) {
       sess.last_active = nowIso;
       sess.last_active_at = nowIso;
+      if (ipAddress) {
+        sess.ip_address = ipAddress;
+        sess.ip = ipAddress;
+      }
       this.scheduleDiskSave();
     }
     if (this.supabase) {
       try {
+        const updatePayload: Record<string, any> = { last_active: nowIso };
+        if (ipAddress) {
+          updatePayload.ip_address = ipAddress;
+        }
         await this.supabase
           .from('goldmailer_sessions')
-          .update({ last_active: nowIso })
+          .update(updatePayload)
           .or(`session_token.eq.${tokenOrId},id.eq.${tokenOrId}`);
       } catch {}
     }

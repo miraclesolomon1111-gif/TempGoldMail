@@ -2,6 +2,7 @@
  * SignalWire Central Client for GoldMailer
  * Uses both @signalwire/compatibility-api and direct SignalWire REST / Relay APIs
  */
+// @ts-ignore
 import { RestClient } from '@signalwire/compatibility-api';
 
 export interface SignalWireConfig {

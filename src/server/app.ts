@@ -11,8 +11,8 @@ import { Resend } from 'resend';
 import multer from 'multer';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
-import { db, StoredSettings } from './db.js';
-import { fetchEmailsFromImap, extractCleanAddress } from './imapService.js';
+import { db, StoredSettings } from './db';
+import { fetchEmailsFromImap, extractCleanAddress } from './imapService';
 import {
   StoredSMS,
   StoredPhoneNumber,
@@ -31,14 +31,14 @@ import {
   setSignalWireCredentials,
   testSignalWireConnection,
   normalizePhoneNumber
-} from './phoneService.js';
-import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo.js';
+} from './phoneService';
+import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo';
 
 // Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
 const sseClients: Response[] = [];
 
 // Send keep-alive comments every 15 seconds so proxies and browsers never drop the connection
-setInterval(() => {
+const sseKeepAliveTimer = setInterval(() => {
   for (let i = sseClients.length - 1; i >= 0; i--) {
     const client = sseClients[i];
     try {
@@ -48,6 +48,9 @@ setInterval(() => {
     }
   }
 }, 15000);
+if (sseKeepAliveTimer && typeof sseKeepAliveTimer.unref === 'function') {
+  sseKeepAliveTimer.unref();
+}
 
 export function broadcastNewEmail(email: StoredEmail) {
   for (let i = sseClients.length - 1; i >= 0; i--) {
@@ -267,6 +270,8 @@ export interface StoredGoldUser {
   backup_email?: string;
   two_factor_enabled: boolean;
   two_factor_secret?: string;
+  is_2fa_enabled?: boolean;
+  recovery_email?: string;
   backup_codes: string[];
   role: 'user' | 'admin';
   created_at: string;

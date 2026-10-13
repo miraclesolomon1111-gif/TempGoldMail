@@ -6,6 +6,7 @@ import {
   getStoredUser,
   setStoredUser,
   clearAuthToken,
+  getAuthToken,
   fetchCurrentUser,
   initDefaultSession,
   getCachedEmails,

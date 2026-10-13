@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { handleNowPaymentsWebhook } from '../../src/server/app.js';
+import { handleNowPaymentsWebhook } from '../../src/server/app';
 
 export default async function handler(req: Request, res: Response) {
   if (req.method !== 'POST') {
