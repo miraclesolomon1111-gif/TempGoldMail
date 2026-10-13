@@ -3208,7 +3208,14 @@ app.post('/api/security/2fa/setup', async (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  const user = goldUsers.find(u => u.id === decoded.id);
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const secret = new OTPAuth.Secret({ size: 20 });
@@ -3240,23 +3247,31 @@ app.post('/api/security/2fa/enable', async (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  let user = goldUsers.find(u => u.id === decoded.id);
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
   if (!user) {
-    const acc = await db.findAccount(decoded.email);
-    if (acc) user = acc as StoredGoldUser;
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
   }
-  if (!user || !user.two_factor_secret) {
-    return res.status(400).json({ error: '2FA setup was not initiated' });
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
   }
 
-  const { code } = req.body;
+  const { code, secret } = req.body;
+  const totpSecret = secret || user.two_factor_secret;
+  if (!totpSecret) {
+    return res.status(400).json({ error: '2FA setup was not initiated. Please click Turn On to initiate setup.' });
+  }
+
   const totp = new OTPAuth.TOTP({
     issuer: 'GoldMailer',
     label: user.email,
     algorithm: 'SHA1',
     digits: 6,
     period: 30,
-    secret: OTPAuth.Secret.fromBase32(user.two_factor_secret)
+    secret: OTPAuth.Secret.fromBase32(totpSecret)
   });
 
   const delta = totp.validate({ token: String(code).trim(), window: 2 });
@@ -3264,6 +3279,7 @@ app.post('/api/security/2fa/enable', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid 6-digit code. Check clock sync and try again.' });
   }
 
+  user.two_factor_secret = totpSecret;
   user.two_factor_enabled = true;
   if (!user.backup_codes || user.backup_codes.length === 0) {
     user.backup_codes = generateBackupCodes();
@@ -3271,7 +3287,7 @@ app.post('/api/security/2fa/enable', async (req: Request, res: Response) => {
   await db.updateAccount(user.id, {
     two_factor_enabled: true,
     backup_codes: user.backup_codes,
-    two_factor_secret: user.two_factor_secret
+    two_factor_secret: totpSecret
   });
   saveData();
 
@@ -3289,7 +3305,14 @@ app.post('/api/security/2fa/disable', async (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  const user = goldUsers.find(u => u.id === decoded.id);
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.two_factor_enabled = false;

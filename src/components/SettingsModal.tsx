@@ -55,7 +55,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // 2FA state
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(Boolean(user?.two_factor_enabled));
   const [isSettingUp2FA, setIsSettingUp2FA] = useState(false);
-  const [totpSecret, setTotpSecret] = useState('');
+  const [totpSecret, setTotpSecret] = useState<string>(() => {
+    try {
+      return localStorage.getItem('gm_pending_2fa_secret') || '';
+    } catch {
+      return '';
+    }
+  });
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>(user?.backup_codes || []);
@@ -144,6 +150,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       const res = await setup2FA();
       setTotpSecret(res.secret);
+      try {
+        localStorage.setItem('gm_pending_2fa_secret', res.secret);
+      } catch {}
       const dataUrl = await QRCode.toDataURL(res.otpauth_url, { width: 180, margin: 1 });
       setQrCodeDataUrl(dataUrl);
       setIsSettingUp2FA(true);
@@ -161,10 +170,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setError(null);
     setIsLoading(true);
     try {
-      const res = await enable2FA(verifyCode.trim());
+      const res = await enable2FA(verifyCode.trim(), totpSecret);
       setTwoFactorEnabled(true);
       setBackupCodes(res.backup_codes);
       setIsSettingUp2FA(false);
+      try {
+        localStorage.removeItem('gm_pending_2fa_secret');
+      } catch {}
       setSuccessMsg('2-Step Verification is now enabled on your account!');
       if (user) {
         onUserUpdated({ ...user, two_factor_enabled: true, backup_codes: res.backup_codes });

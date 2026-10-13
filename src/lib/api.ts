@@ -697,11 +697,11 @@ export async function setup2FA(): Promise<{ secret: string; otpauth_url: string;
   return await safeJsonParse(res);
 }
 
-export async function enable2FA(code: string): Promise<{ success: boolean; two_factor_enabled: boolean; backup_codes: string[] }> {
+export async function enable2FA(code: string, secret?: string): Promise<{ success: boolean; two_factor_enabled: boolean; backup_codes: string[] }> {
   const res = await fetch('/api/security/2fa/enable', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ code })
+    body: JSON.stringify({ code, secret })
   });
   const data = await safeJsonParse(res);
   if (!res.ok) throw new Error(data.error || 'Failed to verify code');
