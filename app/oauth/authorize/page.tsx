@@ -28,6 +28,13 @@ export default function OAuthAuthorizePage() {
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<OAuthAccount | null>(null);
 
+  // Inline Login state when no active session on this device
+  const [loginIdentifier, setLoginIdentifier] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+
   const [params, setParams] = useState({
     clientId: "",
     redirectUri: "",
@@ -156,6 +163,53 @@ export default function OAuthAuthorizePage() {
     validateAndLoad();
   }, []);
 
+  const handleInlineLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginIdentifier.trim() || !loginPassword.trim()) return;
+    setLoggingIn(true);
+    setLoginError(null);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          identifier: loginIdentifier.trim(),
+          password: loginPassword.trim()
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Login failed");
+      }
+
+      if (data.token) {
+        localStorage.setItem("goldmail_token", data.token);
+      }
+      if (data.user) {
+        localStorage.setItem("goldmail_user", JSON.stringify(data.user));
+        const newAcc: OAuthAccount = {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.username,
+          name: `${data.user.first_name || ""} ${data.user.last_name || ""}`.trim() || data.user.username,
+          avatar_url: data.user.avatar_url
+        };
+        setAccounts((prev) => {
+          const exists = prev.some((a) => a.email.toLowerCase() === newAcc.email.toLowerCase());
+          return exists ? prev : [newAcc, ...prev];
+        });
+        setSelectedAccount(newAcc);
+        setShowLoginForm(false);
+        setLoginPassword("");
+      }
+    } catch (err: any) {
+      setLoginError(err.message || "Failed to sign in. Please verify your credentials.");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
   const handleAuthorize = async () => {
     if (!selectedAccount) return;
     setApproving(true);
@@ -282,32 +336,65 @@ export default function OAuthAuthorizePage() {
         {/* Title */}
         <div className="space-y-1 text-center">
           <h2 className="text-base font-bold text-white">
-            Choose an account
+            {accounts.length === 0 || showLoginForm ? "Sign in to GoldMailer" : "Choose an account"}
           </h2>
           <p className="text-xs text-zinc-400">
             to continue to <strong className="text-white">{client?.app_name || "Application"}</strong>
           </p>
         </div>
 
-        {/* Multi-Account Selector (Google OAuth Style) */}
-        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-          {accounts.length === 0 ? (
-            <div className="p-4 bg-white/5 border border-white/10 rounded-2xl text-center space-y-2">
-              <p className="text-xs text-zinc-300 font-medium">No account is currently signed in on this device.</p>
-              <p className="text-[11px] text-zinc-400">
-                Please sign in to GoldMailer to continue to <strong className="text-white">{client?.app_name || "Application"}</strong>
-              </p>
-              <div className="pt-1">
-                <a
-                  href={`/?oauth_consent=true&client_id=${encodeURIComponent(params.clientId)}&redirect_uri=${encodeURIComponent(params.redirectUri)}&scope=${encodeURIComponent(params.scope)}&state=${encodeURIComponent(params.state)}`}
-                  className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-xs font-semibold text-white cursor-pointer"
-                >
-                  Sign in to GoldMailer
-                </a>
+        {/* Multi-Account Selector or Inline Login Form (Google OAuth Style) */}
+        {accounts.length === 0 || showLoginForm ? (
+          <form onSubmit={handleInlineLogin} className="space-y-3 p-4 bg-white/5 border border-white/10 rounded-2xl">
+            {loginError && (
+              <div className="p-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 text-xs">
+                {loginError}
               </div>
+            )}
+            <div>
+              <label className="block text-zinc-400 text-xs mb-1 font-medium">Email or Username</label>
+              <input
+                type="text"
+                required
+                value={loginIdentifier}
+                onChange={(e) => setLoginIdentifier(e.target.value)}
+                placeholder="username@goldmailer.xyz"
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-[#FF6A00]"
+              />
             </div>
-          ) : (
-            accounts.map((acc) => {
+            <div>
+              <label className="block text-zinc-400 text-xs mb-1 font-medium">Password</label>
+              <input
+                type="password"
+                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="Enter your password"
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-[#FF6A00]"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              {accounts.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowLoginForm(false)}
+                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-zinc-300 font-semibold"
+                >
+                  Back
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={loggingIn}
+                className="flex-1 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-xs font-bold text-white shadow transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {loggingIn ? "Signing in..." : "Sign in & Continue"}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+            {accounts.map((acc) => {
               const isSelected = selectedAccount?.email.toLowerCase() === acc.email.toLowerCase();
               return (
                 <div
@@ -339,9 +426,22 @@ export default function OAuthAuthorizePage() {
                   )}
                 </div>
               );
-            })
-          )}
-        </div>
+            })}
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowLoginForm(true);
+                setLoginIdentifier("");
+                setLoginPassword("");
+              }}
+              className="w-full p-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-dashed border-white/20 text-xs text-zinc-300 font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <span>+</span>
+              <span>Use another account</span>
+            </button>
+          </div>
+        )}
 
         {/* Permissions */}
         <div className="p-3 bg-black/40 border border-white/5 rounded-xl text-xs space-y-1.5">

@@ -25,6 +25,7 @@ import {
   regenerateBackupCodes,
   fetchUserDevices,
   revokeAllOtherDevices,
+  revokeSession,
   updateUserProfile
 } from '../lib/api';
 
@@ -194,6 +195,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSuccessMsg('Signed out of all other active sessions.');
     } catch (e: any) {
       alert(e.message);
+    }
+  };
+
+  // Logout specific device (Requirement 3)
+  const handleLogoutDevice = async (d: UserDevice) => {
+    if (!confirm(`Sign out ${d.device_name || 'this device'} (${d.ip})?`)) return;
+    try {
+      await revokeSession(d.session_token || d.id);
+      loadDevices();
+      setSuccessMsg(`Signed out of ${d.device_name || 'device'}.`);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const formatLastActive = (dateStr: string, isCurrent?: boolean) => {
+    if (isCurrent) return 'Current device';
+    if (!dateStr) return 'Recently';
+    try {
+      const date = new Date(dateStr);
+      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (diffSec < 60) return 'Just now';
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)} minutes ago`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} hours ago`;
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return dateStr;
     }
   };
 
@@ -445,56 +473,87 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 2: DEVICES */}
+          {/* TAB 2: DEVICES (Gmail-Style Device Management) */}
           {activeTab === 'devices' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 bg-white/5 border border-white/10 rounded-2xl">
                 <div>
-                  <h4 className="text-sm font-bold text-white">Your Logged-in Devices</h4>
-                  <p className="text-xs text-zinc-400">
-                    Sessions currently active on your GoldMailer account.
+                  <h4 className="text-sm font-bold text-white">Your devices</h4>
+                  <p className="text-xs text-[#FF8C42] font-semibold mt-0.5">
+                    You are currently logged in on {devices.length} device{devices.length === 1 ? '' : 's'}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleRevokeOtherDevices}
-                  className="px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold text-xs flex items-center gap-1.5"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  Sign out of all other devices
-                </button>
+                {devices.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={handleRevokeOtherDevices}
+                    className="px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Logout from all other devices
+                  </button>
+                )}
               </div>
 
-              <div className="space-y-2">
-                {devices.map((d) => (
-                  <div
-                    key={d.id}
-                    className={`p-3.5 rounded-2xl border flex items-center justify-between ${
-                      d.is_current
-                        ? 'bg-[#FF6A00]/10 border-[#FF6A00]/40'
-                        : 'bg-white/5 border-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/10 flex items-center justify-center text-[#FF8C42]">
-                        <Laptop className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-white">{d.device_name}</span>
-                          {d.is_current && (
-                            <span className="text-[10px] bg-[#FF6A00] text-white px-1.5 py-0.2 rounded-full font-bold">
-                              Current Device
-                            </span>
-                          )}
+              <div className="space-y-2.5">
+                {devices.length === 0 ? (
+                  <p className="text-xs text-zinc-400 text-center py-6">No device sessions detected.</p>
+                ) : (
+                  devices.map((d) => (
+                    <div
+                      key={d.id || d.session_token}
+                      className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
+                        d.is_current
+                          ? 'bg-[#FF6A00]/10 border-[#FF6A00]/40 shadow-sm'
+                          : 'bg-white/5 border-white/10 hover:border-white/20'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/10 flex items-center justify-center text-[#FF8C42] flex-shrink-0">
+                          <Laptop className="w-5 h-5" />
                         </div>
-                        <p className="text-[11px] text-zinc-400">
-                          {d.location} · IP: {d.ip} · Last active: {d.is_current ? 'Now' : new Date(d.last_active).toLocaleTimeString()}
-                        </p>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-white text-xs sm:text-sm truncate">
+                              {d.device_name || `${d.browser} on ${d.os}`}
+                            </span>
+                            {d.is_current && (
+                              <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                Current device
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-zinc-300 font-mono mt-0.5 truncate">
+                            IP: {d.ip || d.ip_address || '127.0.0.1'} - {d.location || [d.city, d.country].filter(Boolean).join(', ') || 'Unknown Location'}
+                          </p>
+                          <p className="text-[10px] text-zinc-400 mt-0.5">
+                            Last active: {formatLastActive(d.last_active, d.is_current)}
+                          </p>
+                        </div>
                       </div>
+
+                      {!d.is_current && (
+                        <button
+                          type="button"
+                          onClick={() => handleLogoutDevice(d)}
+                          className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-red-500/20 hover:text-red-400 text-zinc-300 text-xs font-semibold border border-white/10 transition-colors flex-shrink-0 cursor-pointer"
+                        >
+                          Logout this device
+                        </button>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
+              </div>
+
+              <div className="pt-2 text-center">
+                <a
+                  href="/account/security"
+                  className="text-xs text-[#FF8C42] hover:underline font-medium"
+                >
+                  View full Google-style Security & Devices page &rarr;
+                </a>
               </div>
             </div>
           )}

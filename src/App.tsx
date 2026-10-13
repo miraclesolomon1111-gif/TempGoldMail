@@ -20,7 +20,8 @@ import {
   restoreEmail,
   emptyTrash,
   batchEmailAction,
-  syncClientAccounts
+  syncClientAccounts,
+  fetchCurrentActivity
 } from './lib/api';
 
 import { GmailHeader } from './components/GmailHeader';
@@ -162,6 +163,15 @@ export default function App() {
     const u = getStoredUser();
     return u?.email || '';
   });
+
+  // Current IP & Geo-Location Activity (Requirement 5)
+  const [activity, setActivity] = useState<{ ip: string; city: string; country: string } | null>(null);
+
+  useEffect(() => {
+    fetchCurrentActivity().then((act) => {
+      if (act) setActivity(act);
+    });
+  }, [user, activeEmail]);
 
   // Strict Miracle Admin Access Check
   const isMiracleAdmin = (user?.email || activeEmail || '').toLowerCase().trim() === 'miracle@goldmailer.xyz';
@@ -916,6 +926,8 @@ export default function App() {
             onOpenAdmin={isMiracleAdmin ? () => setIsAdminOpen(true) : undefined}
             notifPermission={notifPermission}
             onToggleNotifications={handleToggleNotifications}
+            activity={activity}
+            onOpenSecurity={() => setIsSettingsOpen(true)}
           />
 
           {/* Push Notification Banner */}
@@ -1018,6 +1030,27 @@ export default function App() {
                   onEmptyTrash={handleEmptyTrash}
                 />
               </main>
+            )}
+
+            {/* Gmail-style Last Account Activity Footer (Requirement 5) */}
+            {activity?.ip && (
+              <div className={`px-4 py-1.5 border-t text-[11px] flex items-center justify-between ${
+                darkMode ? 'border-white/5 bg-[#151619]/60 text-zinc-400' : 'border-orange-100 bg-orange-50/50 text-zinc-600'
+              }`}>
+                <span className="hidden sm:inline">GoldMailer security protection active</span>
+                <div className="flex items-center gap-2 ml-auto">
+                  <span>
+                    Last account activity: <strong className="font-mono text-white dark:text-zinc-200">IP {activity.ip} ({activity.city || activity.country || 'Location'})</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="text-[#FF8C42] hover:underline font-semibold cursor-pointer"
+                  >
+                    Details
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 

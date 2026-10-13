@@ -31,6 +31,7 @@ import {
   testTwilioConnection,
   normalizePhoneNumber
 } from './phoneService.js';
+import { getClientIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo.js';
 
 // Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
 const sseClients: Response[] = [];
@@ -105,6 +106,35 @@ app.use((req: Request, res: Response, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
+  next();
+});
+
+// Helper to parse cookies from headers
+export const parseCookies = (req: Request): Record<string, string> => {
+  const list: Record<string, string> = {};
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(c => {
+    let [name, ...rest] = c.split('=');
+    name = name?.trim();
+    if (!name) return;
+    list[name] = decodeURIComponent(rest.join('=').trim());
+  });
+  return list;
+};
+
+// Requirement 7: UPDATE last_active on every request with valid session
+app.use((req: Request, _res: Response, next) => {
+  try {
+    const cookies = parseCookies(req);
+    const sessionToken =
+      cookies['goldmailer_session'] ||
+      cookies['session_token'] ||
+      (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : '');
+    if (sessionToken) {
+      db.updateSessionActivity(sessionToken).catch(() => {});
+    }
+  } catch {}
   next();
 });
 
@@ -1352,25 +1382,51 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     saveData();
 
-    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
-    const token = generateToken({ id: newUser.id, email: newUser.email, username: newUser.username, role: newUser.role });
+    const curIp = getClientIP(req);
+    const userAgent = getClientUserAgent(req);
+    const detected = await detectDeviceAndLocation(userAgent, curIp);
+    const { device, browser, os, city, country: geoCountry } = detected;
 
-    // Record session in DB
-    await db.createSession({
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const ssid = 's_' + crypto.randomBytes(20).toString('hex');
+    const sapisid = crypto.createHash('sha1').update(sessionToken + 'salt').digest('hex');
+    const nowIso = new Date().toISOString();
+
+    const token = generateToken({ id: newUser.id, email: newUser.email, username: newUser.username, role: newUser.role, session_token: sessionToken });
+
+    // Record session in DB & Supabase goldmailer_sessions
+    const session = await db.createSession({
+      id: 'sess_' + crypto.randomBytes(8).toString('hex'),
       session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
       user_id: newUser.id,
       email: newUser.email,
+      session_token: sessionToken,
       token,
+      ip_address: curIp,
       ip: curIp,
-      user_agent: (req.headers['user-agent'] as string) || '',
-      created_at: new Date().toISOString(),
-      last_active_at: new Date().toISOString()
+      city,
+      country: geoCountry || country || 'Unknown',
+      device,
+      browser,
+      os,
+      user_agent: userAgent,
+      is_current: true,
+      last_active: nowIso,
+      created_at: nowIso
     });
     recordActiveDeviceLogin(newUser, req);
+
+    // Set cookies like Gmail
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('goldmailer_session', sessionToken, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SSID', ssid, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SAPISID', sapisid, { path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
 
     return res.status(201).json({
       success: true,
       token,
+      session_token: sessionToken,
+      session_id: session.session_id,
       user: sanitizeUser(newUser),
       backup_codes: backupCodes
     });
@@ -1515,27 +1571,63 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       }
     }
 
-    // Save session in DB
-    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
-    const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role });
+    // Save session in DB & Supabase goldmailer_sessions
+    const curIp = getClientIP(req);
+    const userAgent = getClientUserAgent(req);
+    const detected = await detectDeviceAndLocation(userAgent, curIp);
+    const { device, browser, os, city, country } = detected;
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const ssid = 's_' + crypto.randomBytes(20).toString('hex');
+    const sapisid = crypto.createHash('sha1').update(sessionToken + 'salt').digest('hex');
+    const nowIso = new Date().toISOString();
+
+    const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role, session_token: sessionToken });
+
     const session = await db.createSession({
+      id: 'sess_' + crypto.randomBytes(8).toString('hex'),
       session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
       user_id: user.id,
       email: user.email,
+      session_token: sessionToken,
       token,
+      ip_address: curIp,
       ip: curIp,
-      user_agent: (req.headers['user-agent'] as string) || '',
-      created_at: new Date().toISOString(),
-      last_active_at: new Date().toISOString()
+      city,
+      country,
+      device,
+      browser,
+      os,
+      user_agent: userAgent,
+      is_current: true,
+      last_active: nowIso,
+      created_at: nowIso
     });
     recordActiveDeviceLogin(user, req);
 
-    console.log(`✅ [LOGIN SUCCESS] Logged in: ${user.email}`);
+    // Set cookies like Gmail
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('goldmailer_session', sessionToken, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SSID', ssid, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SAPISID', sapisid, { path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+
+    console.log(`✅ [LOGIN SUCCESS] Logged in: ${user.email} from ${device} (${curIp} - ${city}, ${country})`);
     return res.json({
       success: true,
       token,
+      session_token: sessionToken,
       user: sanitizeUser(user),
-      session_id: session.session_id
+      session_id: session.session_id,
+      session: {
+        session_token: sessionToken,
+        ip_address: curIp,
+        city,
+        country,
+        device,
+        browser,
+        os,
+        last_active: nowIso
+      }
     });
   } catch (err: any) {
     console.error('Login error:', err);
@@ -1588,23 +1680,47 @@ app.post('/api/auth/switch-account', async (req: Request, res: Response) => {
       role: targetUser.role
     });
 
-    const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
+    const curIp = getClientIP(req);
+    const userAgent = getClientUserAgent(req);
+    const detected = await detectDeviceAndLocation(userAgent, curIp);
+    const { device, browser, os, city, country } = detected;
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const ssid = 's_' + crypto.randomBytes(20).toString('hex');
+    const sapisid = crypto.createHash('sha1').update(sessionToken + 'salt').digest('hex');
+    const nowIso = new Date().toISOString();
+
     const session = await db.createSession({
+      id: sessionId || ('sess_' + crypto.randomBytes(8).toString('hex')),
       session_id: sessionId || ('sess_' + crypto.randomBytes(8).toString('hex')),
       user_id: targetUser.id,
       email: targetUser.email,
+      session_token: sessionToken,
       token,
+      ip_address: curIp,
       ip: curIp,
-      user_agent: (req.headers['user-agent'] as string) || '',
-      created_at: new Date().toISOString(),
-      last_active_at: new Date().toISOString()
+      city,
+      country,
+      device,
+      browser,
+      os,
+      user_agent: userAgent,
+      is_current: true,
+      last_active: nowIso,
+      created_at: nowIso
     });
     recordActiveDeviceLogin(targetUser, req);
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('goldmailer_session', sessionToken, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SSID', ssid, { httpOnly: true, path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
+    res.cookie('SAPISID', sapisid, { path: '/', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: isProd });
 
     console.log(`✅ [SWITCH ACCOUNT] Switched successfully to: ${targetUser.email}`);
     return res.json({
       success: true,
       token,
+      session_token: sessionToken,
       user: sanitizeUser(targetUser),
       session_id: session.session_id
     });
@@ -1616,13 +1732,35 @@ app.post('/api/auth/switch-account', async (req: Request, res: Response) => {
 // 4c. Active Sessions endpoint
 app.get('/api/auth/sessions', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
-    const token = authHeader.replace(/^Bearer\s+/i, '');
-    const decoded = verifyToken(token);
-    if (!decoded?.email) return res.status(401).json({ error: 'Invalid token' });
+    const cookies = parseCookies(req);
+    const sessionCookie = cookies['goldmailer_session'] || cookies['session_token'];
+    let userIdentifier = '';
 
-    const sessions = await db.getSessionsForUser(decoded.email);
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      const decoded = verifyToken(token);
+      if (decoded?.id || decoded?.email) userIdentifier = decoded.id || decoded.email;
+    }
+
+    if (!userIdentifier && sessionCookie) {
+      const sess = await db.getSession(sessionCookie);
+      if (sess) userIdentifier = sess.user_id || sess.email;
+    }
+
+    if (!userIdentifier) return res.status(401).json({ error: 'Unauthorized' });
+
+    const rawSessions = await db.getSessionsForUser(userIdentifier);
+    const curIp = getClientIP(req);
+    const sessions = rawSessions.map(s => ({
+      ...s,
+      is_current: Boolean(
+        (sessionCookie && (s.session_token === sessionCookie || s.token === sessionCookie)) ||
+        s.ip_address === curIp ||
+        s.ip === curIp
+      )
+    }));
+
     return res.json({ success: true, sessions });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -3176,36 +3314,150 @@ app.post('/api/security/backup-codes/regenerate', async (req: Request, res: Resp
   return res.json({ success: true, backup_codes: user.backup_codes });
 });
 
-app.get('/api/security/devices', (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.json([]);
-  const token = authHeader.replace(/^Bearer\s+/i, '');
-  const decoded = verifyToken(token);
-  if (!decoded) return res.json([]);
+app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request, res: Response) => {
+  try {
+    const cookies = parseCookies(req);
+    const sessionCookie = cookies['goldmailer_session'] || cookies['session_token'];
+    let userIdentifier = '';
+    let userId = '';
 
-  const curIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress;
-  const list = userDevices
-    .filter(d => d.user_id === decoded.id)
-    .map(d => ({
-      ...d,
-      is_current: d.ip === curIp
-    }));
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      const decoded = verifyToken(token);
+      if (decoded?.id || decoded?.email) {
+        userIdentifier = decoded.email || decoded.id;
+        userId = decoded.id;
+      }
+    }
 
-  return res.json(list);
+    if (!userIdentifier && sessionCookie) {
+      const sess = await db.getSession(sessionCookie);
+      if (sess) {
+        userIdentifier = sess.email || sess.user_id;
+        userId = sess.user_id;
+      }
+    }
+
+    if (!userIdentifier) {
+      // If no auth, return empty
+      return req.path.includes('/sessions')
+        ? res.json({ success: true, sessions: [] })
+        : res.json([]);
+    }
+
+    const curIp = getClientIP(req);
+    const curUa = getClientUserAgent(req);
+    const rawSessions = await db.getSessionsForUser(userId || userIdentifier);
+
+    const sessions = rawSessions.map(s => {
+      const isCurrent = Boolean(
+        (sessionCookie && (s.session_token === sessionCookie || s.token === sessionCookie)) ||
+        (s.ip_address === curIp || s.ip === curIp)
+      );
+      return {
+        id: s.id || s.session_id,
+        session_id: s.id || s.session_id,
+        user_id: s.user_id,
+        email: s.email,
+        session_token: s.session_token,
+        ip_address: s.ip_address || s.ip || '127.0.0.1',
+        ip: s.ip_address || s.ip || '127.0.0.1',
+        city: s.city || 'Unknown',
+        country: s.country || 'Unknown',
+        device: s.device || `${s.browser || 'Browser'} on ${s.os || 'Device'}`,
+        device_name: s.device || `${s.browser || 'Browser'} on ${s.os || 'Device'}`,
+        browser: s.browser || 'Browser',
+        os: s.os || 'Device',
+        user_agent: s.user_agent || '',
+        location: [s.city, s.country].filter(Boolean).join(', ') || 'Unknown Location',
+        is_current: isCurrent,
+        is_trusted: true,
+        last_active: s.last_active || s.last_active_at || s.created_at,
+        created_at: s.created_at
+      };
+    });
+
+    if (req.path.includes('/devices') && !req.query.format) {
+      return res.json(sessions);
+    }
+
+    return res.json({
+      success: true,
+      sessions,
+      current_ip: curIp,
+      count: sessions.length
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/security/devices/revoke-all', (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
-  const token = authHeader.replace(/^Bearer\s+/i, '');
-  const decoded = verifyToken(token);
-  if (!decoded) return res.status(401).json({ error: 'Invalid token' });
+// Revoke individual device session (Requirement 3)
+app.post('/api/security/sessions/revoke', async (req: Request, res: Response) => {
+  try {
+    const { session_token, id } = req.body || {};
+    const target = session_token || id;
+    if (!target) return res.status(400).json({ error: 'Missing session_token or id' });
+    await db.removeSession(target);
+    return res.json({ success: true, message: 'Device session logged out successfully' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
-  const curIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress;
-  userDevices = userDevices.filter(d => d.user_id !== decoded.id || d.ip === curIp);
-  saveData();
+// Logout from all other devices (Requirement 6)
+app.post(['/api/security/devices/revoke-all', '/api/security/sessions/revoke-others'], async (req: Request, res: Response) => {
+  try {
+    const cookies = parseCookies(req);
+    const sessionCookie = cookies['goldmailer_session'] || cookies['session_token'] || '';
+    let userId = '';
 
-  return res.json({ success: true, message: 'All other devices have been signed out.' });
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '');
+      const decoded = verifyToken(token);
+      if (decoded?.id) userId = decoded.id;
+    }
+
+    if (!userId && sessionCookie) {
+      const sess = await db.getSession(sessionCookie);
+      if (sess) userId = sess.user_id;
+    }
+
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    await db.removeOtherSessions(userId, sessionCookie);
+    return res.json({ success: true, message: 'All other devices have been signed out.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Current activity for Dashboard Header / Footer (Requirement 5)
+app.get('/api/security/activity/current', async (req: Request, res: Response) => {
+  try {
+    const ip = getClientIP(req);
+    const ua = getClientUserAgent(req);
+    const detected = await detectDeviceAndLocation(ua, ip);
+    return res.json({
+      ip,
+      city: detected.city,
+      country: detected.country,
+      device: detected.device,
+      browser: detected.browser,
+      os: detected.os,
+      last_active: new Date().toISOString()
+    });
+  } catch {
+    return res.json({
+      ip: '127.0.0.1',
+      city: 'Unknown',
+      country: 'Unknown',
+      device: 'Browser',
+      last_active: new Date().toISOString()
+    });
+  }
 });
 
 // ================= OAUTH 2.0 PROVIDER =================
@@ -3698,42 +3950,44 @@ app.get(['/api/oauth/authorize', '/oauth/authorize'], async (req: Request, res: 
   return res.redirect(targetUrl);
 });
 
-app.get('/api/oauth/accounts', (req: Request, res: Response) => {
+app.get('/api/oauth/accounts', async (req: Request, res: Response) => {
   ensureDataLoaded();
-  const curIp = normalizeIp((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress);
-  const matchedUserIds = new Set<string>();
-  const matchedEmails = new Set<string>();
-
-  // 1. Authorization Bearer token (if user is currently signed in and sends token)
+  const cookies = parseCookies(req);
+  const sessionCookie = cookies['goldmailer_session'] || cookies['session_token'];
   const authHeader = req.headers.authorization;
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const verifiedUserIds = new Set<string>();
+  const verifiedEmails = new Set<string>();
+
+  // 1. Read session cookie from request: goldmailer_session
+  // Verify: SELECT * FROM goldmailer_sessions WHERE session_token = cookie AND last_active > now() - 30 days
+  if (sessionCookie) {
+    const sess = await db.getSession(sessionCookie);
+    if (sess && new Date(sess.last_active || sess.last_active_at || sess.created_at) >= thirtyDaysAgo) {
+      if (sess.user_id) verifiedUserIds.add(sess.user_id);
+      if (sess.email) verifiedEmails.add(sess.email.toLowerCase().trim());
+    }
+  }
+
+  // 2. Also verify Bearer token if presented
   if (authHeader) {
     const token = authHeader.replace(/^Bearer\s+/i, '').trim();
     const decoded = verifyToken(token);
-    if (decoded?.id) matchedUserIds.add(decoded.id);
-    if (decoded?.email) matchedEmails.add(decoded.email.toLowerCase().trim());
-  }
-
-  // 2. IP Address & Device Sync from userDevices (matching client IP)
-  for (const dev of userDevices) {
-    const devIp = normalizeIp(dev.ip);
-    const isIpMatch = devIp === curIp || (devIp === '127.0.0.1' && curIp === '127.0.0.1');
-    if (isIpMatch && dev.user_id) {
-      matchedUserIds.add(dev.user_id);
+    if (decoded?.id || decoded?.email) {
+      const sess = await db.getSession(token) || (decoded.session_token ? await db.getSession(decoded.session_token) : null);
+      if (sess && new Date(sess.last_active || sess.last_active_at || sess.created_at) >= thirtyDaysAgo) {
+        if (sess.user_id) verifiedUserIds.add(sess.user_id);
+        if (sess.email) verifiedEmails.add(sess.email.toLowerCase().trim());
+      } else if (decoded.id && decoded.exp && decoded.exp > Date.now()) {
+        verifiedUserIds.add(decoded.id);
+        if (decoded.email) verifiedEmails.add(decoded.email.toLowerCase().trim());
+      }
     }
   }
 
-  // 3. IP Address & Device Sync from persistent database sessions (matching client IP)
-  const dbSessions = (db as any).sessions || [];
-  for (const sess of dbSessions) {
-    const sessIp = sess.ip ? normalizeIp(sess.ip) : '';
-    const isIpMatch = sessIp && (sessIp === curIp || (sessIp === '127.0.0.1' && curIp === '127.0.0.1'));
-    if (isIpMatch) {
-      if (sess.user_id) matchedUserIds.add(sess.user_id);
-      if (sess.email) matchedEmails.add(sess.email.toLowerCase().trim());
-    }
-  }
-
-  // 4. Device Sync: Check if client passed synced device account emails/tokens in header or query
+  // 3. Multi-account on THIS browser: check accounts in localStorage passed from this browser,
+  // but strictly verify each has a valid active session in goldmailer_sessions within 30 days!
   const rawClientAccsHeader = req.headers['x-device-accounts'] as string;
   const rawClientAccsQuery = (req.query.client_accounts as string) || (req.query.emails as string);
   const deviceAccountsPayload = rawClientAccsHeader || rawClientAccsQuery;
@@ -3747,15 +4001,25 @@ app.get('/api/oauth/accounts', (req: Request, res: Response) => {
         : [];
       for (const em of emailList) {
         const clean = String(em).toLowerCase().trim();
-        if (clean) matchedEmails.add(clean);
+        const userSessList = await db.getSessionsForUser(clean);
+        const hasValidSession = userSessList.some(s => new Date(s.last_active || s.last_active_at || s.created_at) >= thirtyDaysAgo);
+        if (hasValidSession) {
+          verifiedEmails.add(clean);
+        }
       }
     } catch {}
   }
 
-  // 5. Match and filter ONLY those accounts that are currently logged in on this user's device
+  // PRIVACY ENFORCEMENT: If no valid session cookie on THIS browser -> return empty list!
+  // DON'T SELECT * FROM users
+  if (verifiedUserIds.size === 0 && verifiedEmails.size === 0) {
+    return res.json({ accounts: [] });
+  }
+
+  // Fetch only verified accounts
   const matchedUsers = goldUsers.filter(u => {
     const uEmail = (u.email || '').toLowerCase().trim();
-    return matchedUserIds.has(u.id) || matchedEmails.has(uEmail);
+    return verifiedUserIds.has(u.id) || verifiedEmails.has(uEmail);
   });
 
   const accounts = matchedUsers.map(u => ({

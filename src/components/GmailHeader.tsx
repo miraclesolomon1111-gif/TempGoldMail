@@ -17,6 +17,8 @@ interface GmailHeaderProps {
   onOpenAdmin?: () => void;
   notifPermission?: string;
   onToggleNotifications?: () => void;
+  activity?: { ip: string; city: string; country: string } | null;
+  onOpenSecurity?: () => void;
 }
 
 export const GmailHeader: React.FC<GmailHeaderProps> = ({
@@ -33,7 +35,9 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
   onOpenOAuthDev,
   onOpenAdmin,
   notifPermission,
-  onToggleNotifications
+  onToggleNotifications,
+  activity,
+  onOpenSecurity
 }) => {
   const avatarLetter = (user?.first_name || user?.name || activeEmail || 'M').charAt(0).toUpperCase();
 
@@ -138,6 +142,22 @@ export const GmailHeader: React.FC<GmailHeaderProps> = ({
           <Code2 className="w-3.5 h-3.5" />
           <span>OAuth</span>
         </button>
+
+        {/* Last account activity badge (Requirement 5) */}
+        {activity?.ip && (
+          <button
+            type="button"
+            onClick={onOpenSecurity}
+            title={`Last account activity: IP ${activity.ip} - ${activity.city || activity.country || 'Unknown'}. Click to view devices.`}
+            className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] transition-colors cursor-pointer"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-zinc-400 hidden xl:inline">Last account activity:</span>
+            <span className="text-[#FF8C42] font-mono font-medium truncate max-w-[170px]">
+              IP {activity.ip} - {activity.city || activity.country || 'Location'}
+            </span>
+          </button>
+        )}
 
         {/* Active User Email Pill (from screenshot) */}
         <button

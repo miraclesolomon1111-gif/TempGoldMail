@@ -67,14 +67,24 @@ export interface StoredEmail {
 }
 
 export interface StoredSession {
+  id?: string;
   session_id: string;
   user_id: string;
   email: string;
-  token: string;
+  session_token: string;
+  token?: string;
+  ip_address: string;
   ip?: string;
-  user_agent?: string;
+  city: string;
+  country: string;
+  device: string; // e.g. Chrome on Windows 11
+  browser: string;
+  os: string;
+  user_agent: string;
+  is_current?: boolean;
+  last_active: string;
+  last_active_at?: string;
   created_at: string;
-  last_active_at: string;
 }
 
 export interface StoredTicket {
@@ -1209,45 +1219,172 @@ class GoldDatabase {
   // ================= SESSION & MULTI-ACCOUNT OPERATIONS =================
 
   public async createSession(session: StoredSession): Promise<StoredSession> {
-    console.log(`✅ DB INSERT goldmailer_sessions: user=${session.email}, session_id=${session.session_id}`);
+    console.log(`✅ DB INSERT goldmailer_sessions: user=${session.email}, token=${session.session_token || session.token}`);
     
-    // Remove old session with same ID or update
-    this.sessions = this.sessions.filter(s => s.session_id !== session.session_id);
+    // Normalize aliases
+    session.session_token = session.session_token || session.token || session.session_id;
+    session.token = session.session_token;
+    session.session_id = session.session_id || session.id || ('sess_' + crypto.randomBytes(8).toString('hex'));
+    session.ip_address = session.ip_address || session.ip || '127.0.0.1';
+    session.ip = session.ip_address;
+    session.last_active = session.last_active || session.last_active_at || new Date().toISOString();
+    session.last_active_at = session.last_active;
+
+    // Remove old session with same ID or token
+    this.sessions = this.sessions.filter(s => 
+      s.session_id !== session.session_id && 
+      s.session_token !== session.session_token
+    );
     this.sessions.unshift(session);
     this.scheduleDiskSave();
 
     if (this.supabase) {
       try {
-        await this.supabase.from('goldmailer_sessions').upsert([session]);
-      } catch {}
+        await this.supabase.from('goldmailer_sessions').insert([{
+          user_id: session.user_id,
+          email: session.email,
+          session_token: session.session_token,
+          ip_address: session.ip_address,
+          city: session.city || 'Unknown',
+          country: session.country || 'Unknown',
+          device: session.device || 'Unknown',
+          browser: session.browser || 'Unknown',
+          os: session.os || 'Unknown',
+          user_agent: session.user_agent || 'Unknown',
+          is_current: Boolean(session.is_current),
+          last_active: session.last_active,
+          created_at: session.created_at || new Date().toISOString()
+        }]);
+      } catch (err: any) {
+        console.warn('Supabase goldmailer_sessions insert warning:', err?.message || err);
+      }
     }
 
     return session;
   }
 
-  public async getSession(sessionId: string): Promise<StoredSession | null> {
-    return this.sessions.find(s => s.session_id === sessionId) || null;
+  public async getSession(sessionIdOrToken: string): Promise<StoredSession | null> {
+    const mem = this.sessions.find(s => s.session_id === sessionIdOrToken || s.session_token === sessionIdOrToken || s.token === sessionIdOrToken);
+    if (mem) return mem;
+
+    if (this.supabase) {
+      try {
+        const { data } = await this.supabase
+          .from('goldmailer_sessions')
+          .select('*')
+          .or(`session_token.eq.${sessionIdOrToken},id.eq.${sessionIdOrToken}`)
+          .maybeSingle();
+        if (data) {
+          const loaded: StoredSession = {
+            id: data.id,
+            session_id: data.id || sessionIdOrToken,
+            user_id: data.user_id,
+            email: data.email,
+            session_token: data.session_token,
+            token: data.session_token,
+            ip_address: data.ip_address,
+            ip: data.ip_address,
+            city: data.city || 'Unknown',
+            country: data.country || 'Unknown',
+            device: data.device || 'Unknown',
+            browser: data.browser || 'Unknown',
+            os: data.os || 'Unknown',
+            user_agent: data.user_agent || '',
+            is_current: data.is_current,
+            last_active: data.last_active,
+            last_active_at: data.last_active,
+            created_at: data.created_at
+          };
+          this.sessions.unshift(loaded);
+          return loaded;
+        }
+      } catch {}
+    }
+    return null;
   }
 
-  public async getSessionsForUser(email: string): Promise<StoredSession[]> {
-    const clean = email.toLowerCase().trim();
-    return this.sessions.filter(s => s.email.toLowerCase() === clean);
+  public async getSessionsForUser(userIdOrEmail: string): Promise<StoredSession[]> {
+    const clean = (userIdOrEmail || '').toLowerCase().trim();
+
+    if (this.supabase) {
+      try {
+        const { data, error } = await this.supabase
+          .from('goldmailer_sessions')
+          .select('*')
+          .or(`user_id.eq.${clean},email.ilike.${clean}`)
+          .order('last_active', { ascending: false });
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          return data.map((d: any) => ({
+            id: d.id,
+            session_id: d.id,
+            user_id: d.user_id,
+            email: d.email,
+            session_token: d.session_token,
+            token: d.session_token,
+            ip_address: d.ip_address || '',
+            ip: d.ip_address || '',
+            city: d.city || 'Unknown',
+            country: d.country || 'Unknown',
+            device: d.device || 'Unknown',
+            browser: d.browser || 'Unknown',
+            os: d.os || 'Unknown',
+            user_agent: d.user_agent || '',
+            is_current: d.is_current,
+            last_active: d.last_active,
+            last_active_at: d.last_active,
+            created_at: d.created_at
+          }));
+        }
+      } catch {}
+    }
+
+    return this.sessions
+      .filter(s => s.user_id === userIdOrEmail || s.email.toLowerCase() === clean)
+      .sort((a, b) => new Date(b.last_active || b.last_active_at || 0).getTime() - new Date(a.last_active || a.last_active_at || 0).getTime());
   }
 
-  public async updateSessionActivity(sessionId: string): Promise<void> {
-    const sess = this.sessions.find(s => s.session_id === sessionId);
+  public async updateSessionActivity(tokenOrId: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    const sess = this.sessions.find(s => s.session_token === tokenOrId || s.token === tokenOrId || s.session_id === tokenOrId);
     if (sess) {
-      sess.last_active_at = new Date().toISOString();
+      sess.last_active = nowIso;
+      sess.last_active_at = nowIso;
       this.scheduleDiskSave();
+    }
+    if (this.supabase) {
+      try {
+        await this.supabase
+          .from('goldmailer_sessions')
+          .update({ last_active: nowIso })
+          .or(`session_token.eq.${tokenOrId},id.eq.${tokenOrId}`);
+      } catch {}
     }
   }
 
-  public async removeSession(sessionId: string): Promise<void> {
-    this.sessions = this.sessions.filter(s => s.session_id !== sessionId);
+  public async removeSession(tokenOrId: string): Promise<void> {
+    this.sessions = this.sessions.filter(s => s.session_id !== tokenOrId && s.session_token !== tokenOrId && s.token !== tokenOrId);
     this.scheduleDiskSave();
     if (this.supabase) {
       try {
-        await this.supabase.from('goldmailer_sessions').delete().eq('session_id', sessionId);
+        await this.supabase
+          .from('goldmailer_sessions')
+          .delete()
+          .or(`session_token.eq.${tokenOrId},id.eq.${tokenOrId}`);
+      } catch {}
+    }
+  }
+
+  public async removeOtherSessions(userId: string, currentSessionToken: string): Promise<void> {
+    this.sessions = this.sessions.filter(s => s.user_id !== userId || s.session_token === currentSessionToken || s.token === currentSessionToken);
+    this.scheduleDiskSave();
+    if (this.supabase) {
+      try {
+        await this.supabase
+          .from('goldmailer_sessions')
+          .delete()
+          .eq('user_id', userId)
+          .neq('session_token', currentSessionToken);
       } catch {}
     }
   }

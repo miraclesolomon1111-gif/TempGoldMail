@@ -726,10 +726,56 @@ export async function regenerateBackupCodes(): Promise<{ backup_codes: string[] 
 
 export async function fetchUserDevices(): Promise<UserDevice[]> {
   try {
-    const res = await fetch('/api/security/devices', { headers: getHeaders() });
-    return await safeJsonParse(res);
+    const res = await fetch('/api/security/sessions', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    if (data?.sessions && Array.isArray(data.sessions)) {
+      return data.sessions.map((s: any) => ({
+        id: s.id || s.session_id,
+        user_id: s.user_id,
+        device_name: s.device || `${s.browser} on ${s.os}`,
+        browser: s.browser,
+        os: s.os,
+        ip: s.ip_address || s.ip || '127.0.0.1',
+        ip_address: s.ip_address || s.ip,
+        city: s.city,
+        country: s.country,
+        device: s.device,
+        session_token: s.session_token || s.token,
+        location: [s.city, s.country].filter(Boolean).join(', ') || 'Unknown Location',
+        last_active: s.last_active || s.last_active_at || s.created_at,
+        is_trusted: true,
+        is_current: Boolean(s.is_current),
+        created_at: s.created_at
+      }));
+    }
+    // Fallback to legacy devices endpoint
+    const legRes = await fetch('/api/security/devices', { headers: getHeaders() });
+    return await safeJsonParse(legRes);
   } catch {
     return [];
+  }
+}
+
+export async function fetchUserSessions(): Promise<any[]> {
+  try {
+    const res = await fetch('/api/security/sessions', { headers: getHeaders() });
+    const data = await safeJsonParse(res);
+    return data?.sessions || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function revokeSession(sessionTokenOrId: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/security/sessions/revoke', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ session_token: sessionTokenOrId, id: sessionTokenOrId })
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -738,6 +784,16 @@ export async function revokeAllOtherDevices(): Promise<void> {
     method: 'POST',
     headers: getHeaders()
   });
+}
+
+export async function fetchCurrentActivity(): Promise<{ ip: string; city: string; country: string; device: string; last_active: string } | null> {
+  try {
+    const res = await fetch('/api/security/activity/current', { headers: getHeaders() });
+    if (!res.ok) return null;
+    return await safeJsonParse(res);
+  } catch {
+    return null;
+  }
 }
 
 // ================= DRAFT AUTO-SAVE =================

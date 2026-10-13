@@ -109,6 +109,23 @@ export interface Draft {
   created_at: string;
 }
 
+export interface GoldmailerSession {
+  id: string;
+  user_id: string;
+  email: string;
+  session_token: string;
+  ip_address: string;
+  city: string;
+  country: string;
+  device: string; // e.g. Chrome on Windows 11
+  browser: string;
+  os: string;
+  user_agent?: string;
+  is_current?: boolean;
+  last_active: string;
+  created_at: string;
+}
+
 export interface UserDevice {
   id: string;
   user_id: string;
@@ -116,6 +133,11 @@ export interface UserDevice {
   browser: string;
   os: string;
   ip: string;
+  ip_address?: string;
+  city?: string;
+  country?: string;
+  device?: string;
+  session_token?: string;
   location: string;
   last_active: string;
   is_trusted: boolean;
