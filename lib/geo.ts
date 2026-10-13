@@ -4,45 +4,66 @@ import { UAParser } from 'ua-parser-js';
 const geoCache = new Map<string, { city: string; country: string }>();
 
 /**
- * Extracts client IP from request, supporting Next.js (web Request) and Express (IncomingMessage)
+ * Requirement 1: Real IP detection
+ * function getRealIP(req){
+ *   const f = req.headers.get('x-forwarded-for');
+ *   if(f) return f.split(',')[0].trim();
+ *   return req.headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+ * }
+ * Don't use x-real-ip or req.ip. Use getRealIP(req) in login, security, sessions.
  */
-export function getClientIP(req: any): string {
-  if (!req) return '127.0.0.1';
+export function getRealIP(req: any): string {
+  if (!req) return 'unknown';
 
-  let raw = '';
+  let forwarded: string | null = null;
+  let vercelForwarded: string | null = null;
 
-  // 1. Next.js / Web Request (Headers object)
   if (req.headers && typeof req.headers.get === 'function') {
-    raw =
-      req.headers.get('x-forwarded-for') ||
-      req.headers.get('x-real-ip') ||
-      req.headers.get('cf-connecting-ip') ||
-      '';
+    forwarded = req.headers.get('x-forwarded-for');
+    vercelForwarded = req.headers.get('x-vercel-forwarded-for');
   } else if (req.headers && typeof req.headers === 'object') {
-    // 2. Express Request (plain headers object)
-    raw =
-      (req.headers['x-forwarded-for'] as string) ||
-      (req.headers['x-real-ip'] as string) ||
-      (req.headers['cf-connecting-ip'] as string) ||
-      req.socket?.remoteAddress ||
-      req.ip ||
-      '';
+    forwarded = (req.headers['x-forwarded-for'] as string) || null;
+    vercelForwarded = (req.headers['x-vercel-forwarded-for'] as string) || null;
   }
 
-  if (!raw) return '127.0.0.1';
-
-  // Extract first IP in comma-separated chain
-  let ip = raw.split(',')[0].trim();
-
-  // Normalize IPv6 mapped IPv4 (::ffff:192.168.1.1 -> 192.168.1.1)
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.replace('::ffff:', '');
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
   }
-  if (ip === '::1' || ip === 'localhost') {
-    ip = '127.0.0.1';
+  if (vercelForwarded) {
+    return vercelForwarded.split(',')[0].trim();
   }
+  return 'unknown';
+}
 
-  return ip || '127.0.0.1';
+// Keep getClientIP as an alias for getRealIP for backward compatibility
+export const getClientIP = getRealIP;
+
+export function isPrivateIP(ip: string): boolean {
+  if (!ip || ip === 'unknown') return true;
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === 'localhost' ||
+    ip.startsWith('10.') ||
+    ip.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
+    ip.startsWith('fc00:') ||
+    ip.startsWith('fe80:')
+  );
+}
+
+export async function getLocation(ip: string): Promise<string> {
+  if (isPrivateIP(ip)) {
+    return 'Local device';
+  }
+  try {
+    const res = await fetch(`https://ipapi.co/${ip}/json/`);
+    if (!res.ok) return 'Local device';
+    const data = await res.json();
+    return data.city || data.country_name || 'Local device';
+  } catch {
+    return 'Local device';
+  }
 }
 
 /**
@@ -50,7 +71,6 @@ export function getClientIP(req: any): string {
  */
 export function getClientUserAgent(req: any): string {
   if (!req) return 'Unknown User-Agent';
-
   if (req.headers && typeof req.headers.get === 'function') {
     return req.headers.get('user-agent') || 'Unknown User-Agent';
   }
@@ -64,49 +84,43 @@ export function getClientUserAgent(req: any): string {
  * Parses user-agent and retrieves location from IP
  */
 export async function detectDeviceAndLocation(userAgent: string, ip: string) {
-  // Detect device like Gmail does
   const parser = new UAParser(userAgent);
   const UA = parser.getResult();
-
   const browser = UA.browser.name || 'Browser';
   const os = UA.os.name ? `${UA.os.name}${UA.os.version ? ' ' + UA.os.version : ''}` : 'Unknown OS';
   const device = `${browser} on ${os}`;
 
-  let city = 'Unknown';
-  let country = 'Unknown';
+  let city = 'Local device';
+  let country = 'Local device';
 
-  // Check cache first
   if (geoCache.has(ip)) {
     const cached = geoCache.get(ip)!;
     city = cached.city;
     country = cached.country;
-  } else if (ip === '127.0.0.1' || ip === 'localhost' || ip.startsWith('192.168.') || ip.startsWith('10.')) {
-    city = 'Local Network';
-    country = 'Local Device';
+  } else if (isPrivateIP(ip)) {
+    city = 'Local device';
+    country = 'Local device';
     geoCache.set(ip, { city, country });
   } else {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
-
       const geoRes = await fetch(`https://ipapi.co/${ip}/json/`, {
         signal: controller.signal,
         headers: { 'User-Agent': 'GoldMailer/1.0' }
       });
       clearTimeout(timeoutId);
-
       if (geoRes.ok) {
         const geo = await geoRes.json();
         if (geo && !geo.error) {
-          city = geo.city || 'Unknown';
-          country = geo.country_name || 'Unknown';
+          city = geo.city || 'Local device';
+          country = geo.country_name || 'Local device';
           geoCache.set(ip, { city, country });
         }
       }
     } catch {
-      // Fallback silently if offline or blocked
-      city = 'Unknown';
-      country = 'Unknown';
+      city = 'Local device';
+      country = 'Local device';
     }
   }
 

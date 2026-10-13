@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { UAParser } from 'ua-parser-js';
 import { createClient } from '../../../../lib/supabase/server';
-import { getClientIP, detectDeviceAndLocation } from '../../../../lib/geo';
+import { getRealIP, detectDeviceAndLocation } from '../../../../lib/geo';
 import { db } from '../../../../src/server/db';
 
 export async function POST(req: Request) {
@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     }
 
     // Get IP - works on Vercel
-    const ip = getClientIP(req);
+    const ip = getRealIP(req);
     const userAgent = req.headers.get('user-agent') || 'unknown';
 
     // Detect device like Gmail does

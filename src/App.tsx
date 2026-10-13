@@ -807,6 +807,16 @@ export default function App() {
 
   // Logout active account
   const handleLogout = () => {
+    try {
+      const token = getAuthToken();
+      if (token) {
+        fetch('/api/security/sessions/revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ session_token: token })
+        }).catch(() => {});
+      }
+    } catch {}
     clearAuthToken();
     setUser(null);
     setActiveEmail('');

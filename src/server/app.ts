@@ -31,7 +31,7 @@ import {
   testTwilioConnection,
   normalizePhoneNumber
 } from './phoneService.js';
-import { getClientIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo.js';
+import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo.js';
 
 // Server-Sent Events (SSE) for Real-Time email, SMS & Calls receiving
 const sseClients: Response[] = [];
@@ -132,7 +132,8 @@ app.use((req: Request, _res: Response, next) => {
       cookies['session_token'] ||
       (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '').trim() : '');
     if (sessionToken) {
-      db.updateSessionActivity(sessionToken).catch(() => {});
+      const curIp = getRealIP(req);
+      db.updateSessionActivity(sessionToken, curIp).catch(() => {});
     }
   } catch {}
   next();
@@ -423,10 +424,74 @@ let phoneContacts: StoredContact[] = [];
 const generateBackupCodes = (): string[] => {
   const codes: string[] = [];
   for (let i = 0; i < 10; i++) {
-    const code = Math.floor(10000000 + Math.random() * 90000000).toString();
-    codes.push(`${code.slice(0, 4)}-${code.slice(4)}`);
+    const raw = crypto.randomBytes(4).toString("hex").toUpperCase();
+    codes.push(`${raw.slice(0, 4)}-${raw.slice(4)}`);
   }
   return codes;
+};
+
+// Requirement 4: hash each with bcrypt.hash, delete old codes for user, insert hashed codes
+const saveHashedBackupCodes = async (userId: string, plainCodes: string[]) => {
+  if (!db.supabase) return;
+  try {
+    const hashedRows = await Promise.all(
+      plainCodes.map(async (code) => {
+        const normalized = code.replace(/-/g, "").toUpperCase();
+        const code_hash = await bcrypt.hash(normalized, 10);
+        return {
+          user_id: userId,
+          code_hash,
+          used: false,
+          created_at: new Date().toISOString()
+        };
+      })
+    );
+    await db.supabase.from("backup_codes").delete().eq("user_id", userId);
+    await db.supabase.from("backup_codes").insert(hashedRows);
+  } catch (err: any) {
+    console.warn("Supabase backup_codes insert warning:", err?.message || err);
+  }
+};
+
+// Requirement 4: Verification: remove dash, toUpperCase, SELECT * FROM backup_codes WHERE user_id = user.id AND used = false, bcrypt.compare, UPDATE used = true
+const verifyBackupCode = async (userId: string, inputCode: string, fallbackCodes?: string[]): Promise<boolean> => {
+  const normalized = String(inputCode).replace(/[-\s]/g, "").toUpperCase();
+  if (!normalized) return false;
+
+  if (db.supabase) {
+    try {
+      const { data: rows, error } = await db.supabase
+        .from("backup_codes")
+        .select("id, code_hash")
+        .eq("user_id", userId)
+        .eq("used", false);
+
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        for (const row of rows) {
+          const match = await bcrypt.compare(normalized, row.code_hash);
+          if (match) {
+            await db.supabase
+              .from("backup_codes")
+              .update({ used: true })
+              .eq("id", row.id);
+            return true;
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn("Supabase backup_codes verify check warning:", err?.message || err);
+    }
+  }
+
+  if (Array.isArray(fallbackCodes)) {
+    const matchIdx = fallbackCodes.findIndex(c => c.replace(/[-\s]/g, "").toUpperCase() === normalized);
+    if (matchIdx !== -1) {
+      fallbackCodes.splice(matchIdx, 1);
+      return true;
+    }
+  }
+
+  return false;
 };
 
 let lastDataFileMtime = 0;
@@ -1429,7 +1494,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     saveData();
 
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country: geoCountry } = detected;
@@ -1584,7 +1649,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
           return `${local[0]}***${local[local.length - 1]}@${domain}`;
         };
 
-        const curIp = getClientIP(req);
+        const curIp = getRealIP(req);
         const userAgent = getClientUserAgent(req);
         const detected = await detectDeviceAndLocation(userAgent, curIp);
         const attemptId = 'att_' + crypto.randomBytes(8).toString('hex');
@@ -1634,17 +1699,13 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
         } catch {}
       }
 
-      if (!valid2FA && Array.isArray(user.backup_codes)) {
-        const matchIdx = user.backup_codes.findIndex(
-          bc => bc.replace(/[\s\-]/g, '').trim() === cleanCode
-        );
-        if (matchIdx !== -1) {
+      if (!valid2FA) {
+        const isBcValid = await verifyBackupCode(user.id, cleanCode, user.backup_codes);
+        if (isBcValid) {
           valid2FA = true;
-          user.backup_codes.splice(matchIdx, 1);
           await db.updateAccount(user.id, { backup_codes: user.backup_codes });
         }
       }
-
       // Check Backup Email 2FA Code
       if (!valid2FA && user.temp_email_2fa_code && /^\d{6}$/.test(cleanCode)) {
         if (
@@ -1666,7 +1727,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     }
 
     // Save session in DB & Supabase goldmailer_sessions
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
@@ -1774,7 +1835,7 @@ app.post('/api/auth/switch-account', async (req: Request, res: Response) => {
       role: targetUser.role
     });
 
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
@@ -1845,7 +1906,7 @@ app.get('/api/auth/sessions', async (req: Request, res: Response) => {
     if (!userIdentifier) return res.status(401).json({ error: 'Unauthorized' });
 
     const rawSessions = await db.getSessionsForUser(userIdentifier);
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const sessions = rawSessions.map(s => ({
       ...s,
       is_current: Boolean(
@@ -1910,18 +1971,14 @@ app.post('/api/auth/verify-2fa', async (req: Request, res: Response) => {
     }
 
     // Check Backup Codes
-    if (!valid && Array.isArray(user.backup_codes)) {
-      const matchIdx = user.backup_codes.findIndex(
-        bc => bc.replace(/[\s\-]/g, '').trim() === cleanCode
-      );
-      if (matchIdx !== -1) {
+    if (!valid) {
+      const isBcValid = await verifyBackupCode(user.id, cleanCode, user.backup_codes);
+      if (isBcValid) {
         valid = true;
-        user.backup_codes.splice(matchIdx, 1);
         await db.updateAccount(user.id, { backup_codes: user.backup_codes });
         saveData();
       }
     }
-
     // Check Backup Email Verification Code (6 digits sent to backup Gmail)
     if (!valid && user.temp_email_2fa_code && /^\d{6}$/.test(cleanCode)) {
       if (
@@ -1942,7 +1999,7 @@ app.post('/api/auth/verify-2fa', async (req: Request, res: Response) => {
     }
 
     // Create session and set cookies like Gmail
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
@@ -3635,6 +3692,7 @@ app.post('/api/security/2fa/enable', async (req: Request, res: Response) => {
   if (!user.backup_codes || user.backup_codes.length === 0) {
     user.backup_codes = generateBackupCodes();
   }
+  await saveHashedBackupCodes(user.id, user.backup_codes);
   await db.updateAccount(user.id, {
     two_factor_enabled: true,
     backup_codes: user.backup_codes,
@@ -3691,9 +3749,112 @@ app.post('/api/security/backup-codes/regenerate', async (req: Request, res: Resp
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.backup_codes = generateBackupCodes();
+  await saveHashedBackupCodes(user.id, user.backup_codes);
   await db.updateAccount(user.id, { backup_codes: user.backup_codes });
   saveData();
   return res.json({ success: true, backup_codes: user.backup_codes, user: sanitizeUser(user) });
+});
+
+// Requirement 2: 2FA Toggle route
+app.post(['/api/security/2fa/toggle', '/api/account/2fa/toggle'], async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
+  const token = authHeader.replace(/^Bearer\s+/i, "");
+  const decoded = verifyToken(token);
+  if (!decoded) return res.status(401).json({ error: "Invalid token" });
+
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  const current = Boolean(user.is_2fa_enabled ?? user.two_factor_enabled);
+  const nextVal = !current;
+
+  if (db.supabase) {
+    try {
+      await db.supabase
+        .from("users")
+        .update({ is_2fa_enabled: nextVal, two_factor_enabled: nextVal })
+        .eq("id", user.id);
+    } catch (err: any) {
+      console.warn("Supabase 2FA toggle update warning:", err?.message || err);
+    }
+  }
+
+  let freshVal = nextVal;
+  if (db.supabase) {
+    try {
+      const { data } = await db.supabase
+        .from("users")
+        .select("is_2fa_enabled")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (data && typeof data.is_2fa_enabled === "boolean") {
+        freshVal = data.is_2fa_enabled;
+      }
+    } catch {}
+  }
+
+  user.is_2fa_enabled = freshVal;
+  user.two_factor_enabled = freshVal;
+  await db.updateAccount(user.id, { is_2fa_enabled: freshVal, two_factor_enabled: freshVal });
+  saveData();
+
+  return res.json({
+    success: true,
+    is_2fa_enabled: freshVal,
+    two_factor_enabled: freshVal,
+    user: sanitizeUser(user)
+  });
+});
+
+// Requirement 3: Recovery Email Route
+app.post(['/api/account/recovery', '/api/auth/recovery'], async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "Unauthorized" });
+  const token = authHeader.replace(/^Bearer\s+/i, "");
+  const decoded = verifyToken(token);
+  if (!decoded) return res.status(401).json({ error: "Invalid token" });
+
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  const { recovery_email } = req.body || {};
+  if (!recovery_email) return res.status(400).json({ error: "Recovery email required" });
+
+  const clean = String(recovery_email).trim().toLowerCase();
+  user.recovery_email = clean;
+  user.backup_email = clean;
+  await db.updateAccount(user.id, { recovery_email: clean, backup_email: clean });
+
+  if (db.supabase) {
+    try {
+      await db.supabase.from("user_recovery").upsert({
+        user_id: user.id,
+        email: user.email,
+        recovery_email: clean,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "user_id" });
+    } catch (err: any) {
+      console.warn("Supabase user_recovery upsert warning:", err?.message || err);
+    }
+  }
+
+  saveData();
+  return res.json({ success: true, recovery_email: clean });
 });
 
 app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request, res: Response) => {
@@ -3728,7 +3889,7 @@ app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request
         : res.json([]);
     }
 
-    const curIp = getClientIP(req);
+    const curIp = getRealIP(req);
     const curUa = getClientUserAgent(req);
     let rawSessions = await db.getSessionsForUser(userId || userIdentifier);
 
@@ -3953,7 +4114,7 @@ app.post('/api/security/login-attempts/:attemptId/respond', async (req: Request,
     attempt.status = 'approved';
     const targetUser = goldUsers.find(u => u.id === attempt.user_id || (u.email && attempt.email && u.email.toLowerCase() === attempt.email.toLowerCase())) || await db.findAccount(attempt.email || attempt.user_id);
     if (targetUser) {
-      const curIp = attempt.ip || getClientIP(req);
+      const curIp = attempt.ip || getRealIP(req);
       const sessionToken = crypto.randomBytes(32).toString('hex');
       const nowIso = new Date().toISOString();
       const token = generateToken({
@@ -3998,7 +4159,7 @@ app.post('/api/security/login-attempts/:attemptId/respond', async (req: Request,
 // Current activity for Dashboard Header / Footer (Requirement 5)
 app.get('/api/security/activity/current', async (req: Request, res: Response) => {
   try {
-    const ip = getClientIP(req);
+    const ip = getRealIP(req);
     const ua = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(ua, ip);
     return res.json({

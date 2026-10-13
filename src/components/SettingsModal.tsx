@@ -311,6 +311,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         backup_email: backupEmail.trim(),
         recovery_email: backupEmail.trim()
       });
+      try {
+        const token = localStorage.getItem("goldmailer_token") || "";
+        await fetch("/api/account/recovery", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ recovery_email: backupEmail.trim() })
+        });
+      } catch {}
       onUserUpdated(updated);
       setRecoveryPhone(updated.recovery_phone || recoveryPhone.trim());
       setBackupEmail(updated.backup_email || (updated as any).recovery_email || backupEmail.trim());
