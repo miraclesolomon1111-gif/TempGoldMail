@@ -821,8 +821,17 @@ class GoldDatabase {
   }
 
   public async updateAccount(id: string, updates: Partial<StoredGoldUser>): Promise<StoredGoldUser | null> {
-    const idx = this.users.findIndex(u => u.id === id || u.email.toLowerCase() === id.toLowerCase());
-    if (idx === -1) return null;
+    const cleanId = (id || '').toLowerCase().trim();
+    const idx = this.users.findIndex(
+      u => u.id === id ||
+           (u.id || '').toLowerCase() === cleanId ||
+           (u.email || '').toLowerCase() === cleanId ||
+           (u.username || '').toLowerCase() === cleanId
+    );
+    if (idx === -1) {
+      console.warn(`Account not found for update in db.users: ${id}`);
+      return null;
+    }
 
     this.users[idx] = { ...this.users[idx], ...updates };
     const updated = this.users[idx];
@@ -1265,8 +1274,22 @@ class GoldDatabase {
     return session;
   }
 
+  public getSessions(): StoredSession[] {
+    return this.sessions;
+  }
+
+  public getSessionSync(sessionIdOrToken: string): StoredSession | null {
+    if (!sessionIdOrToken) return null;
+    return this.sessions.find(s =>
+      s.session_id === sessionIdOrToken ||
+      s.session_token === sessionIdOrToken ||
+      s.token === sessionIdOrToken ||
+      s.id === sessionIdOrToken
+    ) || null;
+  }
+
   public async getSession(sessionIdOrToken: string): Promise<StoredSession | null> {
-    const mem = this.sessions.find(s => s.session_id === sessionIdOrToken || s.session_token === sessionIdOrToken || s.token === sessionIdOrToken);
+    const mem = this.getSessionSync(sessionIdOrToken);
     if (mem) return mem;
 
     if (this.supabase) {
@@ -1342,13 +1365,13 @@ class GoldDatabase {
     }
 
     return this.sessions
-      .filter(s => s.user_id === userIdOrEmail || s.email.toLowerCase() === clean)
+      .filter(s => s.user_id === userIdOrEmail || (s.email && s.email.toLowerCase() === clean))
       .sort((a, b) => new Date(b.last_active || b.last_active_at || 0).getTime() - new Date(a.last_active || a.last_active_at || 0).getTime());
   }
 
   public async updateSessionActivity(tokenOrId: string): Promise<void> {
     const nowIso = new Date().toISOString();
-    const sess = this.sessions.find(s => s.session_token === tokenOrId || s.token === tokenOrId || s.session_id === tokenOrId);
+    const sess = this.sessions.find(s => s.session_token === tokenOrId || s.token === tokenOrId || s.session_id === tokenOrId || s.id === tokenOrId);
     if (sess) {
       sess.last_active = nowIso;
       sess.last_active_at = nowIso;
@@ -1365,8 +1388,13 @@ class GoldDatabase {
   }
 
   public async removeSession(tokenOrId: string): Promise<void> {
-    this.sessions = this.sessions.filter(s => s.session_id !== tokenOrId && s.session_token !== tokenOrId && s.token !== tokenOrId);
-    this.scheduleDiskSave();
+    this.sessions = this.sessions.filter(s =>
+      s.session_id !== tokenOrId &&
+      s.session_token !== tokenOrId &&
+      s.token !== tokenOrId &&
+      s.id !== tokenOrId
+    );
+    this.saveToDiskSync();
     if (this.supabase) {
       try {
         await this.supabase
@@ -1378,8 +1406,15 @@ class GoldDatabase {
   }
 
   public async removeOtherSessions(userId: string, currentSessionToken: string): Promise<void> {
-    this.sessions = this.sessions.filter(s => s.user_id !== userId || s.session_token === currentSessionToken || s.token === currentSessionToken);
-    this.scheduleDiskSave();
+    const cleanUser = (userId || '').toLowerCase().trim();
+    this.sessions = this.sessions.filter(s =>
+      (s.user_id !== userId && (s.email || '').toLowerCase() !== cleanUser) ||
+      s.session_token === currentSessionToken ||
+      s.token === currentSessionToken ||
+      s.session_id === currentSessionToken ||
+      s.id === currentSessionToken
+    );
+    this.saveToDiskSync();
     if (this.supabase) {
       try {
         await this.supabase

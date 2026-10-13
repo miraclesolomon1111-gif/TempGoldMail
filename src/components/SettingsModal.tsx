@@ -26,7 +26,8 @@ import {
   fetchUserDevices,
   revokeAllOtherDevices,
   revokeSession,
-  updateUserProfile
+  updateUserProfile,
+  fetchCurrentUser
 } from '../lib/api';
 
 interface SettingsModalProps {
@@ -104,6 +105,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setActiveTab(initialTab);
       }
       loadDevices();
+      // Fresh sync of user security & recovery state
+      fetchCurrentUser().then((freshUser) => {
+        if (freshUser) {
+          onUserUpdated(freshUser);
+          setTwoFactorEnabled(Boolean(freshUser.two_factor_enabled));
+          if (freshUser.backup_codes && freshUser.backup_codes.length > 0) {
+            setBackupCodes(freshUser.backup_codes);
+          }
+          if (freshUser.recovery_phone) {
+            setRecoveryPhone(sanitizeRecoveryPhone(freshUser.recovery_phone));
+          }
+          if (freshUser.backup_email) {
+            setBackupEmail(sanitizeBackupEmail(freshUser.backup_email));
+          }
+        }
+      }).catch(() => {});
     }
   }, [isOpen, initialTab]);
 
@@ -190,7 +207,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         localStorage.removeItem('gm_pending_2fa_secret');
       } catch {}
       setSuccessMsg('2-Step Verification is now enabled on your account!');
-      if (user) {
+      if (res.user) {
+        onUserUpdated(res.user);
+      } else if (user) {
         onUserUpdated({ ...user, two_factor_enabled: true, backup_codes: res.backup_codes });
       }
     } catch (err: any) {
@@ -205,10 +224,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!confirm('Are you sure you want to disable 2-Step Verification?')) return;
     setIsLoading(true);
     try {
-      await disable2FA();
+      const res = await disable2FA();
       setTwoFactorEnabled(false);
       setSuccessMsg('2-Step Verification has been disabled.');
-      if (user) {
+      if (res.user) {
+        onUserUpdated(res.user);
+      } else if (user) {
         onUserUpdated({ ...user, two_factor_enabled: false });
       }
     } finally {
@@ -223,7 +244,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const res = await regenerateBackupCodes();
       setBackupCodes(res.backup_codes);
       setSuccessMsg('10 fresh backup codes generated.');
-      if (user) {
+      if (res.user) {
+        onUserUpdated(res.user);
+      } else if (user) {
         onUserUpdated({ ...user, backup_codes: res.backup_codes });
       }
     } finally {
@@ -293,13 +316,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Save Recovery Contacts
   const handleSaveRecovery = async () => {
     setIsLoading(true);
+    setError(null);
     try {
       const updated = await updateUserProfile({
         recovery_phone: recoveryPhone.trim(),
         backup_email: backupEmail.trim()
       });
       onUserUpdated(updated);
+      setRecoveryPhone(sanitizeRecoveryPhone(updated.recovery_phone || recoveryPhone.trim()));
+      setBackupEmail(sanitizeBackupEmail(updated.backup_email || backupEmail.trim()));
       setSuccessMsg('Recovery details saved.');
+    } catch (err: any) {
+      setError(err.message || 'Failed to save recovery details');
     } finally {
       setIsLoading(false);
     }

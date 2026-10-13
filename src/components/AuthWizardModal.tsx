@@ -19,7 +19,8 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  Smartphone
+  Smartphone,
+  Laptop
 } from 'lucide-react';
 import { COUNTRIES_LIST } from '../lib/emailGenerator';
 import { PrivacyModal, TermsModal } from './LegalModals';
@@ -33,7 +34,8 @@ import {
   verify2FALogin,
   sendEmail2FACode,
   requestPasswordReset,
-  confirmPasswordReset
+  confirmPasswordReset,
+  checkLoginAttemptStatus
 } from '../lib/api';
 import { UserProfile } from '../types';
 
@@ -106,8 +108,9 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
   // 2FA state
   const [tempAuthToken, setTempAuthToken] = useState('');
   const [twoFaTargetEmail, setTwoFaTargetEmail] = useState('');
+  const [twoFaAttemptId, setTwoFaAttemptId] = useState('');
   const [twoFaCode, setTwoFaCode] = useState('');
-  const [twoFaMethod, setTwoFaMethod] = useState<'totp' | 'backup_code' | 'email'>('totp');
+  const [twoFaMethod, setTwoFaMethod] = useState<'totp' | 'backup_code' | 'email' | 'device_approval'>('totp');
   const [showTryAnotherWay, setShowTryAnotherWay] = useState(false);
   const [backupEmailInput, setBackupEmailInput] = useState('');
   const [maskedBackupEmail, setMaskedBackupEmail] = useState('');
@@ -139,8 +142,29 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       setError(null);
       setForgotSentSuccess(false);
       setTwoFaCode('');
+      setTwoFaAttemptId('');
     }
   }, [initialMode, initialResetToken, initialResetEmail, isOpen]);
+
+  // Background cross-device login approval polling
+  useEffect(() => {
+    if (mode !== '2fa' || !twoFaAttemptId || !isOpen) return;
+
+    const pollTimer = setInterval(async () => {
+      try {
+        const res = await checkLoginAttemptStatus(twoFaAttemptId);
+        if (res.status === 'approved' && res.user) {
+          clearInterval(pollTimer);
+          onSuccess(res.user);
+          onClose();
+        } else if (res.status === 'rejected') {
+          setError('This login attempt was rejected from your other device.');
+        }
+      } catch {}
+    }, 2000);
+
+    return () => clearInterval(pollTimer);
+  }, [mode, twoFaAttemptId, isOpen, onSuccess, onClose]);
 
   // Live availability check on username typing (debounced)
   useEffect(() => {
@@ -240,6 +264,7 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       if (res.requires_2fa) {
         setTempAuthToken(res.temp_auth_token || '');
         setTwoFaTargetEmail(res.email || loginIdentifier);
+        setTwoFaAttemptId(res.attempt_id || '');
         const rawMasked = res.masked_backup_email || '';
         const isDummy = rawMasked.includes('m***p') || rawMasked.includes('d***9') || rawMasked.includes('a***p');
         setMaskedBackupEmail(isDummy ? '' : rawMasked);
@@ -620,6 +645,36 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                 </div>
                 <ArrowRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors flex-shrink-0 ml-2" />
               </button>
+
+              {/* Option 4: Confirm from another device */}
+              <button
+                type="button"
+                onClick={() => {
+                  setTwoFaMethod('device_approval');
+                  setShowTryAnotherWay(false);
+                  setError(null);
+                }}
+                className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between group cursor-pointer ${
+                  twoFaMethod === 'device_approval'
+                    ? 'bg-[#FF6A00]/15 border-[#FF6A00]/50 shadow-md shadow-[#FF6A00]/10'
+                    : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center flex-shrink-0">
+                    <Laptop className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white group-hover:text-purple-400 transition-colors">
+                      Confirm from another device
+                    </h4>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Tap "Yes, it's me" on your other device already logged in to GoldMailer
+                    </p>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors flex-shrink-0 ml-2" />
+              </button>
             </div>
 
             <div className="pt-2">
@@ -905,6 +960,35 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* METHOD 4: Confirm from another device */}
+            {twoFaMethod === 'device_approval' && (
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-purple-500/15 to-transparent border border-purple-500/30 text-center space-y-4">
+                <div className="w-12 h-12 mx-auto rounded-2xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                  <Smartphone className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">Check your other device</h4>
+                  <p className="text-xs text-zinc-300 mt-1 leading-relaxed">
+                    A notification was sent to your logged-in device for <strong className="text-white font-mono">{twoFaTargetEmail || loginIdentifier}</strong>.
+                  </p>
+                  <p className="text-[11px] text-[#FF8C42] mt-2 font-medium">
+                    Tap "Yes, it's me" on your other device to sign in automatically.
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-2 pt-1">
+                  <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+                  <span className="text-xs text-zinc-400">Waiting for approval...</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTryAnotherWay(true)}
+                  className="text-xs text-[#FF8C42] hover:underline font-semibold block mx-auto cursor-pointer"
+                >
+                  Try another way &rarr;
+                </button>
               </div>
             )}
           </div>

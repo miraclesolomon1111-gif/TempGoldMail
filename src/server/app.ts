@@ -351,9 +351,9 @@ export interface StoredLoginAttempt {
   ip: string;
   location: string;
   status: 'pending' | 'approved' | 'rejected' | 'expired';
-  code: string;
+  code?: string;
   created_at: string;
-  expires_at: string;
+  expires_at: string | number;
 }
 
 export interface StoredOAuthClient {
@@ -442,6 +442,7 @@ const saveData = () => {
         goldEmails,
         goldDrafts,
         userDevices,
+        sessions: db.getSessions(),
         loginAttempts: loginAttempts.slice(-100),
         oauthClients,
         oauthCodes: oauthCodes.slice(-50),
@@ -540,18 +541,39 @@ export const ensureDataLoaded = () => {
           if (idx === -1) {
             goldUsers.push(u);
           } else {
-            goldUsers[idx] = { ...goldUsers[idx], ...u };
+            goldUsers[idx] = {
+              ...goldUsers[idx],
+              ...u,
+              recovery_phone: u.recovery_phone || goldUsers[idx].recovery_phone || '',
+              backup_email: u.backup_email || goldUsers[idx].backup_email || '',
+              two_factor_enabled: u.two_factor_enabled !== undefined ? u.two_factor_enabled : (goldUsers[idx].two_factor_enabled || false),
+              two_factor_secret: u.two_factor_secret || goldUsers[idx].two_factor_secret,
+              backup_codes: (u.backup_codes && u.backup_codes.length > 0) ? u.backup_codes : (goldUsers[idx].backup_codes || [])
+            };
           }
           db.upsertAccount(u);
         }
       }
       // Also sync any accounts from db.listAccounts() into goldUsers
       for (const du of db.listAccounts()) {
-        const idx = goldUsers.findIndex(gu => gu.id === du.id || (gu.email && du.email && gu.email.toLowerCase() === du.email.toLowerCase()));
+        const idx = goldUsers.findIndex(gu =>
+          gu.id === du.id ||
+          (gu.email && du.email && gu.email.toLowerCase() === du.email.toLowerCase()) ||
+          (gu.username && du.username && gu.username.toLowerCase() === du.username.toLowerCase())
+        );
         if (idx === -1) {
           goldUsers.push(du);
         } else {
-          goldUsers[idx] = { ...goldUsers[idx], ...du };
+          const existing = goldUsers[idx];
+          goldUsers[idx] = {
+            ...existing,
+            ...du,
+            recovery_phone: du.recovery_phone || existing.recovery_phone || '',
+            backup_email: du.backup_email || existing.backup_email || '',
+            two_factor_enabled: du.two_factor_enabled !== undefined ? du.two_factor_enabled : (existing.two_factor_enabled || false),
+            two_factor_secret: du.two_factor_secret || existing.two_factor_secret,
+            backup_codes: (du.backup_codes && du.backup_codes.length > 0) ? du.backup_codes : (existing.backup_codes || [])
+          };
         }
       }
       for (const gu of goldUsers) {
@@ -1543,9 +1565,31 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
           if (local.length <= 2) return `${local[0]}***@${domain}`;
           return `${local[0]}***${local[local.length - 1]}@${domain}`;
         };
+
+        const curIp = getClientIP(req);
+        const userAgent = getClientUserAgent(req);
+        const detected = await detectDeviceAndLocation(userAgent, curIp);
+        const attemptId = 'att_' + crypto.randomBytes(8).toString('hex');
+        const attemptObj: StoredLoginAttempt = {
+          id: attemptId,
+          user_id: user.id,
+          email: user.email,
+          ip: curIp,
+          location: [detected.city, detected.country].filter(Boolean).join(', ') || 'Current Location',
+          device_name: detected.device || `${detected.browser} on ${detected.os}`,
+          browser: detected.browser || 'Browser',
+          os: detected.os || 'Device',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          expires_at: Date.now() + 5 * 60 * 1000
+        };
+        loginAttempts.unshift(attemptObj);
+        saveData();
+
         return res.status(200).json({
           requires_2fa: true,
           temp_auth_token: tempToken,
+          attempt_id: attemptId,
           email: user.email,
           backup_email: user.backup_email || '',
           masked_backup_email: maskEmailAddress(user.backup_email || ''),
@@ -2290,7 +2334,7 @@ app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
 });
 
 // 5. Get Current User Profile (/api/auth/me)
-app.get('/api/auth/me', (req: Request, res: Response) => {
+app.get('/api/auth/me', async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
@@ -2298,7 +2342,22 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  const user = goldUsers.find(u => u.id === decoded.id || u.email.toLowerCase() === decoded.email?.toLowerCase());
+  // If this token had a session_token, verify session is still active (not revoked)
+  if (decoded.session_token) {
+    const activeSession = db.getSessionSync(decoded.session_token);
+    if (!activeSession) {
+      return res.status(401).json({ error: 'Session has been logged out or revoked', session_revoked: true });
+    }
+  }
+
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (user.is_banned) return res.status(403).json({ error: 'Account disabled' });
 
@@ -2306,7 +2365,7 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
 });
 
 // 6. Update Profile Information
-app.put('/api/auth/profile', (req: Request, res: Response) => {
+app.put('/api/auth/profile', async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
@@ -2314,17 +2373,33 @@ app.put('/api/auth/profile', (req: Request, res: Response) => {
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  const user = goldUsers.find(u => u.id === decoded.id);
+  if (decoded.session_token) {
+    const activeSession = db.getSessionSync(decoded.session_token);
+    if (!activeSession) {
+      return res.status(401).json({ error: 'Session has been logged out or revoked', session_revoked: true });
+    }
+  }
+
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { first_name, last_name, phone, recovery_phone, backup_email, avatar_url } = req.body;
-  if (first_name !== undefined) user.first_name = first_name;
-  if (last_name !== undefined) user.last_name = last_name;
-  if (phone !== undefined) user.phone = phone;
-  if (recovery_phone !== undefined) user.recovery_phone = recovery_phone;
-  if (backup_email !== undefined) user.backup_email = backup_email;
-  if (avatar_url !== undefined) user.avatar_url = avatar_url;
+  const updates: Partial<StoredGoldUser> = {};
+  if (first_name !== undefined) { user.first_name = first_name; updates.first_name = first_name; }
+  if (last_name !== undefined) { user.last_name = last_name; updates.last_name = last_name; }
+  if (phone !== undefined) { user.phone = phone; updates.phone = phone; }
+  if (recovery_phone !== undefined) { user.recovery_phone = recovery_phone; updates.recovery_phone = recovery_phone; }
+  if (backup_email !== undefined) { user.backup_email = backup_email; updates.backup_email = backup_email; }
+  if (avatar_url !== undefined) { user.avatar_url = avatar_url; updates.avatar_url = avatar_url; }
 
+  await db.updateAccount(user.id, updates);
   saveData();
   return res.json({ success: true, user: sanitizeUser(user) });
 });
@@ -3533,7 +3608,8 @@ app.post('/api/security/2fa/enable', async (req: Request, res: Response) => {
   return res.json({
     success: true,
     two_factor_enabled: true,
-    backup_codes: user.backup_codes
+    backup_codes: user.backup_codes,
+    user: sanitizeUser(user)
   });
 });
 
@@ -3557,7 +3633,7 @@ app.post('/api/security/2fa/disable', async (req: Request, res: Response) => {
   user.two_factor_enabled = false;
   await db.updateAccount(user.id, { two_factor_enabled: false });
   saveData();
-  return res.json({ success: true, two_factor_enabled: false });
+  return res.json({ success: true, two_factor_enabled: false, user: sanitizeUser(user) });
 });
 
 app.post('/api/security/backup-codes/regenerate', async (req: Request, res: Response) => {
@@ -3567,13 +3643,20 @@ app.post('/api/security/backup-codes/regenerate', async (req: Request, res: Resp
   const decoded = verifyToken(token);
   if (!decoded) return res.status(401).json({ error: 'Invalid token' });
 
-  const user = goldUsers.find(u => u.id === decoded.id);
+  let user = goldUsers.find(u => u.id === decoded.id || (decoded.email && u.email && u.email.toLowerCase() === decoded.email.toLowerCase()));
+  if (!user) {
+    const acc = await db.findAccount(decoded.email || decoded.id);
+    if (acc) {
+      user = acc as StoredGoldUser;
+      goldUsers.unshift(user);
+    }
+  }
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.backup_codes = generateBackupCodes();
   await db.updateAccount(user.id, { backup_codes: user.backup_codes });
   saveData();
-  return res.json({ success: true, backup_codes: user.backup_codes });
+  return res.json({ success: true, backup_codes: user.backup_codes, user: sanitizeUser(user) });
 });
 
 app.get(['/api/security/sessions', '/api/security/devices'], async (req: Request, res: Response) => {
@@ -3698,6 +3781,7 @@ app.post('/api/security/sessions/revoke', async (req: Request, res: Response) =>
     const target = session_token || id;
     if (!target) return res.status(400).json({ error: 'Missing session_token or id' });
     await db.removeSession(target);
+    saveData();
     return res.json({ success: true, message: 'Device session logged out successfully' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -3726,10 +3810,152 @@ app.post(['/api/security/devices/revoke-all', '/api/security/sessions/revoke-oth
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
     await db.removeOtherSessions(userId, sessionCookie);
+    saveData();
     return res.json({ success: true, message: 'All other devices have been signed out.' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ================= LOGIN ATTEMPTS / CROSS-DEVICE APPROVAL =================
+
+// Check for incoming push approval requests on active session
+app.get('/api/security/login-attempts/pending', (req: Request, res: Response) => {
+  ensureDataLoaded();
+  let userId = '';
+  let userEmail = '';
+
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const decoded = verifyToken(token);
+    if (decoded) {
+      userId = decoded.id;
+      userEmail = decoded.email;
+    }
+  }
+
+  if (!userEmail) {
+    const cookies = parseCookies(req);
+    const sessionCookie = cookies['goldmailer_session'] || cookies['session_token'];
+    if (sessionCookie) {
+      const sess = db.getSessionSync(sessionCookie);
+      if (sess) {
+        userId = sess.user_id;
+        userEmail = sess.email;
+      }
+    }
+  }
+
+  if (!userEmail && !userId) {
+    return res.json([]);
+  }
+
+  const now = Date.now();
+  const cleanEmail = (userEmail || '').toLowerCase().trim();
+  const pending = loginAttempts.filter(att => {
+    const expMs = att.expires_at ? (typeof att.expires_at === 'number' ? att.expires_at : new Date(att.expires_at).getTime()) : 0;
+    return (
+      att.status === 'pending' &&
+      (att.user_id === userId || (att.email && cleanEmail && att.email.toLowerCase() === cleanEmail)) &&
+      (!expMs || expMs > now)
+    );
+  });
+
+  return res.json(pending);
+});
+
+// Poll Login Attempt Status
+app.get('/api/security/login-attempts/:attemptId/status', async (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { attemptId } = req.params;
+  const attempt = loginAttempts.find(a => a.id === attemptId);
+  if (!attempt) {
+    return res.status(404).json({ error: 'Login attempt not found', status: 'not_found' });
+  }
+
+  const expMs = attempt.expires_at ? (typeof attempt.expires_at === 'number' ? attempt.expires_at : new Date(attempt.expires_at).getTime()) : 0;
+  if (expMs && expMs < Date.now()) {
+    attempt.status = 'expired';
+    saveData();
+    return res.json({ status: 'expired' });
+  }
+
+  if (attempt.status === 'approved' && (attempt as any).auth_token) {
+    return res.json({
+      status: 'approved',
+      token: (attempt as any).auth_token,
+      session_token: (attempt as any).session_token,
+      user: (attempt as any).user
+    });
+  }
+
+  return res.json({
+    status: attempt.status,
+    attempt
+  });
+});
+
+// Respond to Login Attempt (Approve or Block)
+app.post('/api/security/login-attempts/:attemptId/respond', async (req: Request, res: Response) => {
+  ensureDataLoaded();
+  const { attemptId } = req.params;
+  const { action } = req.body || {};
+  const attempt = loginAttempts.find(a => a.id === attemptId);
+  if (!attempt) {
+    return res.status(404).json({ error: 'Login attempt not found' });
+  }
+
+  if (action === 'block') {
+    attempt.status = 'rejected';
+    saveData();
+    return res.json({ success: true, status: 'rejected' });
+  }
+
+  if (action === 'approve') {
+    attempt.status = 'approved';
+    const targetUser = goldUsers.find(u => u.id === attempt.user_id || (u.email && attempt.email && u.email.toLowerCase() === attempt.email.toLowerCase())) || await db.findAccount(attempt.email || attempt.user_id);
+    if (targetUser) {
+      const curIp = attempt.ip || getClientIP(req);
+      const sessionToken = crypto.randomBytes(32).toString('hex');
+      const nowIso = new Date().toISOString();
+      const token = generateToken({
+        id: targetUser.id,
+        email: targetUser.email,
+        username: targetUser.username,
+        role: targetUser.role,
+        session_token: sessionToken
+      });
+
+      await db.createSession({
+        id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+        session_id: 'sess_' + crypto.randomBytes(8).toString('hex'),
+        user_id: targetUser.id,
+        email: targetUser.email,
+        session_token: sessionToken,
+        token,
+        ip_address: curIp,
+        ip: curIp,
+        city: 'Current Location',
+        country: 'Current Location',
+        device: attempt.device_name || 'Browser',
+        browser: attempt.browser || 'Browser',
+        os: attempt.os || 'Device',
+        user_agent: attempt.browser || '',
+        is_current: false,
+        last_active: nowIso,
+        created_at: nowIso
+      });
+
+      (attempt as any).auth_token = token;
+      (attempt as any).session_token = sessionToken;
+      (attempt as any).user = sanitizeUser(targetUser);
+    }
+    saveData();
+    return res.json({ success: true, status: 'approved' });
+  }
+
+  return res.status(400).json({ error: 'Invalid action' });
 });
 
 // Current activity for Dashboard Header / Footer (Requirement 5)

@@ -702,7 +702,18 @@ export async function updateUserProfile(updates: Partial<UserProfile>): Promise<
   });
   const data = await safeJsonParse(res);
   if (!res.ok) throw new Error(data.error || 'Failed to update profile');
-  setStoredUser(data.user);
+  if (data.user) {
+    setStoredUser(data.user);
+    addStoredAccount({
+      id: data.user.id,
+      email: data.user.email,
+      username: data.user.username,
+      name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+      token: getAuthToken() || '',
+      avatar_url: data.user.avatar_url,
+      role: data.user.role
+    });
+  }
   return data.user;
 }
 
@@ -716,7 +727,7 @@ export async function setup2FA(): Promise<{ secret: string; otpauth_url: string;
   return await safeJsonParse(res);
 }
 
-export async function enable2FA(code: string, secret?: string): Promise<{ success: boolean; two_factor_enabled: boolean; backup_codes: string[] }> {
+export async function enable2FA(code: string, secret?: string): Promise<{ success: boolean; two_factor_enabled: boolean; backup_codes: string[]; user?: UserProfile }> {
   const res = await fetch('/api/security/2fa/enable', {
     method: 'POST',
     headers: getHeaders(),
@@ -724,23 +735,50 @@ export async function enable2FA(code: string, secret?: string): Promise<{ succes
   });
   const data = await safeJsonParse(res);
   if (!res.ok) throw new Error(data.error || 'Failed to verify code');
+  if (data.user) {
+    setStoredUser(data.user);
+  } else {
+    const cur = getStoredUser();
+    if (cur) {
+      setStoredUser({ ...cur, two_factor_enabled: true, backup_codes: data.backup_codes });
+    }
+  }
   return data;
 }
 
-export async function disable2FA(): Promise<{ success: boolean }> {
+export async function disable2FA(): Promise<{ success: boolean; two_factor_enabled: boolean; user?: UserProfile }> {
   const res = await fetch('/api/security/2fa/disable', {
     method: 'POST',
     headers: getHeaders()
   });
-  return await safeJsonParse(res);
+  const data = await safeJsonParse(res);
+  if (data.user) {
+    setStoredUser(data.user);
+  } else {
+    const cur = getStoredUser();
+    if (cur) {
+      setStoredUser({ ...cur, two_factor_enabled: false });
+    }
+  }
+  return data;
 }
 
-export async function regenerateBackupCodes(): Promise<{ backup_codes: string[] }> {
+export async function regenerateBackupCodes(): Promise<{ backup_codes: string[]; user?: UserProfile }> {
   const res = await fetch('/api/security/backup-codes/regenerate', {
     method: 'POST',
     headers: getHeaders()
   });
-  return await safeJsonParse(res);
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to regenerate backup codes');
+  if (data.user) {
+    setStoredUser(data.user);
+  } else if (data.backup_codes) {
+    const cur = getStoredUser();
+    if (cur) {
+      setStoredUser({ ...cur, backup_codes: data.backup_codes });
+    }
+  }
+  return data;
 }
 
 export async function fetchUserDevices(): Promise<UserDevice[]> {

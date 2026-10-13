@@ -375,9 +375,29 @@ export default function App() {
         const cached = getCachedEmails(u.email);
         if (cached.length > 0) setAllEmails(cached);
         setViewMode('app');
+      } else {
+        clearAuthToken();
+        setUser(null);
+        setViewMode('hero');
       }
     }).catch(() => {});
   }, []);
+
+  // Periodic session validity check (detects if device was logged out from another device)
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(async () => {
+      try {
+        const fresh = await fetchCurrentUser();
+        if (!fresh) {
+          clearAuthToken();
+          setUser(null);
+          setViewMode('hero');
+        }
+      } catch {}
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   // Load emails and drafts for active email (fetches all_mail and drafts)
   const loadMailData = useCallback(async (targetEmail?: string, silent = false) => {
