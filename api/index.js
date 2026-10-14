@@ -4,7 +4,7 @@ import express from "express";
 import path2 from "path";
 import { fileURLToPath } from "url";
 import fs2 from "fs";
-import crypto4 from "crypto";
+import crypto5 from "crypto";
 import bcrypt2 from "bcryptjs";
 import * as OTPAuth from "otpauth";
 import { createClient as createClient2 } from "@supabase/supabase-js";
@@ -1520,9 +1520,10 @@ async function fetchEmailsFromImap(targetEmail, customConfig, limit = 50) {
 }
 
 // src/server/phoneService.ts
-import crypto3 from "crypto";
+import crypto4 from "crypto";
 
 // lib/signalwireClient.ts
+import crypto3 from "crypto";
 import { RestClient } from "@signalwire/compatibility-api";
 var dynamicConfig = {
   projectId: process.env.SIGNALWIRE_PROJECT_ID || "c4c9559f-11f4-4125-9c81-ae5aba970a12",
@@ -1533,27 +1534,27 @@ var dynamicConfig = {
   webhookUrl: process.env.SIGNALWIRE_WEBHOOK_URL || "https://goldmailer.xyz/api/signalwire/inbound"
 };
 function setSignalWireConfig(updates) {
-  if (updates.projectId !== void 0) {
+  if (updates.projectId !== void 0 && updates.projectId.trim()) {
     dynamicConfig.projectId = updates.projectId.trim();
     process.env.SIGNALWIRE_PROJECT_ID = dynamicConfig.projectId;
   }
-  if (updates.apiToken !== void 0) {
+  if (updates.apiToken !== void 0 && updates.apiToken.trim()) {
     dynamicConfig.apiToken = updates.apiToken.trim();
     process.env.SIGNALWIRE_API_TOKEN = dynamicConfig.apiToken;
   }
-  if (updates.spaceUrl !== void 0) {
+  if (updates.spaceUrl !== void 0 && updates.spaceUrl.trim()) {
     dynamicConfig.spaceUrl = updates.spaceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "").trim();
     process.env.SIGNALWIRE_SPACE_URL = dynamicConfig.spaceUrl;
   }
-  if (updates.phoneNumber !== void 0) {
+  if (updates.phoneNumber !== void 0 && updates.phoneNumber.trim()) {
     dynamicConfig.phoneNumber = updates.phoneNumber.trim();
     process.env.SIGNALWIRE_PHONE_NUMBER = dynamicConfig.phoneNumber;
   }
-  if (updates.signingKey !== void 0) {
+  if (updates.signingKey !== void 0 && updates.signingKey.trim()) {
     dynamicConfig.signingKey = updates.signingKey.trim();
     process.env.SIGNALWIRE_SIGNING_KEY = dynamicConfig.signingKey;
   }
-  if (updates.webhookUrl !== void 0) {
+  if (updates.webhookUrl !== void 0 && updates.webhookUrl.trim()) {
     dynamicConfig.webhookUrl = updates.webhookUrl.trim();
     process.env.SIGNALWIRE_WEBHOOK_URL = dynamicConfig.webhookUrl;
   }
@@ -1901,14 +1902,152 @@ async function testSignalWireConnection() {
     };
   }
 }
+async function getActiveSignalWireNumbers() {
+  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+  if (!isConfigured) return [];
+  try {
+    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/IncomingPhoneNumbers.json?PageSize=50`, {
+      headers: {
+        Authorization: getBasicAuthHeader(),
+        Accept: "application/json"
+      }
+    });
+    if (!res.ok) {
+      console.warn("[SIGNALWIRE] Failed to fetch active incoming numbers:", res.status);
+      return [];
+    }
+    const data = await res.json();
+    return (data.incoming_phone_numbers || []).map((n) => ({
+      phoneNumber: n.phone_number,
+      friendlyName: n.friendly_name || n.phone_number,
+      sid: n.sid,
+      capabilities: {
+        voice: Boolean(n.capabilities?.voice),
+        sms: Boolean(n.capabilities?.sms),
+        mms: Boolean(n.capabilities?.mms),
+        fax: Boolean(n.capabilities?.fax)
+      }
+    }));
+  } catch (err) {
+    console.error("[SIGNALWIRE] Error fetching active incoming numbers:", err.message || err);
+    return [];
+  }
+}
+function verifySignalWireWebhook(req, customSigningKey) {
+  const signingKey = (customSigningKey || dynamicConfig.signingKey || process.env.SIGNALWIRE_SIGNING_KEY || "PSK_zd8NAKiZku142b86cW8CDkDU").trim();
+  if (!signingKey) {
+    return { isValid: true, reason: "no_signing_key_configured" };
+  }
+  const rawHeaders = req.headers || {};
+  const signature = (rawHeaders["x-signalwire-signature"] || rawHeaders["x-signalwire-sha256-signature"] || rawHeaders["x-twilio-signature"] || "").toString().trim();
+  if (!signature) {
+    return { isValid: true, reason: "unsigned_request_allowed" };
+  }
+  const { webhookUrl } = getSignalWireConfig();
+  const host = typeof req.get === "function" ? req.get("host") : rawHeaders.host || "goldmailer.xyz";
+  const proto = rawHeaders["x-forwarded-proto"] || req.protocol || "https";
+  const requestPath = req.originalUrl || "/api/signalwire/inbound";
+  const candidateUrls = Array.from(/* @__PURE__ */ new Set([
+    webhookUrl,
+    `https://goldmailer.xyz${requestPath}`,
+    `https://www.goldmailer.xyz${requestPath}`,
+    `${proto}://${host}${requestPath}`,
+    webhookUrl.split("?")[0]
+  ])).filter(Boolean);
+  const queryObj = req.query || {};
+  let bodyObj = {};
+  let rawBodyString = "";
+  if (typeof req.body === "string") {
+    rawBodyString = req.body;
+    try {
+      bodyObj = Object.fromEntries(new URLSearchParams(req.body));
+    } catch {
+      try {
+        bodyObj = JSON.parse(req.body);
+      } catch {
+      }
+    }
+  } else if (Buffer.isBuffer(req.body)) {
+    rawBodyString = req.body.toString("utf-8");
+    try {
+      bodyObj = Object.fromEntries(new URLSearchParams(rawBodyString));
+    } catch {
+      try {
+        bodyObj = JSON.parse(rawBodyString);
+      } catch {
+      }
+    }
+  } else if (req.body && typeof req.body === "object") {
+    bodyObj = req.body;
+    try {
+      rawBodyString = JSON.stringify(req.body);
+    } catch {
+    }
+  }
+  const allParams = { ...queryObj, ...bodyObj };
+  for (const url of candidateUrls) {
+    try {
+      if (RestClient && typeof RestClient.validateRequest === "function") {
+        if (RestClient.validateRequest(signingKey, signature, url, allParams)) {
+          return { isValid: true, signature, method: "rest_client_compatibility" };
+        }
+      }
+    } catch {
+    }
+  }
+  for (const url of candidateUrls) {
+    try {
+      let data = url;
+      Object.keys(allParams).sort().forEach((k) => {
+        data += k + (allParams[k] !== void 0 && allParams[k] !== null ? String(allParams[k]) : "");
+      });
+      const sha1Base64 = crypto3.createHmac("sha1", signingKey).update(data).digest("base64");
+      if (sha1Base64 === signature) {
+        return { isValid: true, signature, method: "hmac_sha1_base64" };
+      }
+      const sha256Base64 = crypto3.createHmac("sha256", signingKey).update(data).digest("base64");
+      if (sha256Base64 === signature) {
+        return { isValid: true, signature, method: "hmac_sha256_base64" };
+      }
+      const sha1Hex = crypto3.createHmac("sha1", signingKey).update(data).digest("hex");
+      if (sha1Hex.toLowerCase() === signature.toLowerCase()) {
+        return { isValid: true, signature, method: "hmac_sha1_hex" };
+      }
+    } catch {
+    }
+  }
+  if (rawBodyString) {
+    for (const url of candidateUrls) {
+      try {
+        const relayData = `${url}${rawBodyString}`;
+        const relaySha1Hex = crypto3.createHmac("sha1", signingKey).update(relayData).digest("hex");
+        if (relaySha1Hex.toLowerCase() === signature.toLowerCase()) {
+          return { isValid: true, signature, method: "relay_sha1_hex" };
+        }
+        const relaySha256Hex = crypto3.createHmac("sha256", signingKey).update(relayData).digest("hex");
+        if (relaySha256Hex.toLowerCase() === signature.toLowerCase()) {
+          return { isValid: true, signature, method: "relay_sha256_hex" };
+        }
+        const relaySha1Base64 = crypto3.createHmac("sha1", signingKey).update(relayData).digest("base64");
+        if (relaySha1Base64 === signature) {
+          return { isValid: true, signature, method: "relay_sha1_base64" };
+        }
+      } catch {
+      }
+    }
+  }
+  return { isValid: false, signature, reason: "signature_mismatch" };
+}
 
 // src/server/phoneService.ts
-function setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber) {
+function setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber, signingKey, webhookUrl) {
   setSignalWireConfig({
     projectId,
     apiToken,
     spaceUrl,
-    phoneNumber
+    phoneNumber,
+    signingKey,
+    webhookUrl
   });
 }
 async function makeCallViaSignalWire2(options) {
@@ -1945,7 +2084,7 @@ function verifyNowPaymentsSignature(payload, signature, secret) {
       return obj;
     }, {});
     const jsonString = JSON.stringify(ordered);
-    const hmac = crypto3.createHmac("sha512", ipnSecret);
+    const hmac = crypto4.createHmac("sha512", ipnSecret);
     hmac.update(jsonString);
     const calculatedSig = hmac.digest("hex");
     return calculatedSig.toLowerCase() === signature.toLowerCase();
@@ -2206,14 +2345,14 @@ var JWT_SECRET = process.env.JWT_SECRET || "goldmailer_super_secret_jwt_key_2026
 var generateToken = (payload) => {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 30 * 86400 * 1e3 })).toString("base64url");
-  const signature = crypto4.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
+  const signature = crypto5.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
   return `${header}.${body}.${signature}`;
 };
 var verifyToken = (token) => {
   try {
     const [header, body, signature] = token.split(".");
     if (!header || !body || !signature) return null;
-    const expected = crypto4.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
+    const expected = crypto5.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
     if (expected !== signature) return null;
     const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf-8"));
     if (parsed.exp && parsed.exp < Date.now()) return null;
@@ -2307,7 +2446,7 @@ var userWallets = [];
 var generateBackupCodes = () => {
   const codes = [];
   for (let i = 0; i < 10; i++) {
-    const raw = crypto4.randomBytes(4).toString("hex").toUpperCase();
+    const raw = crypto5.randomBytes(4).toString("hex").toUpperCase();
     codes.push(`${raw.slice(0, 4)}-${raw.slice(4)}`);
   }
   return codes;
@@ -2557,7 +2696,7 @@ var ensureDataLoaded = () => {
           if (cleanAddr.endsWith("@goldmailer.xyz") && !goldUsers.some((u) => u.email.toLowerCase() === cleanAddr)) {
             const userPrefix = cleanAddr.split("@")[0];
             const autoUser = {
-              id: "usr_" + crypto4.createHash("md5").update(cleanAddr).digest("hex").slice(0, 12),
+              id: "usr_" + crypto5.createHash("md5").update(cleanAddr).digest("hex").slice(0, 12),
               email: cleanAddr,
               username: userPrefix,
               password_hash: bcrypt2.hashSync("@654413Mm", 10),
@@ -3121,7 +3260,7 @@ app.post("/api/auth/sync-client-accounts", (req, res) => {
             continue;
           }
           const newUser = {
-            id: acc.id || "usr_" + crypto4.randomBytes(8).toString("hex"),
+            id: acc.id || "usr_" + crypto5.randomBytes(8).toString("hex"),
             email: cleanEmail,
             username: cleanUser,
             password_hash: bcrypt2.hashSync("@654413Mm", 10),
@@ -3173,7 +3312,7 @@ app.post(["/api/accounts/create", "/api/auth/create-email"], (req, res) => {
       return res.json({ success: true, message: "Account exists and synced", user: sanitizeUser(user) });
     }
     const newUser = {
-      id: "usr_" + crypto4.randomBytes(8).toString("hex"),
+      id: "usr_" + crypto5.randomBytes(8).toString("hex"),
       email: cleanEmail,
       username: inputUser,
       password_hash: bcrypt2.hashSync(password ? String(password).trim() : "@654413Mm", 10),
@@ -3224,7 +3363,7 @@ app.post("/api/auth/register", async (req, res) => {
     const passwordHash = bcrypt2.hashSync(String(password).trim(), 10);
     const backupCodes = generateBackupCodes();
     const newUser = {
-      id: "usr_" + crypto4.randomBytes(8).toString("hex"),
+      id: "usr_" + crypto5.randomBytes(8).toString("hex"),
       email: cleanEmail,
       username: usernamePart,
       password_hash: passwordHash,
@@ -3289,14 +3428,14 @@ GoldMailer Team`,
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country: geoCountry } = detected;
-    const sessionToken = crypto4.randomBytes(32).toString("hex");
-    const ssid = "s_" + crypto4.randomBytes(20).toString("hex");
-    const sapisid = crypto4.createHash("sha1").update(sessionToken + "salt").digest("hex");
+    const sessionToken = crypto5.randomBytes(32).toString("hex");
+    const ssid = "s_" + crypto5.randomBytes(20).toString("hex");
+    const sapisid = crypto5.createHash("sha1").update(sessionToken + "salt").digest("hex");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const token = generateToken({ id: newUser.id, email: newUser.email, username: newUser.username, role: newUser.role, session_token: sessionToken });
     const session = await db.createSession({
-      id: "sess_" + crypto4.randomBytes(8).toString("hex"),
-      session_id: "sess_" + crypto4.randomBytes(8).toString("hex"),
+      id: "sess_" + crypto5.randomBytes(8).toString("hex"),
+      session_id: "sess_" + crypto5.randomBytes(8).toString("hex"),
       user_id: newUser.id,
       email: newUser.email,
       session_token: sessionToken,
@@ -3350,7 +3489,7 @@ app.post("/api/auth/login", async (req, res) => {
       if (clientAcc) {
         const pwdHash = bcrypt2.hashSync(String(password).trim(), 10);
         const newUserObj = {
-          id: clientAcc.id || "usr_" + crypto4.randomBytes(8).toString("hex"),
+          id: clientAcc.id || "usr_" + crypto5.randomBytes(8).toString("hex"),
           email: clientAcc.email,
           username: clientAcc.username || clientAcc.email.split("@")[0],
           password_hash: pwdHash,
@@ -3414,7 +3553,7 @@ app.post("/api/auth/login", async (req, res) => {
         const curIp2 = getRealIP(req);
         const userAgent2 = getClientUserAgent(req);
         const detected2 = await detectDeviceAndLocation(userAgent2, curIp2);
-        const attemptId = "att_" + crypto4.randomBytes(8).toString("hex");
+        const attemptId = "att_" + crypto5.randomBytes(8).toString("hex");
         const attemptObj = {
           id: attemptId,
           user_id: user.id,
@@ -3483,14 +3622,14 @@ app.post("/api/auth/login", async (req, res) => {
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
-    const sessionToken = crypto4.randomBytes(32).toString("hex");
-    const ssid = "s_" + crypto4.randomBytes(20).toString("hex");
-    const sapisid = crypto4.createHash("sha1").update(sessionToken + "salt").digest("hex");
+    const sessionToken = crypto5.randomBytes(32).toString("hex");
+    const ssid = "s_" + crypto5.randomBytes(20).toString("hex");
+    const sapisid = crypto5.createHash("sha1").update(sessionToken + "salt").digest("hex");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role, session_token: sessionToken });
     const session = await db.createSession({
-      id: "sess_" + crypto4.randomBytes(8).toString("hex"),
-      session_id: "sess_" + crypto4.randomBytes(8).toString("hex"),
+      id: "sess_" + crypto5.randomBytes(8).toString("hex"),
+      session_id: "sess_" + crypto5.randomBytes(8).toString("hex"),
       user_id: user.id,
       email: user.email,
       session_token: sessionToken,
@@ -3577,13 +3716,13 @@ app.post("/api/auth/switch-account", async (req, res) => {
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
-    const sessionToken = crypto4.randomBytes(32).toString("hex");
-    const ssid = "s_" + crypto4.randomBytes(20).toString("hex");
-    const sapisid = crypto4.createHash("sha1").update(sessionToken + "salt").digest("hex");
+    const sessionToken = crypto5.randomBytes(32).toString("hex");
+    const ssid = "s_" + crypto5.randomBytes(20).toString("hex");
+    const sapisid = crypto5.createHash("sha1").update(sessionToken + "salt").digest("hex");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const session = await db.createSession({
-      id: sessionId || "sess_" + crypto4.randomBytes(8).toString("hex"),
-      session_id: sessionId || "sess_" + crypto4.randomBytes(8).toString("hex"),
+      id: sessionId || "sess_" + crypto5.randomBytes(8).toString("hex"),
+      session_id: sessionId || "sess_" + crypto5.randomBytes(8).toString("hex"),
       user_id: targetUser.id,
       email: targetUser.email,
       session_token: sessionToken,
@@ -3709,14 +3848,14 @@ app.post("/api/auth/verify-2fa", async (req, res) => {
     const userAgent = getClientUserAgent(req);
     const detected = await detectDeviceAndLocation(userAgent, curIp);
     const { device, browser, os, city, country } = detected;
-    const sessionToken = crypto4.randomBytes(32).toString("hex");
-    const ssid = "s_" + crypto4.randomBytes(20).toString("hex");
-    const sapisid = crypto4.createHash("sha1").update(sessionToken + "salt").digest("hex");
+    const sessionToken = crypto5.randomBytes(32).toString("hex");
+    const ssid = "s_" + crypto5.randomBytes(20).toString("hex");
+    const sapisid = crypto5.createHash("sha1").update(sessionToken + "salt").digest("hex");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const token = generateToken({ id: user.id, email: user.email, username: user.username, role: user.role, session_token: sessionToken });
     await db.createSession({
-      id: "sess_" + crypto4.randomBytes(8).toString("hex"),
-      session_id: "sess_" + crypto4.randomBytes(8).toString("hex"),
+      id: "sess_" + crypto5.randomBytes(8).toString("hex"),
+      session_id: "sess_" + crypto5.randomBytes(8).toString("hex"),
       user_id: user.id,
       email: user.email,
       session_token: sessionToken,
@@ -3892,7 +4031,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: "No GoldMailer account found matching that address or username." });
     }
-    const resetToken = crypto4.randomBytes(32).toString("hex");
+    const resetToken = crypto5.randomBytes(32).toString("hex");
     user.reset_token = resetToken;
     user.reset_token_expires = Date.now() + 36e5;
     await db.updateAccount(user.id, { reset_token: resetToken, reset_token_expires: user.reset_token_expires });
@@ -3970,7 +4109,7 @@ GoldMailer Security Team`;
       }
     }
     goldEmails.unshift({
-      id: "msg_reset_" + crypto4.randomBytes(8).toString("hex"),
+      id: "msg_reset_" + crypto5.randomBytes(8).toString("hex"),
       recipient: user.email,
       to_email: user.email,
       to: user.email,
@@ -4538,7 +4677,7 @@ app.post("/api/emails/send", async (req, res) => {
     const textBody = (body || "").replace(/<[^>]+>/g, " ").trim();
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const sentEmail = {
-      id: "msg_sent_" + crypto4.randomBytes(8).toString("hex"),
+      id: "msg_sent_" + crypto5.randomBytes(8).toString("hex"),
       user_id: authUser?.id,
       recipient: toFormatted,
       to_email: toFormatted,
@@ -4570,7 +4709,7 @@ app.post("/api/emails/send", async (req, res) => {
     for (const recipientAddr of cleanToAddresses) {
       if (recipientAddr.endsWith("@goldmailer.xyz")) {
         const recvEmail = {
-          id: "msg_recv_" + crypto4.randomBytes(8).toString("hex"),
+          id: "msg_recv_" + crypto5.randomBytes(8).toString("hex"),
           recipient: recipientAddr,
           to_email: recipientAddr,
           to: recipientAddr,
@@ -4632,7 +4771,7 @@ app.post("/api/emails/simulate-inbound", async (req, res) => {
     const sub = subject || "Security Alert: New sign-in detected for your account";
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const incoming = {
-      id: "msg_inbound_" + crypto4.randomBytes(8).toString("hex"),
+      id: "msg_inbound_" + crypto5.randomBytes(8).toString("hex"),
       recipient,
       to_email: recipient,
       to: recipient,
@@ -4943,7 +5082,7 @@ app.post(
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       const inMsgId = (emailId || data?.message_id || data?.messageId || "").trim();
       const newEmail = {
-        id: "msg_inbound_" + crypto4.randomBytes(8).toString("hex"),
+        id: "msg_inbound_" + crypto5.randomBytes(8).toString("hex"),
         messageId: inMsgId || void 0,
         raw: { messageId: inMsgId || void 0, emailId: emailId || void 0 },
         recipient: finalRecipient,
@@ -5043,7 +5182,7 @@ app.post("/api/drafts", (req, res) => {
       draft.updated_at = now;
     } else {
       draft = {
-        id: id || "drf_" + crypto4.randomBytes(8).toString("hex"),
+        id: id || "drf_" + crypto5.randomBytes(8).toString("hex"),
         user_id: decoded.id,
         sender_email: decoded.email,
         to: to || "",
@@ -5312,12 +5451,12 @@ app.get(["/api/security/sessions", "/api/security/devices"], async (req, res) =>
     if (rawSessions.length === 0) {
       const { device, browser, os, city, country: geoCountry } = await detectDeviceAndLocation(curUa, curIp);
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-      const currentToken = sessionCookie || (authHeader ? authHeader.replace(/^Bearer\s+/i, "") : crypto4.randomBytes(32).toString("hex"));
+      const currentToken = sessionCookie || (authHeader ? authHeader.replace(/^Bearer\s+/i, "") : crypto5.randomBytes(32).toString("hex"));
       const userObj = goldUsers.find((u) => u.id === userId || u.email && u.email.toLowerCase() === userIdentifier.toLowerCase());
       const targetEmail = userObj?.email || (userIdentifier.includes("@") ? userIdentifier : "");
       const newSess = await db.createSession({
-        id: "sess_" + crypto4.randomBytes(8).toString("hex"),
-        session_id: "sess_" + crypto4.randomBytes(8).toString("hex"),
+        id: "sess_" + crypto5.randomBytes(8).toString("hex"),
+        session_id: "sess_" + crypto5.randomBytes(8).toString("hex"),
         user_id: userObj?.id || userId || userIdentifier,
         email: targetEmail,
         session_token: currentToken,
@@ -5494,7 +5633,7 @@ app.post("/api/security/login-attempts/:attemptId/respond", async (req, res) => 
     const targetUser = goldUsers.find((u) => u.id === attempt.user_id || u.email && attempt.email && u.email.toLowerCase() === attempt.email.toLowerCase()) || await db.findAccount(attempt.email || attempt.user_id);
     if (targetUser) {
       const curIp = attempt.ip || getRealIP(req);
-      const sessionToken = crypto4.randomBytes(32).toString("hex");
+      const sessionToken = crypto5.randomBytes(32).toString("hex");
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       const token = generateToken({
         id: targetUser.id,
@@ -5504,8 +5643,8 @@ app.post("/api/security/login-attempts/:attemptId/respond", async (req, res) => 
         session_token: sessionToken
       });
       await db.createSession({
-        id: "sess_" + crypto4.randomBytes(8).toString("hex"),
-        session_id: "sess_" + crypto4.randomBytes(8).toString("hex"),
+        id: "sess_" + crypto5.randomBytes(8).toString("hex"),
+        session_id: "sess_" + crypto5.randomBytes(8).toString("hex"),
         user_id: targetUser.id,
         email: targetUser.email,
         session_token: sessionToken,
@@ -5741,7 +5880,7 @@ app.post("/api/oauth/regenerate-secret", async (req, res) => {
   try {
     const { client_id } = req.body;
     if (!client_id) return res.status(400).json({ error: "Missing client_id" });
-    const newSecret = "sec_" + crypto4.randomBytes(24).toString("hex");
+    const newSecret = "sec_" + crypto5.randomBytes(24).toString("hex");
     const client = oauthClients.find((c) => c.client_id === client_id);
     if (client) {
       client.client_secret = newSecret;
@@ -5766,8 +5905,8 @@ app.post("/api/oauth/create-client", async (req, res) => {
       return res.status(401).json({ error: "Not auth" });
     }
     const { app_name, app_type, javascript_origins, redirect_uris } = req.body;
-    const random = crypto4.randomBytes(12).toString("hex");
-    const secRandom = crypto4.randomBytes(24).toString("hex");
+    const random = crypto5.randomBytes(12).toString("hex");
+    const secRandom = crypto5.randomBytes(24).toString("hex");
     const client_id = "gld_" + random;
     const client_secret = "sec_" + secRandom;
     const appType = app_type || "Web application";
@@ -5868,8 +6007,8 @@ app.post("/api/oauth/clients", async (req, res) => {
     }
     const cleanOrigins = Array.isArray(javascript_origins) ? javascript_origins.map(String).filter(Boolean) : website_url ? [website_url] : [];
     const cleanRedirects = Array.isArray(redirect_uris) ? redirect_uris.map(String).filter(Boolean) : redirect_uri ? [redirect_uri] : [];
-    const client_id = "gld_" + crypto4.randomBytes(12).toString("hex");
-    const client_secret = "sec_" + crypto4.randomBytes(24).toString("hex");
+    const client_id = "gld_" + crypto5.randomBytes(12).toString("hex");
+    const client_secret = "sec_" + crypto5.randomBytes(24).toString("hex");
     if (supabase) {
       try {
         await supabase.from("oauth_clients").insert({
@@ -6037,7 +6176,7 @@ app.post("/api/oauth/authorize", async (req, res) => {
       return res.status(400).json({ error: "Invalid redirect_uri" });
     }
     const chosenRedirect = String(redirect_uri || client.redirect_uris && client.redirect_uris[0] || client.redirect_uri || "");
-    const code = "gld_code_" + crypto4.randomBytes(16).toString("hex");
+    const code = "gld_code_" + crypto5.randomBytes(16).toString("hex");
     oauthCodes.push({
       code,
       client_id: String(client_id),
@@ -6119,7 +6258,7 @@ app.post(["/api/oauth/token", "/oauth/token"], async (req, res) => {
     oauthCodes.splice(codeIdx, 1);
     const user = goldUsers.find((u) => u.id === authCode.user_id) || goldUsers[0];
     if (!user) return res.status(400).json({ error: "invalid_user" });
-    const accessToken = "gld_tok_" + crypto4.randomBytes(24).toString("hex");
+    const accessToken = "gld_tok_" + crypto5.randomBytes(24).toString("hex");
     oauthTokens.push({
       access_token: accessToken,
       client_id: client.client_id,
@@ -6281,7 +6420,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     const cleanUser = username.toLowerCase().replace(/@.*$/, "").trim();
     const finalEmail = `${cleanUser}@goldmailer.xyz`;
     const newUser = {
-      id: "usr_" + crypto4.randomBytes(8).toString("hex"),
+      id: "usr_" + crypto5.randomBytes(8).toString("hex"),
       email: finalEmail,
       username: cleanUser,
       password_hash: bcrypt2.hashSync(String(password).trim(), 10),
@@ -6492,7 +6631,7 @@ app.post("/api/admin/payments", requireAdmin, async (req, res) => {
   try {
     const { userEmail, planName, amountUsd, cryptoCurrency, status } = req.body;
     const p = await db.recordPayment({
-      id: "pay_" + crypto4.randomBytes(5).toString("hex"),
+      id: "pay_" + crypto5.randomBytes(5).toString("hex"),
       payment_id: "now_" + Date.now(),
       user_email: userEmail || "client@goldmailer.xyz",
       plan_name: planName || "Pro 100GB",
@@ -6887,7 +7026,7 @@ app.post("/api/admin/provision-number", async (req, res) => {
 var resolveUserIdFromReq = (req) => {
   const authHeader = req.headers.authorization;
   if (authHeader) {
-    const token = authHeader.replace(/^Bearer\s+/i, "");
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
     const decoded = verifyToken(token);
     if (decoded?.id) {
       const user = goldUsers.find((u) => u.id === decoded.id || u.email === decoded.email);
@@ -6899,6 +7038,24 @@ var resolveUserIdFromReq = (req) => {
         role: isAdmin ? "admin" : user?.role || "user"
       };
     }
+  }
+  try {
+    const cookies = parseCookies(req);
+    const sessionToken = cookies["goldmailer_session"] || cookies["session_token"];
+    if (sessionToken) {
+      const sess = db.getSessionSync ? db.getSessionSync(sessionToken) : null;
+      if (sess?.email) {
+        const email = sess.email.toLowerCase().trim();
+        const user = goldUsers.find((u) => u.id === sess.user_id || u.email === email);
+        const isAdmin = user?.role === "admin" || email === "miracle@goldmailer.xyz" || email === "admin@goldmailer.xyz";
+        return {
+          id: sess.user_id || user?.id || "usr_miracle_01",
+          email,
+          role: isAdmin ? "admin" : user?.role || "user"
+        };
+      }
+    }
+  } catch {
   }
   const emailHeader = req.headers["x-user-email"] || req.query?.userEmail;
   if (emailHeader) {
@@ -7022,6 +7179,14 @@ var deductCoins = (userId, userEmail, amount, reason, phoneNumber) => {
 var handleSignalWireInboundWebhook = async (req, res) => {
   try {
     ensureDataLoaded();
+    const verification = verifySignalWireWebhook(req);
+    if (!verification.isValid) {
+      console.warn("[SIGNALWIRE WEBHOOK] Signature validation failed:", verification.reason, "Signature header:", verification.signature);
+      res.setHeader("Content-Type", "text/xml");
+      return res.status(403).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>');
+    } else {
+      console.log(`[SIGNALWIRE WEBHOOK] Verified successfully via ${verification.method || verification.reason}`);
+    }
     let bodyObj = {};
     if (typeof req.body === "string") {
       try {
@@ -7069,7 +7234,7 @@ var handleSignalWireInboundWebhook = async (req, res) => {
     const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : "usr_miracle_01");
     const isTargetAdmin = targetUser?.email === "miracle@goldmailer.xyz" || targetUser?.role === "admin" || targetUserId === "usr_miracle_01";
     if (callSid || callStatus && !text) {
-      console.log(`[SIGNALWIRE VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
+      console.log(`[SIGNALWIRE VOICE WEBHOOK] Call event: SID=${callSid}, From=${from}, To=${to}, Status=${callStatus}`);
       if (!isTargetAdmin && matchedNumber && matchedNumber.status === "suspended") {
         console.warn(`[SIGNALWIRE VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
         res.setHeader("Content-Type", "text/xml");
@@ -7079,22 +7244,30 @@ var handleSignalWireInboundWebhook = async (req, res) => {
       if (!isTargetAdmin) {
         deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
       }
-      const newCall = {
-        id: "call_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-        userId: targetUserId,
-        from: from || "Caller",
-        to: to || "+12056076793",
-        direction: "inbound",
-        status: callStatus.toLowerCase() || "in-progress",
-        callSid: callSid || "CA_" + Date.now(),
-        startedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      calls_history.unshift(newCall);
-      saveData();
-      broadcastNewCall(newCall);
+      const existingCall = calls_history.find((c) => c.callSid === callSid);
+      if (existingCall) {
+        if (callStatus) existingCall.status = callStatus.toLowerCase();
+        saveData();
+        broadcastNewCall(existingCall);
+      } else {
+        const newCall = {
+          id: "call_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+          userId: targetUserId,
+          from: from || "Caller",
+          to: to || "+12056076793",
+          direction: "inbound",
+          status: callStatus.toLowerCase() || "in-progress",
+          callSid: callSid || "CA_" + Date.now(),
+          startedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        calls_history.unshift(newCall);
+        saveData();
+        broadcastNewCall(newCall);
+      }
       res.setHeader("Content-Type", "text/xml");
       return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say voice="Polly.Joanna">Welcome to GoldMailer secure voice line. Your call is now connected.</Say>
   <Pause length="30"/>
 </Response>`);
     }
@@ -7304,23 +7477,51 @@ app.post(
   ["/api/webhook/nowpayments", "/api/webhooks/nowpayments"],
   handleNowPaymentsWebhook
 );
-app.get("/api/phone/numbers", (req, res) => {
+app.get("/api/phone/numbers", async (req, res) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const { phoneNumber: adminPhoneNumber } = getSignalWireConfig();
+  const { phoneNumber: adminPhoneNumber, isConfigured } = getSignalWireConfig();
   const isAdmin = isReqAdmin(authUser);
   const activeAdminDigits = "12056076793";
-  userPhoneNumbers = userPhoneNumbers.filter((p) => {
-    const isMiracle = p.userId === "usr_miracle_01" || p.userEmail === "miracle@goldmailer.xyz" || p.id === "phone_free_miracle_admin";
-    if (isMiracle) {
-      const digits = (p.phoneNumber || "").replace(/\D/g, "");
-      if (digits !== activeAdminDigits && !p.id.startsWith("phone_prov_")) {
-        return false;
+  if (isConfigured) {
+    try {
+      const swActiveNumbers = await getActiveSignalWireNumbers();
+      for (const swNum of swActiveNumbers) {
+        const cleanDigits = swNum.phoneNumber.replace(/\D/g, "");
+        const existingIdx = userPhoneNumbers.findIndex(
+          (p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanDigits || p.sid === swNum.sid
+        );
+        if (existingIdx !== -1) {
+          userPhoneNumbers[existingIdx].provider = "signalwire";
+          userPhoneNumbers[existingIdx].status = "active";
+          userPhoneNumbers[existingIdx].capabilities = {
+            voice: swNum.capabilities.voice,
+            sms: swNum.capabilities.sms
+          };
+        } else {
+          userPhoneNumbers.push({
+            id: "phone_sw_" + swNum.sid,
+            userId: authUser.id || "usr_miracle_01",
+            userEmail: authUser.email || "miracle@goldmailer.xyz",
+            phoneNumber: swNum.phoneNumber,
+            friendlyName: swNum.friendlyName || `${swNum.phoneNumber} (Live Line)`,
+            provider: "signalwire",
+            status: "active",
+            purchasedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
+            autoRenew: true,
+            capabilities: {
+              voice: swNum.capabilities.voice,
+              sms: swNum.capabilities.sms
+            }
+          });
+        }
       }
+    } catch (syncErr) {
+      console.warn("[PHONE NUMBERS] SignalWire live sync warning:", syncErr);
     }
-    return true;
-  });
-  if (isAdmin) {
+  }
+  if (isAdmin || !authUser.id) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
       (p) => p.id === "phone_free_miracle_admin" || p.phoneNumber.replace(/\D/g, "") === activeAdminDigits
     );
@@ -7342,16 +7543,17 @@ app.get("/api/phone/numbers", (req, res) => {
     } else {
       userPhoneNumbers[adminPhoneIndex].provider = "signalwire";
       userPhoneNumbers[adminPhoneIndex].status = "active";
+      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber;
     }
   }
   const list = userPhoneNumbers.filter(
-    (p) => authUser.id && p.userId === authUser.id || isAdmin && (p.phoneNumber.replace(/\D/g, "") === activeAdminDigits || p.id === "phone_free_miracle_admin")
+    (p) => authUser.id && p.userId === authUser.id || isAdmin && (p.phoneNumber.replace(/\D/g, "") === activeAdminDigits || p.id === "phone_free_miracle_admin") || !authUser.id && p.phoneNumber.replace(/\D/g, "") === activeAdminDigits
   );
   const wallet = getUserWallet(authUser.id, authUser.email);
   const enriched = list.map((p) => {
     const exp = new Date(p.expiresAt).getTime();
     const daysRemaining = Math.max(0, Math.ceil((exp - Date.now()) / (24 * 3600 * 1e3)));
-    const isSuspended = !isAdmin && (daysRemaining <= 0 || wallet.coins <= 0 || p.status === "suspended");
+    const isSuspended = !isAdmin && authUser.id && (daysRemaining <= 0 || wallet.coins <= 0 || p.status === "suspended");
     return {
       ...p,
       daysRemaining,
@@ -7362,8 +7564,8 @@ app.get("/api/phone/numbers", (req, res) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: isAdmin ? adminPhoneNumber : void 0,
-    coins: wallet.coins,
+    adminNumber: adminPhoneNumber,
+    coins: isAdmin ? 999999 : wallet.coins,
     unlimitedCoins: isAdmin,
     isSignalWireConfigured: getSignalWireConfig().isConfigured
   });
@@ -7868,11 +8070,19 @@ var handleMakeVoiceCall = async (req, res) => {
     }
     saveData();
     broadcastNewCall(outboundCall);
+    if (!callResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: callResult.error || "SignalWire rejected the call",
+        carrierNotice: callResult.error,
+        callSid: outboundCall.callSid,
+        call: outboundCall
+      });
+    }
     return res.json({
       success: true,
       callSid: callResult.callSid || outboundCall.callSid,
-      call: outboundCall,
-      carrierNotice: callResult.success ? void 0 : callResult.error
+      call: outboundCall
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -7886,27 +8096,30 @@ var handleGetCalls = async (req, res) => {
   const userPhones = new Set(
     userPhoneNumbers.filter((p) => p.userId === authUser.id || isAdmin && p.id === "phone_free_miracle_admin").map((p) => p.phoneNumber)
   );
-  if (isAdmin) {
-    try {
-      const swCalls = await getSignalWireCallLogs(20);
-      for (const sc of swCalls) {
-        if (!calls_history.some((c) => c.callSid === sc.callSid)) {
-          calls_history.unshift({
-            id: "call_live_" + sc.callSid,
-            userId: authUser.id || "usr_miracle_01",
-            from: sc.from,
-            to: sc.to,
-            direction: sc.direction,
-            status: sc.status,
-            durationSeconds: sc.durationSeconds,
-            callSid: sc.callSid,
-            startedAt: sc.startedAt,
-            endedAt: sc.endedAt
-          });
-        }
+  try {
+    const swCalls = await getSignalWireCallLogs(20);
+    for (const sc of swCalls) {
+      const existing = calls_history.find((c) => c.callSid === sc.callSid);
+      if (existing) {
+        existing.status = sc.status;
+        if (sc.durationSeconds) existing.durationSeconds = sc.durationSeconds;
+        if (sc.endedAt) existing.endedAt = sc.endedAt;
+      } else {
+        calls_history.unshift({
+          id: "call_live_" + sc.callSid,
+          userId: authUser.id || "usr_miracle_01",
+          from: sc.from,
+          to: sc.to,
+          direction: sc.direction,
+          status: sc.status,
+          durationSeconds: sc.durationSeconds,
+          callSid: sc.callSid,
+          startedAt: sc.startedAt,
+          endedAt: sc.endedAt
+        });
       }
-    } catch {
     }
+  } catch {
   }
   const list = calls_history.filter((c) => {
     if (isAdmin) return true;

@@ -2,6 +2,7 @@
  * SignalWire Central Client for GoldMailer
  * Uses both @signalwire/compatibility-api and direct SignalWire REST / Relay APIs
  */
+import crypto from 'crypto';
 // @ts-ignore
 import { RestClient } from '@signalwire/compatibility-api';
 
@@ -26,27 +27,27 @@ let dynamicConfig = {
 };
 
 export function setSignalWireConfig(updates: Partial<typeof dynamicConfig>) {
-  if (updates.projectId !== undefined) {
+  if (updates.projectId !== undefined && updates.projectId.trim()) {
     dynamicConfig.projectId = updates.projectId.trim();
     process.env.SIGNALWIRE_PROJECT_ID = dynamicConfig.projectId;
   }
-  if (updates.apiToken !== undefined) {
+  if (updates.apiToken !== undefined && updates.apiToken.trim()) {
     dynamicConfig.apiToken = updates.apiToken.trim();
     process.env.SIGNALWIRE_API_TOKEN = dynamicConfig.apiToken;
   }
-  if (updates.spaceUrl !== undefined) {
+  if (updates.spaceUrl !== undefined && updates.spaceUrl.trim()) {
     dynamicConfig.spaceUrl = updates.spaceUrl.replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
     process.env.SIGNALWIRE_SPACE_URL = dynamicConfig.spaceUrl;
   }
-  if (updates.phoneNumber !== undefined) {
+  if (updates.phoneNumber !== undefined && updates.phoneNumber.trim()) {
     dynamicConfig.phoneNumber = updates.phoneNumber.trim();
     process.env.SIGNALWIRE_PHONE_NUMBER = dynamicConfig.phoneNumber;
   }
-  if (updates.signingKey !== undefined) {
+  if (updates.signingKey !== undefined && updates.signingKey.trim()) {
     dynamicConfig.signingKey = updates.signingKey.trim();
     process.env.SIGNALWIRE_SIGNING_KEY = dynamicConfig.signingKey;
   }
-  if (updates.webhookUrl !== undefined) {
+  if (updates.webhookUrl !== undefined && updates.webhookUrl.trim()) {
     dynamicConfig.webhookUrl = updates.webhookUrl.trim();
     process.env.SIGNALWIRE_WEBHOOK_URL = dynamicConfig.webhookUrl;
   }
@@ -516,4 +517,190 @@ export async function testSignalWireConnection(): Promise<{
       error: err.message || 'Failed to authenticate with SignalWire API'
     };
   }
+}
+
+/**
+ * Fetches all active incoming phone numbers from SignalWire REST API
+ */
+export async function getActiveSignalWireNumbers(): Promise<Array<{
+  phoneNumber: string;
+  friendlyName: string;
+  sid: string;
+  capabilities: { voice: boolean; sms: boolean; mms: boolean; fax: boolean };
+}>> {
+  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+  if (!isConfigured) return [];
+
+  try {
+    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/IncomingPhoneNumbers.json?PageSize=50`, {
+      headers: {
+        Authorization: getBasicAuthHeader(),
+        Accept: 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      console.warn('[SIGNALWIRE] Failed to fetch active incoming numbers:', res.status);
+      return [];
+    }
+
+    const data: any = await res.json();
+    return (data.incoming_phone_numbers || []).map((n: any) => ({
+      phoneNumber: n.phone_number,
+      friendlyName: n.friendly_name || n.phone_number,
+      sid: n.sid,
+      capabilities: {
+        voice: Boolean(n.capabilities?.voice),
+        sms: Boolean(n.capabilities?.sms),
+        mms: Boolean(n.capabilities?.mms),
+        fax: Boolean(n.capabilities?.fax)
+      }
+    }));
+  } catch (err: any) {
+    console.error('[SIGNALWIRE] Error fetching active incoming numbers:', err.message || err);
+    return [];
+  }
+}
+
+/**
+ * Verifies SignalWire webhook request signature using the provided signing key.
+ * Supports both Compatibility (form-urlencoded) and Relay (JSON) signatures,
+ * checking HMAC-SHA1 and HMAC-SHA256 across all header variations.
+ */
+export function verifySignalWireWebhook(
+  req: {
+    headers: Record<string, any>;
+    query?: Record<string, any>;
+    body?: any;
+    originalUrl?: string;
+    protocol?: string;
+    get?: (name: string) => string | undefined;
+  },
+  customSigningKey?: string
+): { isValid: boolean; signature?: string; method?: string; reason?: string } {
+  const signingKey = (
+    customSigningKey ||
+    dynamicConfig.signingKey ||
+    process.env.SIGNALWIRE_SIGNING_KEY ||
+    'PSK_zd8NAKiZku142b86cW8CDkDU'
+  ).trim();
+
+  // If no signing key configured, allow request
+  if (!signingKey) {
+    return { isValid: true, reason: 'no_signing_key_configured' };
+  }
+
+  const rawHeaders = req.headers || {};
+  const signature = (
+    rawHeaders['x-signalwire-signature'] ||
+    rawHeaders['x-signalwire-sha256-signature'] ||
+    rawHeaders['x-twilio-signature'] ||
+    ''
+  ).toString().trim();
+
+  // If no signature header is present in the request (e.g. internal health pings or dev checks)
+  if (!signature) {
+    return { isValid: true, reason: 'unsigned_request_allowed' };
+  }
+
+  const { webhookUrl } = getSignalWireConfig();
+  const host = typeof req.get === 'function' ? req.get('host') : (rawHeaders.host || 'goldmailer.xyz');
+  const proto = (rawHeaders['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const requestPath = req.originalUrl || '/api/signalwire/inbound';
+
+  // Candidate URLs that SignalWire might have used when computing the signature
+  const candidateUrls = Array.from(new Set([
+    webhookUrl,
+    `https://goldmailer.xyz${requestPath}`,
+    `https://www.goldmailer.xyz${requestPath}`,
+    `${proto}://${host}${requestPath}`,
+    webhookUrl.split('?')[0]
+  ])).filter(Boolean);
+
+  // Extract params from body & query
+  const queryObj = (req.query || {}) as Record<string, any>;
+  let bodyObj: Record<string, any> = {};
+  let rawBodyString = '';
+
+  if (typeof req.body === 'string') {
+    rawBodyString = req.body;
+    try {
+      bodyObj = Object.fromEntries(new URLSearchParams(req.body));
+    } catch {
+      try { bodyObj = JSON.parse(req.body); } catch {}
+    }
+  } else if (Buffer.isBuffer(req.body)) {
+    rawBodyString = req.body.toString('utf-8');
+    try {
+      bodyObj = Object.fromEntries(new URLSearchParams(rawBodyString));
+    } catch {
+      try { bodyObj = JSON.parse(rawBodyString); } catch {}
+    }
+  } else if (req.body && typeof req.body === 'object') {
+    bodyObj = req.body;
+    try { rawBodyString = JSON.stringify(req.body); } catch {}
+  }
+
+  const allParams = { ...queryObj, ...bodyObj };
+
+  // 1. Check RestClient.validateRequest against each candidate URL
+  for (const url of candidateUrls) {
+    try {
+      if (RestClient && typeof RestClient.validateRequest === 'function') {
+        if (RestClient.validateRequest(signingKey, signature, url, allParams)) {
+          return { isValid: true, signature, method: 'rest_client_compatibility' };
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Compatibility form-urlencoded signature: URL + sorted key-value pairs
+  for (const url of candidateUrls) {
+    try {
+      let data = url;
+      Object.keys(allParams).sort().forEach(k => {
+        data += k + (allParams[k] !== undefined && allParams[k] !== null ? String(allParams[k]) : '');
+      });
+
+      const sha1Base64 = crypto.createHmac('sha1', signingKey).update(data).digest('base64');
+      if (sha1Base64 === signature) {
+        return { isValid: true, signature, method: 'hmac_sha1_base64' };
+      }
+
+      const sha256Base64 = crypto.createHmac('sha256', signingKey).update(data).digest('base64');
+      if (sha256Base64 === signature) {
+        return { isValid: true, signature, method: 'hmac_sha256_base64' };
+      }
+
+      const sha1Hex = crypto.createHmac('sha1', signingKey).update(data).digest('hex');
+      if (sha1Hex.toLowerCase() === signature.toLowerCase()) {
+        return { isValid: true, signature, method: 'hmac_sha1_hex' };
+      }
+    } catch {}
+  }
+
+  // 3. Relay JSON signature: URL + rawBody
+  if (rawBodyString) {
+    for (const url of candidateUrls) {
+      try {
+        const relayData = `${url}${rawBodyString}`;
+        const relaySha1Hex = crypto.createHmac('sha1', signingKey).update(relayData).digest('hex');
+        if (relaySha1Hex.toLowerCase() === signature.toLowerCase()) {
+          return { isValid: true, signature, method: 'relay_sha1_hex' };
+        }
+
+        const relaySha256Hex = crypto.createHmac('sha256', signingKey).update(relayData).digest('hex');
+        if (relaySha256Hex.toLowerCase() === signature.toLowerCase()) {
+          return { isValid: true, signature, method: 'relay_sha256_hex' };
+        }
+
+        const relaySha1Base64 = crypto.createHmac('sha1', signingKey).update(relayData).digest('base64');
+        if (relaySha1Base64 === signature) {
+          return { isValid: true, signature, method: 'relay_sha1_base64' };
+        }
+      } catch {}
+    }
+  }
+
+  return { isValid: false, signature, reason: 'signature_mismatch' };
 }

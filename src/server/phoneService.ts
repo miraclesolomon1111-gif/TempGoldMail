@@ -10,7 +10,9 @@ import {
   makeCallViaSignalWire as makeCallApi,
   getSignalWireMessages as getMessagesApi,
   getSignalWireCalls as getCallsApi,
-  testSignalWireConnection as testConnectionApi
+  testSignalWireConnection as testConnectionApi,
+  getActiveSignalWireNumbers as getActiveNumbersApi,
+  verifySignalWireWebhook as verifyWebhookApi
 } from '../../lib/signalwireClient';
 
 // Types
@@ -29,6 +31,7 @@ export interface StoredSMS {
 
 export interface StoredPhoneNumber {
   id: string;
+  sid?: string;
   userId: string;
   userEmail?: string;
   phoneNumber: string; // E.164 format e.g. "+12056076793"
@@ -74,19 +77,30 @@ export interface StoredCall {
 }
 
 // Credentials management
-export function setSignalWireCredentials(projectId: string, apiToken: string, spaceUrl?: string, phoneNumber?: string) {
+export function setSignalWireCredentials(
+  projectId: string,
+  apiToken: string,
+  spaceUrl?: string,
+  phoneNumber?: string,
+  signingKey?: string,
+  webhookUrl?: string
+) {
   setSignalWireConfig({
     projectId,
     apiToken,
     spaceUrl,
-    phoneNumber
+    phoneNumber,
+    signingKey,
+    webhookUrl
   });
 }
 
 export {
   getSignalWireConfig,
   getSignalWireClient,
-  normalizePhoneNumber
+  normalizePhoneNumber,
+  getActiveNumbersApi as getActiveSignalWireNumbers,
+  verifyWebhookApi as verifySignalWireWebhook
 };
 
 /**

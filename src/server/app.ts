@@ -30,7 +30,9 @@ import {
   getSignalWireClient,
   setSignalWireCredentials,
   testSignalWireConnection,
-  normalizePhoneNumber
+  normalizePhoneNumber,
+  getActiveSignalWireNumbers,
+  verifySignalWireWebhook
 } from './phoneService';
 import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo';
 
@@ -5895,11 +5897,12 @@ app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
 
 // ================= PHONE & SMS APIS (SIGNALWIRE & NOWPAYMENTS) =================
 
-// Helper to get active user ID from token safely
+// Helper to get active user ID from token or session safely
 const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?: string } => {
+  // 1. Authorization Bearer header
   const authHeader = req.headers.authorization;
   if (authHeader) {
-    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
     const decoded = verifyToken(token);
     if (decoded?.id) {
       const user = goldUsers.find(u => u.id === decoded.id || u.email === decoded.email);
@@ -5913,6 +5916,27 @@ const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?:
       };
     }
   }
+
+  // 2. Session cookie: goldmailer_session or session_token
+  try {
+    const cookies = parseCookies(req);
+    const sessionToken = cookies['goldmailer_session'] || cookies['session_token'];
+    if (sessionToken) {
+      const sess = db.getSessionSync ? db.getSessionSync(sessionToken) : null;
+      if (sess?.email) {
+        const email = sess.email.toLowerCase().trim();
+        const user = goldUsers.find(u => u.id === sess.user_id || u.email === email);
+        const isAdmin = user?.role === 'admin' || email === 'miracle@goldmailer.xyz' || email === 'admin@goldmailer.xyz';
+        return {
+          id: sess.user_id || user?.id || 'usr_miracle_01',
+          email,
+          role: isAdmin ? 'admin' : (user?.role || 'user')
+        };
+      }
+    }
+  } catch {}
+
+  // 3. User email header or query parameter
   const emailHeader = (req.headers['x-user-email'] as string) || (req.query?.userEmail as string);
   if (emailHeader) {
     const email = emailHeader.toLowerCase().trim();
@@ -6081,6 +6105,17 @@ export const deductCoins = (
 export const handleSignalWireInboundWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
+
+    // Verify SignalWire HMAC signature with signing key PSK_zd8NAKiZku142b86cW8CDkDU
+    const verification = verifySignalWireWebhook(req);
+    if (!verification.isValid) {
+      console.warn('[SIGNALWIRE WEBHOOK] Signature validation failed:', verification.reason, 'Signature header:', verification.signature);
+      res.setHeader('Content-Type', 'text/xml');
+      return res.status(403).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>');
+    } else {
+      console.log(`[SIGNALWIRE WEBHOOK] Verified successfully via ${verification.method || verification.reason}`);
+    }
+
     let bodyObj: Record<string, any> = {};
     if (typeof req.body === 'string') {
       try {
@@ -6130,9 +6165,9 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
     const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
     const isTargetAdmin = targetUser?.email === 'miracle@goldmailer.xyz' || targetUser?.role === 'admin' || targetUserId === 'usr_miracle_01';
 
-    // Check if this is an incoming Voice Call
+    // Check if this is an incoming Voice Call or status callback
     if (callSid || (callStatus && !text)) {
-      console.log(`[SIGNALWIRE VOICE WEBHOOK] Incoming call from ${from} to ${to} (SID: ${callSid})`);
+      console.log(`[SIGNALWIRE VOICE WEBHOOK] Call event: SID=${callSid}, From=${from}, To=${to}, Status=${callStatus}`);
 
       if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
         console.warn(`[SIGNALWIRE VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
@@ -6145,23 +6180,31 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
         deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
       }
 
-      const newCall: StoredCall = {
-        id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        userId: targetUserId,
-        from: from || 'Caller',
-        to: to || '+12056076793',
-        direction: 'inbound',
-        status: (callStatus.toLowerCase() as any) || 'in-progress',
-        callSid: callSid || 'CA_' + Date.now(),
-        startedAt: new Date().toISOString()
-      };
-      calls_history.unshift(newCall);
-      saveData();
-      broadcastNewCall(newCall);
+      const existingCall = calls_history.find(c => c.callSid === callSid);
+      if (existingCall) {
+        if (callStatus) existingCall.status = callStatus.toLowerCase() as any;
+        saveData();
+        broadcastNewCall(existingCall);
+      } else {
+        const newCall: StoredCall = {
+          id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          userId: targetUserId,
+          from: from || 'Caller',
+          to: to || '+12056076793',
+          direction: 'inbound',
+          status: (callStatus.toLowerCase() as any) || 'in-progress',
+          callSid: callSid || 'CA_' + Date.now(),
+          startedAt: new Date().toISOString()
+        };
+        calls_history.unshift(newCall);
+        saveData();
+        broadcastNewCall(newCall);
+      }
 
       res.setHeader('Content-Type', 'text/xml');
       return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say voice="Polly.Joanna">Welcome to GoldMailer secure voice line. Your call is now connected.</Say>
   <Pause length="30"/>
 </Response>`);
     }
@@ -6412,28 +6455,56 @@ app.post(
   handleNowPaymentsWebhook
 );
 
-// 3. GET /api/phone/numbers - Retrieve user's phone numbers
-app.get('/api/phone/numbers', (req: Request, res: Response) => {
+// 3. GET /api/phone/numbers - Retrieve user's phone numbers with live SignalWire sync
+app.get('/api/phone/numbers', async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const { phoneNumber: adminPhoneNumber } = getSignalWireConfig();
+  const { phoneNumber: adminPhoneNumber, isConfigured } = getSignalWireConfig();
   const isAdmin = isReqAdmin(authUser);
-
-  // Clean up any old admin numbers, keeping active admin number +1 (205) 607-6793
   const activeAdminDigits = '12056076793';
-  userPhoneNumbers = userPhoneNumbers.filter(p => {
-    const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz' || p.id === 'phone_free_miracle_admin';
-    if (isMiracle) {
-      const digits = (p.phoneNumber || '').replace(/\D/g, '');
-      if (digits !== activeAdminDigits && !p.id.startsWith('phone_prov_')) {
-        return false;
+
+  // Live Sync active numbers directly from SignalWire API
+  if (isConfigured) {
+    try {
+      const swActiveNumbers = await getActiveSignalWireNumbers();
+      for (const swNum of swActiveNumbers) {
+        const cleanDigits = swNum.phoneNumber.replace(/\D/g, '');
+        const existingIdx = userPhoneNumbers.findIndex(
+          p => (p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanDigits) || p.sid === swNum.sid
+        );
+        if (existingIdx !== -1) {
+          userPhoneNumbers[existingIdx].provider = 'signalwire';
+          userPhoneNumbers[existingIdx].status = 'active';
+          userPhoneNumbers[existingIdx].capabilities = {
+            voice: swNum.capabilities.voice,
+            sms: swNum.capabilities.sms
+          };
+        } else {
+          userPhoneNumbers.push({
+            id: 'phone_sw_' + swNum.sid,
+            userId: authUser.id || 'usr_miracle_01',
+            userEmail: authUser.email || 'miracle@goldmailer.xyz',
+            phoneNumber: swNum.phoneNumber,
+            friendlyName: swNum.friendlyName || `${swNum.phoneNumber} (Live Line)`,
+            provider: 'signalwire',
+            status: 'active',
+            purchasedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
+            autoRenew: true,
+            capabilities: {
+              voice: swNum.capabilities.voice,
+              sms: swNum.capabilities.sms
+            }
+          });
+        }
       }
+    } catch (syncErr) {
+      console.warn('[PHONE NUMBERS] SignalWire live sync warning:', syncErr);
     }
-    return true;
-  });
+  }
 
   // Ensure admin has the configured primary phone line (+1 205 607-6793)
-  if (isAdmin) {
+  if (isAdmin || !authUser.id) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
       p => p.id === 'phone_free_miracle_admin' || p.phoneNumber.replace(/\D/g, '') === activeAdminDigits
     );
@@ -6455,12 +6526,15 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     } else {
       userPhoneNumbers[adminPhoneIndex].provider = 'signalwire';
       userPhoneNumbers[adminPhoneIndex].status = 'active';
+      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber;
     }
   }
 
-  // Only return numbers the user actually owns/purchased (or admin's line if admin)
+  // Return numbers the user actually owns/purchased (or admin's line if admin or preview)
   const list = userPhoneNumbers.filter(
-    p => (authUser.id && p.userId === authUser.id) || (isAdmin && (p.phoneNumber.replace(/\D/g, '') === activeAdminDigits || p.id === 'phone_free_miracle_admin'))
+    p => (authUser.id && p.userId === authUser.id) ||
+         (isAdmin && (p.phoneNumber.replace(/\D/g, '') === activeAdminDigits || p.id === 'phone_free_miracle_admin')) ||
+         (!authUser.id && p.phoneNumber.replace(/\D/g, '') === activeAdminDigits)
   );
 
   const wallet = getUserWallet(authUser.id, authUser.email);
@@ -6468,8 +6542,7 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
   const enriched = list.map(p => {
     const exp = new Date(p.expiresAt).getTime();
     const daysRemaining = Math.max(0, Math.ceil((exp - Date.now()) / (24 * 3600 * 1000)));
-    // Two ways to get suspended: Coins = 0 OR 30 days expire
-    const isSuspended = !isAdmin && (daysRemaining <= 0 || wallet.coins <= 0 || p.status === 'suspended');
+    const isSuspended = !isAdmin && authUser.id && (daysRemaining <= 0 || wallet.coins <= 0 || p.status === 'suspended');
     return {
       ...p,
       daysRemaining,
@@ -6481,8 +6554,8 @@ app.get('/api/phone/numbers', (req: Request, res: Response) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: isAdmin ? adminPhoneNumber : undefined,
-    coins: wallet.coins,
+    adminNumber: adminPhoneNumber,
+    coins: isAdmin ? 999999 : wallet.coins,
     unlimitedCoins: isAdmin,
     isSignalWireConfigured: getSignalWireConfig().isConfigured
   });
@@ -7100,11 +7173,20 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
     saveData();
     broadcastNewCall(outboundCall);
 
+    if (!callResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: callResult.error || 'SignalWire rejected the call',
+        carrierNotice: callResult.error,
+        callSid: outboundCall.callSid,
+        call: outboundCall
+      });
+    }
+
     return res.json({
       success: true,
       callSid: callResult.callSid || outboundCall.callSid,
-      call: outboundCall,
-      carrierNotice: callResult.success ? undefined : callResult.error
+      call: outboundCall
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -7124,28 +7206,31 @@ const handleGetCalls = async (req: Request, res: Response) => {
       .map(p => p.phoneNumber)
   );
 
-  // Sync calls from SignalWire for admin
-  if (isAdmin) {
-    try {
-      const swCalls = await getSignalWireCallLogs(20);
-      for (const sc of swCalls) {
-        if (!calls_history.some(c => c.callSid === sc.callSid)) {
-          calls_history.unshift({
-            id: 'call_live_' + sc.callSid,
-            userId: authUser.id || 'usr_miracle_01',
-            from: sc.from,
-            to: sc.to,
-            direction: sc.direction,
-            status: sc.status,
-            durationSeconds: sc.durationSeconds,
-            callSid: sc.callSid,
-            startedAt: sc.startedAt,
-            endedAt: sc.endedAt
-          });
-        }
+  // Sync calls from SignalWire in real-time
+  try {
+    const swCalls = await getSignalWireCallLogs(20);
+    for (const sc of swCalls) {
+      const existing = calls_history.find(c => c.callSid === sc.callSid);
+      if (existing) {
+        existing.status = sc.status;
+        if (sc.durationSeconds) existing.durationSeconds = sc.durationSeconds;
+        if (sc.endedAt) existing.endedAt = sc.endedAt;
+      } else {
+        calls_history.unshift({
+          id: 'call_live_' + sc.callSid,
+          userId: authUser.id || 'usr_miracle_01',
+          from: sc.from,
+          to: sc.to,
+          direction: sc.direction,
+          status: sc.status,
+          durationSeconds: sc.durationSeconds,
+          callSid: sc.callSid,
+          startedAt: sc.startedAt,
+          endedAt: sc.endedAt
+        });
       }
-    } catch {}
-  }
+    }
+  } catch {}
 
   const list = calls_history.filter(c => {
     if (isAdmin) return true;

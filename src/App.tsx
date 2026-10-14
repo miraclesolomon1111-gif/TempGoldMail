@@ -22,7 +22,8 @@ import {
   emptyTrash,
   batchEmailAction,
   syncClientAccounts,
-  fetchCurrentActivity
+  fetchCurrentActivity,
+  getHeaders
 } from './lib/api';
 
 import { GmailHeader } from './components/GmailHeader';

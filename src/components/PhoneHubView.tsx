@@ -1384,7 +1384,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <input
                     type="text"
                     readOnly
-                    value={activeNumber?.phoneNumber || (isAdmin ? '+1 (737) 250-8034 (Admin)' : 'No active phone number')}
+                    value={activeNumber?.phoneNumber || (isAdmin ? '+1 (205) 607-6793 (Admin)' : 'No active phone number')}
                     className={`w-full px-3.5 py-2.5 rounded-xl text-xs font-mono border outline-none opacity-80 ${
                       darkMode ? 'bg-white/5 border-white/10 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'
                     }`}

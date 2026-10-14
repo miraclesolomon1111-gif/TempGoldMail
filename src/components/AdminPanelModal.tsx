@@ -2564,7 +2564,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <input
                   type="text"
                   disabled
-                  value="+1 (737) 250-8034 (Admin Line)"
+                  value="+1 (205) 607-6793 (Admin Line)"
                   className="w-full p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800 text-zinc-400 outline-none font-mono"
                 />
               </div>
