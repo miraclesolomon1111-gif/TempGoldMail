@@ -9,7 +9,7 @@ import {
   SMSMessage,
   UserPhoneNumber,
   AvailablePhoneNumber,
-  SignalWireLogItem,
+  TelnyxLogItem,
   PhoneCall,
   PhoneContact,
   AdminOverviewStats,
@@ -1484,16 +1484,20 @@ export async function fetchUserPhoneNumbers(): Promise<{
   numbers: UserPhoneNumber[];
   isAdmin?: boolean;
   adminNumber?: string;
-  isSignalWireConfigured: boolean;
+  isTelnyxConfigured: boolean;
 }> {
   try {
     const res = await fetch('/api/phone/numbers', { headers: getHeaders() });
-    return await safeJsonParse(res);
+    const data = await safeJsonParse(res);
+    return {
+      ...data,
+      isTelnyxConfigured: Boolean(data.isTelnyxConfigured)
+    };
   } catch {
     return {
       success: false,
       numbers: [],
-      isSignalWireConfigured: false
+      isTelnyxConfigured: false
     };
   }
 }
@@ -1681,41 +1685,46 @@ export async function provisionAdminNumber(payload?: { phoneNumber?: string; fri
   return data;
 }
 
-export async function fetchAdminSignalWireStatus(): Promise<{
+export async function fetchAdminTelnyxStatus(): Promise<{
   isConfigured: boolean;
-  projectId: string;
-  spaceUrl: string;
-  hasApiToken: boolean;
+  apiKey: string;
+  hasApiKey: boolean;
   phoneNumber: string;
+  messagingProfileId: string;
+  voiceAppId: string;
   webhookUrl: string;
+  projectId?: string;
+  spaceUrl?: string;
+  hasApiToken?: boolean;
 }> {
-  const res = await fetch('/api/admin/signalwire/status', {
+  const res = await fetch('/api/admin/telnyx/status', {
     headers: getHeaders()
   });
   return safeJsonParse(res);
 }
 
-export async function updateAdminSignalWireConfig(payload: {
-  projectId?: string;
-  apiToken?: string;
-  spaceUrl?: string;
+export async function updateAdminTelnyxConfig(payload: {
+  apiKey?: string;
   phoneNumber?: string;
+  messagingProfileId?: string;
+  voiceAppId?: string;
+  publicKey?: string;
 }): Promise<{ success: boolean; message: string; isConfigured: boolean; phoneNumber: string }> {
-  const res = await fetch('/api/admin/signalwire/config', {
+  const res = await fetch('/api/admin/telnyx/config', {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload)
   });
   const data = await safeJsonParse(res);
-  if (!res.ok) throw new Error(data.error || 'Failed to update SignalWire configuration');
+  if (!res.ok) throw new Error(data.error || 'Failed to update Telnyx configuration');
   return data;
 }
 
-export async function testAdminSignalWireConnection(payload?: {
-  projectId?: string;
-  apiToken?: string;
-  spaceUrl?: string;
+export async function testAdminTelnyxConnection(payload?: {
+  apiKey?: string;
   phoneNumber?: string;
+  messagingProfileId?: string;
+  voiceAppId?: string;
 }): Promise<{
   success: boolean;
   account?: any;
@@ -1724,13 +1733,13 @@ export async function testAdminSignalWireConnection(payload?: {
   error?: string;
   message?: string;
 }> {
-  const res = await fetch('/api/admin/signalwire/test', {
+  const res = await fetch('/api/admin/telnyx/test', {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload || {})
   });
   const data = await safeJsonParse(res);
-  if (!res.ok) throw new Error(data.error || 'Failed to test SignalWire connection');
+  if (!res.ok) throw new Error(data.error || 'Failed to test Telnyx connection');
   return data;
 }
 

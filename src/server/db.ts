@@ -182,11 +182,11 @@ export interface StoredSettings {
   smtp_user: string;
   smtp_pass: string;
   smtp_secure?: boolean;
-  signalwire_project_id: string;
-  signalwire_api_token: string;
-  signalwire_space_url: string;
-  signalwire_phone_number: string;
-  signalwire_signing_key?: string;
+  telnyx_api_key: string;
+  telnyx_phone_number: string;
+  telnyx_messaging_profile_id: string;
+  telnyx_voice_app_id: string;
+  telnyx_public_key?: string;
   resend_api_key: string;
   resend_from: string;
   nowpayments_api_key: string;
@@ -229,11 +229,11 @@ class GoldDatabase {
     smtp_user: process.env.SMTP_USER || 'postmaster@goldmailer.xyz',
     smtp_pass: process.env.SMTP_PASS || '',
     smtp_secure: process.env.SMTP_SECURE === 'true',
-    signalwire_project_id: process.env.SIGNALWIRE_PROJECT_ID || 'c4c9559f-11f4-4125-9c81-ae5aba970a12',
-    signalwire_api_token: process.env.SIGNALWIRE_API_TOKEN || 'swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg',
-    signalwire_space_url: process.env.SIGNALWIRE_SPACE_URL || 'tasknest.signalwire.com',
-    signalwire_phone_number: process.env.SIGNALWIRE_PHONE_NUMBER || '+1 (205) 607-6793',
-    signalwire_signing_key: process.env.SIGNALWIRE_SIGNING_KEY || 'PSK_zd8NAKiZku142b86cW8CDkDU',
+    telnyx_api_key: process.env.TELNYX_API_KEY || '',
+    telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || process.env.TELNYX_PHONE || process.env.TRLNYX_PHONE || '+14236662513',
+    telnyx_messaging_profile_id: process.env.TELNYX_MESSAGING_PROFILE_ID || '4001a139-34ea-4725-a3be-890f641b9137',
+    telnyx_voice_app_id: process.env.TELNYX_VOICE_APP_ID || process.env.TRLNYX_VOICE_APP_ID || '3070367984242394362',
+    telnyx_public_key: process.env.TELNYX_PUBLIC_KEY || '',
     resend_api_key: process.env.RESEND_API_KEY || '',
     resend_from: process.env.RESEND_FROM || 'GoldMailer Security <security@goldmailer.xyz>',
     nowpayments_api_key: process.env.NOWPAYMENTS_API_KEY || '',

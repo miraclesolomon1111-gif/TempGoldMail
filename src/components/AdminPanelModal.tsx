@@ -85,9 +85,9 @@ import {
   fetchAdminApiKeys,
   updateAdminApiKeys,
   fetchAdminActivityLogs,
-  fetchAdminSignalWireStatus,
-  updateAdminSignalWireConfig,
-  testAdminSignalWireConnection,
+  fetchAdminTelnyxStatus,
+  updateAdminTelnyxConfig,
+  testAdminTelnyxConnection,
   provisionAdminNumber,
   fetchSmsInbox,
   deleteSms
@@ -175,13 +175,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
   const [storageEditModal, setStorageEditModal] = useState<{ open: boolean; user: any | null; limitGb: number }>({ open: false, user: null, limitGb: 15 });
   const [newRoleForm, setNewRoleForm] = useState({ email: '', name: '', role: 'support_admin' });
 
-  // SignalWire & SMTP Settings state
-  const [signalwireProjectId, setSignalwireProjectId] = useState('c4c9559f-11f4-4125-9c81-ae5aba970a12');
-  const [signalwireApiToken, setSignalwireApiToken] = useState('swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg');
-  const [signalwireSpaceUrl, setSignalwireSpaceUrl] = useState('tasknest.signalwire.com');
-  const [signalwireNumber, setSignalwireNumber] = useState('+1 (205) 607-6793');
+  // Telnyx & SMTP Settings state
+  const [telnyxApiKey, setTelnyxApiKey] = useState('');
+  const [telnyxPhoneNumber, setTelnyxPhoneNumber] = useState('+14236662513');
+  const [telnyxMessagingProfileId, setTelnyxMessagingProfileId] = useState('4001a139-34ea-4725-a3be-890f641b9137');
+  const [telnyxVoiceAppId, setTelnyxVoiceAppId] = useState('3070367984242394362');
+  const [telnyxPublicKey, setTelnyxPublicKey] = useState('');
   const [showAuthToken, setShowAuthToken] = useState(false);
-  const [isTestingSignalWire, setIsTestingSignalWire] = useState(false);
+  const [isTestingTelnyx, setIsTestingTelnyx] = useState(false);
   const [isProvisioningNumber, setIsProvisioningNumber] = useState(false);
   const [smtpHost, setSmtpHost] = useState('smtp.goldmailer.xyz');
   const [smtpPort, setSmtpPort] = useState('587');
@@ -275,10 +276,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         if (ak?.smtp_host) setSmtpHost(ak.smtp_host);
         if (ak?.smtp_port) setSmtpPort(String(ak.smtp_port));
         if (ak?.smtp_user) setSmtpUser(ak.smtp_user);
-        const sw = await fetchAdminSignalWireStatus().catch(() => null);
-        if (sw?.projectId) setSignalwireProjectId(sw.projectId);
-        if (sw?.spaceUrl) setSignalwireSpaceUrl(sw.spaceUrl);
-        if (sw?.phoneNumber) setSignalwireNumber(sw.phoneNumber);
+        const tlx = await fetchAdminTelnyxStatus().catch(() => null);
+        if (tlx?.apiKey) setTelnyxApiKey(tlx.apiKey);
+        if (tlx?.phoneNumber) setTelnyxPhoneNumber(tlx.phoneNumber);
+        if (tlx?.messagingProfileId) setTelnyxMessagingProfileId(tlx.messagingProfileId);
+        if (tlx?.voiceAppId) setTelnyxVoiceAppId(tlx.voiceAppId);
       } else if (tab === 'activity_logs') {
         const logs = await fetchAdminActivityLogs();
         setActivityLogs(logs);
@@ -304,7 +306,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       group: 'Core Management',
       items: [
         { id: 'overview' as SidebarTab, label: 'Dashboard Overview', icon: LayoutDashboard },
-        { id: 'admin_sms' as SidebarTab, label: 'Admin SMS Box (SignalWire)', icon: Smartphone, badge: adminSmsMessages.length || undefined },
+        { id: 'admin_sms' as SidebarTab, label: 'Admin SMS Box (Telnyx)', icon: Smartphone, badge: adminSmsMessages.length || undefined },
         { id: 'users' as SidebarTab, label: 'User Management', icon: Users, badge: users.length || undefined },
         { id: 'email_accounts' as SidebarTab, label: 'Email Accounts', icon: Mail },
         { id: 'ban_users' as SidebarTab, label: 'Ban / Suspend Users', icon: Ban, badge: users.filter(u => u.is_banned).length || undefined }
@@ -342,7 +344,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         { id: 'settings' as SidebarTab, label: 'System Settings', icon: Settings },
         { id: 'roles' as SidebarTab, label: 'Admin Roles & Staff', icon: UserCheck },
         { id: 'backup' as SidebarTab, label: 'Backup & Restore', icon: Database },
-        { id: 'api_keys' as SidebarTab, label: 'API Keys (SignalWire/SMTP)', icon: KeyRound },
+        { id: 'api_keys' as SidebarTab, label: 'API Keys (Telnyx/SMTP)', icon: KeyRound },
         { id: 'activity_logs' as SidebarTab, label: 'Admin Activity Logs', icon: Clock }
       ]
     }
@@ -491,11 +493,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     e.preventDefault();
     try {
       await Promise.all([
-        updateAdminSignalWireConfig({
-          projectId: signalwireProjectId.trim() || undefined,
-          apiToken: signalwireApiToken.trim() || undefined,
-          spaceUrl: signalwireSpaceUrl.trim() || undefined,
-          phoneNumber: signalwireNumber.trim() || undefined
+        updateAdminTelnyxConfig({
+          apiKey: telnyxApiKey.trim() || undefined,
+          phoneNumber: telnyxPhoneNumber.trim() || undefined,
+          messagingProfileId: telnyxMessagingProfileId.trim() || undefined,
+          voiceAppId: telnyxVoiceAppId.trim() || undefined,
+          publicKey: telnyxPublicKey.trim() || undefined
         }),
         updateAdminApiKeys({
           smtp_host: smtpHost.trim() || 'smtp.goldmailer.xyz',
@@ -505,30 +508,30 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
         })
       ]);
       loadTabContent('api_keys');
-      setFeedbackNotice({ type: 'success', message: 'SMTP (goldmailer.xyz), SignalWire & API keys saved successfully.' });
+      setFeedbackNotice({ type: 'success', message: 'SMTP (goldmailer.xyz), Telnyx & API keys saved successfully.' });
     } catch (err: any) {
       setFeedbackNotice({ type: 'error', message: err.message });
     }
   };
 
-  const handleTestSignalWire = async () => {
-    setIsTestingSignalWire(true);
+  const handleTestTelnyx = async () => {
+    setIsTestingTelnyx(true);
     try {
-      const res = await testAdminSignalWireConnection({
-        projectId: signalwireProjectId.trim() || undefined,
-        apiToken: signalwireApiToken.trim() || undefined,
-        spaceUrl: signalwireSpaceUrl.trim() || undefined,
-        phoneNumber: signalwireNumber.trim() || undefined
+      const res = await testAdminTelnyxConnection({
+        apiKey: telnyxApiKey.trim() || undefined,
+        phoneNumber: telnyxPhoneNumber.trim() || undefined,
+        messagingProfileId: telnyxMessagingProfileId.trim() || undefined,
+        voiceAppId: telnyxVoiceAppId.trim() || undefined
       });
       if (res.success) {
-        setFeedbackNotice({ type: 'success', message: `SignalWire operational! Live numbers found: ${res.activeNumbers?.length || 0}` });
+        setFeedbackNotice({ type: 'success', message: `Telnyx operational! Active numbers found: ${res.activeNumbers?.length || 0}` });
       } else {
-        setFeedbackNotice({ type: 'error', message: res.error || 'SignalWire connection failed' });
+        setFeedbackNotice({ type: 'error', message: res.error || 'Telnyx connection failed' });
       }
     } catch (err: any) {
       setFeedbackNotice({ type: 'error', message: err.message });
     } finally {
-      setIsTestingSignalWire(false);
+      setIsTestingTelnyx(false);
     }
   };
 
@@ -539,13 +542,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
       if (res.success) {
         setFeedbackNotice({
           type: 'success',
-          message: res.message || 'New number provisioned from SignalWire. Existing lines remain active!'
+          message: res.message || 'New number provisioned from Telnyx. Existing lines remain active!'
         });
         loadTabContent('overview');
       } else {
         setFeedbackNotice({
           type: 'error',
-          message: res.error || 'Failed to provision number from SignalWire'
+          message: res.error || 'Failed to provision number from Telnyx'
         });
       }
     } catch (err: any) {
@@ -576,19 +579,19 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     setTimeout(() => setCopiedCodeId(null), 2500);
   };
 
-  const handleSyncSignalWireSms = async () => {
+  const handleSyncTelnyxSms = async () => {
     setIsSyncingSms(true);
     try {
       const msgs = await fetchSmsInbox();
       setAdminSmsMessages(msgs);
       setFeedbackNotice({
         type: 'success',
-        message: `Synced with SignalWire. Total messages in admin box: ${msgs.length}`
+        message: `Synced with Telnyx. Total messages in admin box: ${msgs.length}`
       });
     } catch (e: any) {
       setFeedbackNotice({
         type: 'error',
-        message: 'Failed to sync with SignalWire: ' + (e.message || 'Network error')
+        message: 'Failed to sync with Telnyx: ' + (e.message || 'Network error')
       });
     } finally {
       setIsSyncingSms(false);
@@ -600,15 +603,22 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
     if (!testSmsBody.trim()) return;
     setIsSubmittingTestSms(true);
     try {
-      const res = await fetch('/api/signalwire/inbound', {
+      const res = await fetch('/api/webhooks/telnyx-sms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          From: testSmsSender.trim() || 'Google',
-          To: '+12056076793',
-          Body: testSmsBody.trim(),
-          MessageSid: 'SM_admin_test_' + Date.now()
-        }).toString()
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: {
+            event_type: 'message.received',
+            id: 'evt_' + Date.now(),
+            payload: {
+              id: 'msg_sim_' + Date.now(),
+              direction: 'inbound',
+              from: { phone_number: testSmsSender.trim() || 'Google' },
+              to: [{ phone_number: '+14236662513', status: 'received' }],
+              text: testSmsBody.trim()
+            }
+          }
+        })
       });
       if (!res.ok) throw new Error('Webhook rejected test SMS');
       const msgs = await fetchSmsInbox();
@@ -1087,14 +1097,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <span className="font-mono text-zinc-200">{systemHealth?.memoryUsageMb || 85} MB</span>
                     </div>
                     <div className="flex justify-between items-center text-zinc-400">
-                      <span>Admin SignalWire Line</span>
+                      <span>Admin Telnyx Line</span>
                       <button
                         type="button"
                         onClick={() => setActiveTab('admin_sms')}
                         className="font-mono text-emerald-400 hover:text-emerald-300 underline underline-offset-2 flex items-center gap-1 cursor-pointer transition-colors"
                         title="Click to open Admin SMS Box"
                       >
-                        {overview?.adminPhoneNumber || '+1 (205) 607-6793'}
+                        {overview?.adminPhoneNumber || '+1 (423) 666-2513'}
                         <ChevronRight className="w-3 h-3" />
                       </button>
                     </div>
@@ -1172,10 +1182,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             </div>
           )}
 
-          {/* ADMIN SMS BOX (SIGNALWIRE GATEWAY & VERIFICATION CODES) */}
+          {/* ADMIN SMS BOX (TELNYX GATEWAY & VERIFICATION CODES) */}
           {activeTab === 'admin_sms' && (
             <div className="space-y-6">
-              {/* Header card with Live Status & SignalWire info */}
+              {/* Header card with Live Status & Telnyx info */}
               <div className="p-6 rounded-3xl bg-gradient-to-r from-zinc-900 via-zinc-900/90 to-zinc-950 border border-zinc-800 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="space-y-1">
@@ -1183,14 +1193,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
                         <Smartphone className="w-4 h-4" />
                       </div>
-                      <h2 className="text-lg font-black text-white">Admin SMS Box (SignalWire Live)</h2>
+                      <h2 className="text-lg font-black text-white">Admin SMS Box (Telnyx Live)</h2>
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                         Active Webhook
                       </span>
                     </div>
                     <p className="text-xs text-zinc-400">
                       Real-time SMS inbox for the admin line{' '}
-                      <span className="font-mono text-emerald-400 font-bold">{overview?.adminPhoneNumber || '+1 (205) 607-6793'}</span>.
+                      <span className="font-mono text-emerald-400 font-bold">{overview?.adminPhoneNumber || '+1 (423) 666-2513'}</span>.
                       Google verification codes, OTPs, and incoming messages are captured here.
                     </p>
                   </div>
@@ -1201,18 +1211,18 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       onClick={handleAdminProvisionNewNumber}
                       disabled={isProvisioningNumber}
                       className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:opacity-90 text-xs font-bold text-white flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
-                      title="Provisions a new number directly from SignalWire without charging"
+                      title="Provisions a new number directly from Telnyx without charging"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       {isProvisioningNumber ? 'Provisioning...' : 'Get New Number'}
                     </button>
                     <button
-                      onClick={handleSyncSignalWireSms}
+                      onClick={handleSyncTelnyxSms}
                       disabled={isSyncingSms}
                       className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white border border-zinc-700 flex items-center gap-2 transition-all disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSms ? 'animate-spin' : ''}`} />
-                      {isSyncingSms ? 'Syncing...' : 'Sync from SignalWire'}
+                      {isSyncingSms ? 'Syncing...' : 'Sync from Telnyx'}
                     </button>
                     <button
                       onClick={() => setTestSmsModalOpen(true)}
@@ -1228,15 +1238,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-zinc-800/80 text-xs">
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
                     <p className="text-[11px] text-zinc-400">Admin Line</p>
-                    <p className="font-mono font-bold text-white mt-0.5">{overview?.adminPhoneNumber || '+1 (205) 607-6793'}</p>
+                    <p className="font-mono font-bold text-white mt-0.5">{overview?.adminPhoneNumber || '+1 (423) 666-2513'}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
-                    <p className="text-[11px] text-zinc-400">SignalWire Project ID</p>
-                    <p className="font-mono font-bold text-zinc-300 mt-0.5">{signalwireProjectId ? `${signalwireProjectId.slice(0, 8)}••••` : 'SignalWire Gateway'}</p>
+                    <p className="text-[11px] text-zinc-400">Telnyx Voice App ID</p>
+                    <p className="font-mono font-bold text-zinc-300 mt-0.5">{telnyxVoiceAppId ? `${telnyxVoiceAppId.slice(0, 8)}••••` : 'Telnyx Voice'}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80">
-                    <p className="text-[11px] text-zinc-400">SignalWire Webhook URL</p>
-                    <p className="font-mono text-[11px] text-emerald-400 truncate mt-0.5">https://goldmailer.xyz/api/signalwire/inbound</p>
+                    <p className="text-[11px] text-zinc-400">Telnyx Webhook URL</p>
+                    <p className="font-mono text-[11px] text-emerald-400 truncate mt-0.5">https://goldmailer.xyz/api/webhooks/telnyx-inbound</p>
                   </div>
                 </div>
               </div>
@@ -1284,26 +1294,26 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <div className="max-w-md mx-auto space-y-2">
                         <h4 className="font-bold text-white text-base">No Incoming SMS Messages Yet</h4>
                         <p className="text-xs text-zinc-400 leading-relaxed">
-                          Connected to SignalWire Space <span className="font-mono text-zinc-300">{signalwireSpaceUrl}</span>.
-                          Active admin number is <span className="font-mono text-emerald-400 font-bold">{signalwireNumber}</span>.
+                          Connected to Telnyx Profile <span className="font-mono text-zinc-300">{telnyxMessagingProfileId}</span>.
+                          Active admin number is <span className="font-mono text-emerald-400 font-bold">{telnyxPhoneNumber}</span>.
                         </p>
                         <div className="p-3.5 rounded-2xl bg-zinc-950/80 border border-zinc-800 text-left text-[11px] text-zinc-400 space-y-1.5 mt-3">
                           <p className="font-bold text-zinc-300 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                            SignalWire Webhook Configuration:
+                            Telnyx Webhook Configuration:
                           </p>
                           <p>
-                            Ensure your SignalWire space has the phone number <code className="text-emerald-400 font-mono">+1 (205) 607-6793</code> configured with webhook URL pointing to <code className="text-emerald-400 font-mono">https://goldmailer.xyz/api/signalwire/inbound</code>.
+                            Ensure your Telnyx portal has the phone number <code className="text-emerald-400 font-mono">+1 (423) 666-2513</code> configured with webhook URL pointing to <code className="text-emerald-400 font-mono">https://goldmailer.xyz/api/webhooks/telnyx-inbound</code>.
                           </p>
                         </div>
                       </div>
                       <div className="flex justify-center gap-2 pt-2">
                         <button
-                          onClick={handleSyncSignalWireSms}
+                          onClick={handleSyncTelnyxSms}
                           disabled={isSyncingSms}
                           className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-zinc-200 border border-zinc-700"
                         >
-                          Check SignalWire Again
+                          Check Telnyx Again
                         </button>
                         <button
                           onClick={() => setTestSmsModalOpen(true)}
@@ -1865,8 +1875,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                       <span className="text-emerald-400 font-bold uppercase">{systemHealth?.databaseStatus || 'connected'}</span>
                     </div>
                     <div className="flex justify-between text-zinc-400">
-                      <span>SignalWire SMS Gateway</span>
-                      <span className="font-mono text-emerald-400 font-bold">{systemHealth?.signalwireStatus || 'connected'}</span>
+                      <span>Telnyx SMS Gateway</span>
+                      <span className="font-mono text-emerald-400 font-bold">{systemHealth?.telnyxStatus || 'connected'}</span>
                     </div>
                     <div className="flex justify-between text-zinc-400">
                       <span>SMTP Outbound</span>
@@ -2202,42 +2212,52 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 </h3>
                 <div className="space-y-3 text-xs">
                   <div>
-                    <label className="text-zinc-400 block mb-1">SignalWire Project ID</label>
-                    <input
-                      type="text"
-                      placeholder="c4c9559f-11f4-4125-9c81-ae5aba970a12"
-                      value={signalwireProjectId}
-                      onChange={(e) => setSignalwireProjectId(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-zinc-400 block mb-1">SignalWire API Token</label>
+                    <label className="text-zinc-400 block mb-1">Telnyx API Key</label>
                     <input
                       type={showAuthToken ? 'text' : 'password'}
-                      placeholder="swapi_••••••••••••••••••••••••••••••"
-                      value={signalwireApiToken}
-                      onChange={(e) => setSignalwireApiToken(e.target.value)}
+                      placeholder="KEY018xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      value={telnyxApiKey}
+                      onChange={(e) => setTelnyxApiKey(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
                   <div>
-                    <label className="text-zinc-400 block mb-1">SignalWire Space URL</label>
+                    <label className="text-zinc-400 block mb-1">Telnyx Admin Phone Number</label>
                     <input
                       type="text"
-                      placeholder="tasknest.signalwire.com"
-                      value={signalwireSpaceUrl}
-                      onChange={(e) => setSignalwireSpaceUrl(e.target.value)}
+                      placeholder="+14236662513"
+                      value={telnyxPhoneNumber}
+                      onChange={(e) => setTelnyxPhoneNumber(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
                   <div>
-                    <label className="text-zinc-400 block mb-1">SignalWire Admin Phone Number</label>
+                    <label className="text-zinc-400 block mb-1">Telnyx Messaging Profile ID</label>
                     <input
                       type="text"
-                      placeholder="+1 (205) 607-6793"
-                      value={signalwireNumber}
-                      onChange={(e) => setSignalwireNumber(e.target.value)}
+                      placeholder="4001a139-34ea-4725-a3be-890f641b9137"
+                      value={telnyxMessagingProfileId}
+                      onChange={(e) => setTelnyxMessagingProfileId(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 block mb-1">Telnyx Voice App ID</label>
+                    <input
+                      type="text"
+                      placeholder="3070367984242394362"
+                      value={telnyxVoiceAppId}
+                      onChange={(e) => setTelnyxVoiceAppId(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 block mb-1">Telnyx Public Key (Optional, for Webhook signature verification)</label>
+                    <input
+                      type="text"
+                      placeholder="Telnyx base64 public key (optional)"
+                      value={telnyxPublicKey}
+                      onChange={(e) => setTelnyxPublicKey(e.target.value)}
                       className="w-full p-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-white font-mono outline-none"
                     />
                   </div>
@@ -2299,11 +2319,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                     </button>
                     <button
                       type="button"
-                      onClick={handleTestSignalWire}
-                      disabled={isTestingSignalWire}
+                      onClick={handleTestTelnyx}
+                      disabled={isTestingTelnyx}
                       className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 border border-zinc-700 font-bold"
                     >
-                      {isTestingSignalWire ? 'Testing...' : 'Test Connection'}
+                      {isTestingTelnyx ? 'Testing...' : 'Test Connection'}
                     </button>
                   </div>
                 </div>
@@ -2543,7 +2563,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Dispatches a simulated inbound SMS to the live webhook endpoint (<code className="text-emerald-400 font-mono text-[11px]">/api/signalwire/inbound</code>) targeting your admin phone line <span className="font-mono text-emerald-400 font-bold">+1 (205) 607-6793</span>.
+              Dispatches a simulated inbound SMS to the live webhook endpoint (<code className="text-emerald-400 font-mono text-[11px]">/api/webhooks/telnyx-sms</code>) targeting your admin phone line <span className="font-mono text-emerald-400 font-bold">+1 (423) 666-2513</span>.
             </p>
 
             <form onSubmit={handleSimulateIncomingSms} className="space-y-3 text-xs">
@@ -2564,7 +2584,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({ isOpen, onClos
                 <input
                   type="text"
                   disabled
-                  value="+1 (205) 607-6793 (Admin Line)"
+                  value="+1 (423) 666-2513 (Admin Line)"
                   className="w-full p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800 text-zinc-400 outline-none font-mono"
                 />
               </div>

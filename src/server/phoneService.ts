@@ -1,19 +1,24 @@
 import crypto from 'crypto';
 import {
-  getSignalWireConfig,
-  setSignalWireConfig,
-  getSignalWireClient,
+  getTelnyxConfig,
+  setTelnyxConfig,
+  getTelnyxClient,
   normalizePhoneNumber,
   listAvailablePhoneNumbers as listAvailableNumbersApi,
-  provisionSignalWirePhoneNumber as provisionNumberApi,
-  sendSmsViaSignalWire as sendSmsApi,
-  makeCallViaSignalWire as makeCallApi,
-  getSignalWireMessages as getMessagesApi,
-  getSignalWireCalls as getCallsApi,
-  testSignalWireConnection as testConnectionApi,
-  getActiveSignalWireNumbers as getActiveNumbersApi,
-  verifySignalWireWebhook as verifyWebhookApi
-} from '../../lib/signalwireClient';
+  provisionTelnyxPhoneNumber as provisionNumberApi,
+  sendSmsViaTelnyx as sendSmsApi,
+  sendBulkSms as sendBulkSmsApi,
+  makeCallViaTelnyx as makeCallApi,
+  getTelnyxMessages as getMessagesApi,
+  getTelnyxCalls as getCallsApi,
+  testTelnyxConnection as testConnectionApi,
+  getActiveTelnyxNumbers as getActiveNumbersApi,
+  verifyTelnyxWebhook as verifyWebhookApi,
+  isOptedOut,
+  addOptOut,
+  removeOptOut,
+  getOptOutList
+} from '../../lib/telnyxClient';
 
 // Types
 export interface StoredSMS {
@@ -24,6 +29,7 @@ export interface StoredSMS {
   body: string;
   receivedAt: string;
   messageSid?: string;
+  telnyx_message_id?: string;
   direction: 'inbound' | 'outbound';
   status?: string;
   is_read?: boolean;
@@ -34,9 +40,9 @@ export interface StoredPhoneNumber {
   sid?: string;
   userId: string;
   userEmail?: string;
-  phoneNumber: string; // E.164 format e.g. "+12056076793"
+  phoneNumber: string; // E.164 format e.g. "+14236662513"
   friendlyName?: string;
-  provider: 'signalwire';
+  provider: 'telnyx';
   status: 'active' | 'suspended' | 'expired' | 'pending';
   purchasedAt: string;
   expiresAt: string;
@@ -77,58 +83,103 @@ export interface StoredCall {
 }
 
 // Credentials management
-export function setSignalWireCredentials(
-  projectId: string,
-  apiToken: string,
-  spaceUrl?: string,
+export function setTelnyxCredentials(
+  apiKey: string,
   phoneNumber?: string,
-  signingKey?: string,
+  messagingProfileId?: string,
+  voiceAppId?: string,
+  publicKey?: string,
   webhookUrl?: string
 ) {
-  setSignalWireConfig({
-    projectId,
-    apiToken,
-    spaceUrl,
+  setTelnyxConfig({
+    apiKey,
     phoneNumber,
-    signingKey,
+    messagingProfileId,
+    voiceAppId,
+    publicKey,
     webhookUrl
   });
 }
 
 export {
-  getSignalWireConfig,
-  getSignalWireClient,
+  getTelnyxConfig,
+  getTelnyxClient,
   normalizePhoneNumber,
-  getActiveNumbersApi as getActiveSignalWireNumbers,
-  verifyWebhookApi as verifySignalWireWebhook
+  getActiveNumbersApi as getActiveTelnyxNumbers,
+  verifyWebhookApi as verifyTelnyxWebhook,
+  isOptedOut,
+  addOptOut,
+  removeOptOut,
+  getOptOutList
 };
 
 /**
- * Initiate outbound Voice Call via SignalWire Voice API
+ * Initiate outbound Voice Call via Telnyx Call Control API
  */
-export async function makeCallViaSignalWire(options: {
+export async function makeCallViaTelnyx(options: {
   to: string;
   from?: string;
-  url?: string;
-}): Promise<{ success: boolean; callSid?: string; error?: string; status?: string }> {
+  audioUrl?: string;
+  ttsText?: string;
+  webhookUrl?: string;
+}): Promise<{ success: boolean; callSid?: string; callControlId?: string; error?: string; status?: string }> {
   return makeCallApi(options);
 }
 
 /**
- * Send SMS via SignalWire Messaging API
+ * Standard makeCall function
  */
-export async function sendSmsViaSignalWire(options: {
+export async function makeCall(
+  to: string,
+  audioOrTts?: string
+): Promise<{ success: boolean; callSid?: string; error?: string; status?: string }> {
+  const isUrl = typeof audioOrTts === 'string' && (audioOrTts.startsWith('http://') || audioOrTts.startsWith('https://'));
+  return makeCallApi({
+    to,
+    audioUrl: isUrl ? audioOrTts : undefined,
+    ttsText: !isUrl ? audioOrTts : undefined
+  });
+}
+
+/**
+ * Send SMS via Telnyx Messages API
+ */
+export async function sendSmsViaTelnyx(options: {
   to: string;
   from?: string;
   body: string;
-}): Promise<{ success: boolean; messageSid?: string; error?: string; status?: string }> {
+  messagingProfileId?: string;
+  campaignId?: string;
+}): Promise<{ success: boolean; messageSid?: string; messageId?: string; error?: string; status?: string }> {
   return sendSmsApi(options);
 }
 
 /**
- * Run diagnostic test against live SignalWire API
+ * Standard sendSms function
  */
-export async function testSignalWireConnection(): Promise<{
+export async function sendSms(
+  to: string,
+  body: string,
+  campaignId?: string
+): Promise<{ success: boolean; messageId?: string; messageSid?: string; error?: string; status?: string }> {
+  return sendSmsApi({ to, body, campaignId });
+}
+
+/**
+ * Send bulk SMS with rate limiting and opt-out tracking
+ */
+export async function sendBulkSms(
+  contacts: string[],
+  body: string,
+  options?: { from?: string; campaignId?: string; rateLimitMs?: number }
+) {
+  return sendBulkSmsApi(contacts, body, options);
+}
+
+/**
+ * Run diagnostic test against live Telnyx API
+ */
+export async function testTelnyxConnection(): Promise<{
   success: boolean;
   account?: any;
   activeNumbers?: any[];
@@ -140,35 +191,36 @@ export async function testSignalWireConnection(): Promise<{
 }
 
 /**
- * Query available US phone numbers from real SignalWire API (no mock data)
+ * Query available US phone numbers from real Telnyx API (no mock data)
  */
 export async function listAvailablePhoneNumbers(limit: number = 10): Promise<any[]> {
   return listAvailableNumbersApi(limit);
 }
 
 /**
- * Buy phone number through SignalWire
+ * Buy phone number through Telnyx
  */
-export async function buySignalWirePhoneNumber(preferredNumber?: string): Promise<{
+export async function buyTelnyxPhoneNumber(preferredNumber?: string): Promise<{
   success: boolean;
   phoneNumber: string;
   sid?: string;
+  id?: string;
   error?: string;
 }> {
   return provisionNumberApi(preferredNumber);
 }
 
 /**
- * Fetch logs directly from SignalWire API
+ * Fetch logs directly from Telnyx API
  */
-export async function getSignalWireLogs(limit: number = 20): Promise<any[]> {
+export async function getTelnyxLogs(limit: number = 20): Promise<any[]> {
   return getMessagesApi(limit);
 }
 
 /**
- * Fetch call logs directly from SignalWire API
+ * Fetch call logs directly from Telnyx API
  */
-export async function getSignalWireCallLogs(limit: number = 20): Promise<any[]> {
+export async function getTelnyxCallLogs(limit: number = 20): Promise<any[]> {
   return getCallsApi(limit);
 }
 

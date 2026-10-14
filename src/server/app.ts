@@ -18,21 +18,27 @@ import {
   StoredPhoneNumber,
   StoredPhonePurchase,
   StoredCall,
-  sendSmsViaSignalWire,
-  makeCallViaSignalWire,
+  sendSmsViaTelnyx,
+  makeCallViaTelnyx,
+  sendSms,
+  sendBulkSms,
   listAvailablePhoneNumbers,
-  buySignalWirePhoneNumber,
-  getSignalWireLogs,
-  getSignalWireCallLogs,
+  buyTelnyxPhoneNumber,
+  getTelnyxLogs,
+  getTelnyxCallLogs,
   verifyNowPaymentsSignature,
   createNowPaymentsInvoice,
-  getSignalWireConfig,
-  getSignalWireClient,
-  setSignalWireCredentials,
-  testSignalWireConnection,
+  getTelnyxConfig,
+  getTelnyxClient,
+  setTelnyxCredentials,
+  testTelnyxConnection,
   normalizePhoneNumber,
-  getActiveSignalWireNumbers,
-  verifySignalWireWebhook
+  getActiveTelnyxNumbers,
+  verifyTelnyxWebhook,
+  isOptedOut,
+  addOptOut,
+  removeOptOut,
+  getOptOutList
 } from './phoneService';
 import { getRealIP, getClientUserAgent, detectDeviceAndLocation } from '../lib/geo';
 
@@ -562,11 +568,12 @@ const saveData = () => {
         broadcasts: db.getBroadcasts(),
         payments: db.getPayments(),
         settings: db.getSettings(),
-        signalwireConfig: {
-          projectId: getSignalWireConfig().projectId,
-          apiToken: getSignalWireConfig().apiToken,
-          spaceUrl: getSignalWireConfig().spaceUrl,
-          phoneNumber: getSignalWireConfig().phoneNumber
+        telnyxConfig: {
+          apiKey: getTelnyxConfig().apiKey,
+          phoneNumber: getTelnyxConfig().phoneNumber,
+          messagingProfileId: getTelnyxConfig().messagingProfileId,
+          voiceAppId: getTelnyxConfig().voiceAppId,
+          publicKey: getTelnyxConfig().publicKey
         }
       },
       null,
@@ -822,8 +829,8 @@ export const ensureDataLoaded = () => {
         db.setRevokedSessionIdsSync(parsed.revokedSessionIds);
       }
 
-      // Requirement: Admin miracle@goldmailer.xyz active number is +1 (205) 607-6793, remove old admin numbers
-      const activeAdminDigits = '12056076793';
+      // Requirement: Admin miracle@goldmailer.xyz active number is +1 (423) 666-2513, remove old admin numbers
+      const activeAdminDigits = '14236662513';
       userPhoneNumbers = userPhoneNumbers.filter(p => {
         const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz' || p.id === 'phone_free_miracle_admin';
         if (isMiracle) {
@@ -842,9 +849,9 @@ export const ensureDataLoaded = () => {
           id: 'phone_free_miracle_admin',
           userId: 'usr_miracle_01',
           userEmail: 'miracle@goldmailer.xyz',
-          phoneNumber: '+1 (205) 607-6793',
-          friendlyName: '+1 (205) 607-6793 (Admin Line)',
-          provider: 'signalwire',
+          phoneNumber: '+1 (423) 666-2513',
+          friendlyName: '+1 (423) 666-2513 (Admin Line)',
+          provider: 'telnyx',
           status: 'active',
           purchasedAt: '2026-10-13T00:00:00.000Z',
           expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
@@ -852,12 +859,13 @@ export const ensureDataLoaded = () => {
           capabilities: { sms: true, voice: true }
         });
       }
-      if (parsed.signalwireConfig && typeof parsed.signalwireConfig === 'object') {
-        setSignalWireCredentials(
-          parsed.signalwireConfig.projectId || '',
-          parsed.signalwireConfig.apiToken || '',
-          parsed.signalwireConfig.spaceUrl || '',
-          parsed.signalwireConfig.phoneNumber || ''
+      if (parsed.telnyxConfig && typeof parsed.telnyxConfig === 'object') {
+        setTelnyxCredentials(
+          parsed.telnyxConfig.apiKey || '',
+          parsed.telnyxConfig.phoneNumber || '',
+          parsed.telnyxConfig.messagingProfileId || '',
+          parsed.telnyxConfig.voiceAppId || '',
+          parsed.telnyxConfig.publicKey || ''
         );
       }
     } catch (parseErr) {
@@ -1065,24 +1073,24 @@ const seedAccounts = () => {
     }
   }
 
-  // Hardcode active admin number to +1 (205) 607-6793 and remove old numbers from DB
-  const adminActiveNumber = '+1 (205) 607-6793';
+  // Hardcode active admin number to +1 (423) 666-2513 and remove old numbers from DB
+  const adminActiveNumber = '+1 (423) 666-2513';
   userPhoneNumbers = userPhoneNumbers.filter(p => {
     const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz';
     if (!isMiracle) return true;
     const digits = p.phoneNumber.replace(/\D/g, '');
     // Delete any old numbers previously assigned to admin
-    if (digits.includes('7372508034') || digits.includes('2672301662')) {
+    if (digits.includes('7372508034') || digits.includes('2672301662') || digits.includes('2056076793')) {
       return false;
     }
     return true;
   });
 
-  // Ensure +1 (205) 607-6793 is active in DB as primary admin line
+  // Ensure +1 (423) 666-2513 is active in DB as primary admin line
   let adminPrimary = userPhoneNumbers.find(p => {
     const isMiracle = p.userId === 'usr_miracle_01' || p.userEmail === 'miracle@goldmailer.xyz';
     const digits = p.phoneNumber.replace(/\D/g, '');
-    return isMiracle && digits === '12056076793';
+    return isMiracle && digits === '14236662513';
   });
 
   if (!adminPrimary) {
@@ -1092,7 +1100,7 @@ const seedAccounts = () => {
       userEmail: 'miracle@goldmailer.xyz',
       phoneNumber: adminActiveNumber,
       friendlyName: `${adminActiveNumber} (Primary Line)`,
-      provider: 'signalwire',
+      provider: 'telnyx',
       status: 'active',
       purchasedAt: '2026-10-13T00:00:00.000Z',
       expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
@@ -1101,7 +1109,8 @@ const seedAccounts = () => {
     };
     userPhoneNumbers.unshift(adminPrimary);
   } else {
-    adminPrimary.provider = 'signalwire';
+    adminPrimary.provider = 'telnyx';
+    adminPrimary.phoneNumber = adminActiveNumber;
     adminPrimary.status = 'active';
     adminPrimary.friendlyName = `${adminActiveNumber} (Primary Line)`;
     adminPrimary.capabilities = { sms: true, voice: true };
@@ -5103,7 +5112,7 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
   const allEmails = db.getAllEmails();
   const emailBytes = allEmails.reduce((acc, e) => acc + Buffer.byteLength((e.body_html || '') + (e.body_text || '') + (e.subject || ''), 'utf8'), 0);
   const totalStorage = accounts.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0) + emailBytes;
-  const signalwireCfg = getSignalWireConfig();
+  const telnyxCfg = getTelnyxConfig();
   const activeAccounts = accounts.filter(u => !u.is_banned);
   const openTickets = db.getTickets().filter(t => t.status === 'open' || t.status === 'in_progress');
   const domains = db.getDomains();
@@ -5127,8 +5136,8 @@ app.get('/api/admin/overview', requireAdmin, (_req: Request, res: Response) => {
     activeDomainsCount: domains.filter(d => d.is_verified).length,
     monthlyRevenueUsd: Number(revenueTotal.toFixed(2)),
     recentLogins: userDevices.slice(0, 10),
-    adminPhoneNumber: signalwireCfg.phoneNumber || '+1 (205) 607-6793',
-    isSignalWireConfigured: signalwireCfg.isConfigured,
+    adminPhoneNumber: telnyxCfg.phoneNumber || '+1 (423) 666-2513',
+    isTelnyxConfigured: telnyxCfg.isConfigured,
     isResendConfigured: Boolean(process.env.RESEND_API_KEY),
     isDatabaseConnected: true,
     dbType: 'Supabase + Persistent Dual-File DB Engine'
@@ -5476,7 +5485,7 @@ app.get('/api/admin/system-health', requireAdmin, (_req: Request, res: Response)
     cpuLoadPercent: 4.2,
     activeSockets: sseClients.length,
     smtpStatus: (process.env.SMTP_HOST || db.getSettings().smtp_host) ? 'connected' : 'not_configured',
-    signalwireStatus: getSignalWireConfig().isConfigured ? 'connected' : 'not_configured',
+    telnyxStatus: getTelnyxConfig().isConfigured ? 'connected' : 'not_configured',
     resendStatus: process.env.RESEND_API_KEY ? 'connected' : 'not_configured',
     lastHealthCheck: new Date().toISOString()
   });
@@ -5698,11 +5707,12 @@ app.get('/api/admin/api-keys', requireAdmin, (_req: Request, res: Response) => {
   const settings = db.getSettings();
   const mask = (s: string) => (s && s.length > 8 ? `${s.slice(0, 4)}...${s.slice(-4)}` : s ? '••••••••' : '');
   res.json({
-    signalwireProjectId: mask(settings.signalwire_project_id),
-    signalwireApiTokenConfigured: Boolean(settings.signalwire_api_token),
-    signalwireSpaceUrl: settings.signalwire_space_url,
-    signalwirePhoneNumber: settings.signalwire_phone_number,
-    signalwireSigningKey: settings.signalwire_signing_key ? mask(settings.signalwire_signing_key) : '',
+    telnyxApiKey: mask(settings.telnyx_api_key),
+    telnyxApiKeyConfigured: Boolean(settings.telnyx_api_key),
+    telnyxPhoneNumber: settings.telnyx_phone_number,
+    telnyxMessagingProfileId: settings.telnyx_messaging_profile_id,
+    telnyxVoiceAppId: settings.telnyx_voice_app_id,
+    telnyxPublicKeyConfigured: Boolean(settings.telnyx_public_key),
     resendApiKeyConfigured: Boolean(settings.resend_api_key || process.env.RESEND_API_KEY),
     nowpaymentsKeyConfigured: Boolean(settings.nowpayments_api_key),
     supabaseUrl: settings.supabase_url || '',
@@ -5718,11 +5728,11 @@ app.get('/api/admin/api-keys', requireAdmin, (_req: Request, res: Response) => {
 app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response) => {
   try {
     const {
-      signalwireProjectId,
-      signalwireApiToken,
-      signalwireSpaceUrl,
-      signalwirePhoneNumber,
-      signalwireSigningKey,
+      telnyxApiKey,
+      telnyxPhoneNumber,
+      telnyxMessagingProfileId,
+      telnyxVoiceAppId,
+      telnyxPublicKey,
       resendKey,
       nowpaymentsKey,
       nowpaymentsIpn,
@@ -5734,18 +5744,18 @@ app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response
       smtpPass
     } = req.body;
 
-    const projectId = signalwireProjectId;
-    const apiToken = signalwireApiToken;
-    const phone = signalwirePhoneNumber;
-    const space = signalwireSpaceUrl;
-    const signingKey = signalwireSigningKey;
+    const apiKey = telnyxApiKey;
+    const phone = telnyxPhoneNumber;
+    const profileId = telnyxMessagingProfileId;
+    const voiceApp = telnyxVoiceAppId;
+    const pubKey = telnyxPublicKey;
 
     const updates: Partial<StoredSettings> = {};
-    if (projectId !== undefined) updates.signalwire_project_id = projectId;
-    if (apiToken !== undefined) updates.signalwire_api_token = apiToken;
-    if (space !== undefined) updates.signalwire_space_url = space;
-    if (phone !== undefined) updates.signalwire_phone_number = phone;
-    if (signingKey !== undefined) updates.signalwire_signing_key = signingKey;
+    if (apiKey !== undefined) updates.telnyx_api_key = apiKey;
+    if (phone !== undefined) updates.telnyx_phone_number = phone;
+    if (profileId !== undefined) updates.telnyx_messaging_profile_id = profileId;
+    if (voiceApp !== undefined) updates.telnyx_voice_app_id = voiceApp;
+    if (pubKey !== undefined) updates.telnyx_public_key = pubKey;
     if (resendKey !== undefined) updates.resend_api_key = resendKey;
     if (nowpaymentsKey !== undefined) updates.nowpayments_api_key = nowpaymentsKey;
     if (nowpaymentsIpn !== undefined) updates.nowpayments_ipn_secret = nowpaymentsIpn;
@@ -5757,14 +5767,14 @@ app.post('/api/admin/api-keys', requireAdmin, async (req: Request, res: Response
     if (smtpPass !== undefined) updates.smtp_pass = smtpPass;
 
     await db.updateSettings(updates);
-    if (projectId || apiToken || space || phone) {
-      setSignalWireCredentials(projectId, apiToken, space, phone);
+    if (apiKey || phone || profileId || voiceApp || pubKey) {
+      setTelnyxCredentials(apiKey, phone, profileId, voiceApp, pubKey);
     }
 
     const adminEmail = (req as any).adminUser?.email || 'admin@goldmailer.xyz';
-    await db.logAdminActivity(adminEmail, 'UPDATE_API_KEYS', 'system', undefined, 'Updated SignalWire and third-party API keys');
+    await db.logAdminActivity(adminEmail, 'UPDATE_API_KEYS', 'system', undefined, 'Updated Telnyx and third-party API keys');
 
-    return res.json({ success: true, message: 'SignalWire and API keys updated securely.' });
+    return res.json({ success: true, message: 'Telnyx and API keys updated securely.' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -5775,82 +5785,92 @@ app.get('/api/admin/activity-logs', requireAdmin, (_req: Request, res: Response)
   res.json(db.getActivityLogs(200));
 });
 
-// Admin SignalWire Gateway Endpoints
-const handleSignalWireStatus = async (_req: Request, res: Response) => {
-  const cfg = getSignalWireConfig();
+// Admin Telnyx Gateway Endpoints
+const handleTelnyxStatus = async (_req: Request, res: Response) => {
+  const cfg = getTelnyxConfig();
   res.json({
     isConfigured: cfg.isConfigured,
-    projectId: cfg.projectId ? `${cfg.projectId.slice(0, 8)}...${cfg.projectId.slice(-4)}` : '',
-    spaceUrl: cfg.spaceUrl,
-    hasApiToken: Boolean(cfg.apiToken),
+    apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...${cfg.apiKey.slice(-4)}` : '',
+    hasApiKey: Boolean(cfg.apiKey),
     phoneNumber: cfg.phoneNumber,
-    webhookUrl: cfg.webhookUrl
+    messagingProfileId: cfg.messagingProfileId,
+    voiceAppId: cfg.voiceAppId,
+    webhookUrl: cfg.webhookUrl,
+    projectId: cfg.messagingProfileId,
+    spaceUrl: 'api.telnyx.com',
+    hasApiToken: Boolean(cfg.apiKey)
   });
 };
 
-app.get('/api/admin/signalwire/status', requireAdmin, handleSignalWireStatus);
+app.get('/api/admin/telnyx/status', requireAdmin, handleTelnyxStatus);
 
-const handleSignalWireConfig = (req: Request, res: Response) => {
-  const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
+const handleTelnyxConfig = (req: Request, res: Response) => {
+  const { apiKey, phoneNumber, messagingProfileId, voiceAppId, publicKey } = req.body || {};
 
-  if (!projectId && !apiToken && !spaceUrl && !phoneNumber) {
+  const resolvedApiKey = apiKey;
+  const resolvedPhone = phoneNumber;
+  const resolvedProfile = messagingProfileId;
+  const resolvedVoiceApp = voiceAppId;
+
+  if (!resolvedApiKey && !resolvedPhone && !resolvedProfile && !resolvedVoiceApp) {
     return res.status(400).json({ error: 'At least one field is required.' });
   }
 
-  setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
+  setTelnyxCredentials(resolvedApiKey, resolvedPhone, resolvedProfile, resolvedVoiceApp, publicKey);
 
   // Sync to admin primary number record
-  if (phoneNumber) {
+  if (resolvedPhone) {
     const adminNum = userPhoneNumbers.find(p => p.id === 'phone_free_miracle_admin');
     if (adminNum) {
-      adminNum.phoneNumber = phoneNumber.trim();
-      adminNum.friendlyName = `${phoneNumber.trim()} (Admin Line)`;
+      adminNum.phoneNumber = resolvedPhone.trim();
+      adminNum.friendlyName = `${resolvedPhone.trim()} (Admin Line)`;
     }
   }
 
   saveData();
 
-  const cfg = getSignalWireConfig();
+  const cfg = getTelnyxConfig();
   return res.json({
     success: true,
-    message: 'SignalWire configuration successfully saved.',
+    message: 'Telnyx configuration successfully saved.',
     isConfigured: cfg.isConfigured,
     phoneNumber: cfg.phoneNumber
   });
 };
 
-app.post('/api/admin/signalwire/config', requireAdmin, handleSignalWireConfig);
+app.post('/api/admin/telnyx/config', requireAdmin, handleTelnyxConfig);
 
-const handleSignalWireTest = async (req: Request, res: Response) => {
+const handleTelnyxTest = async (req: Request, res: Response) => {
   try {
-    const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
+    const { apiKey, phoneNumber, messagingProfileId, voiceAppId } = req.body || {};
 
-    if (projectId || apiToken || spaceUrl || phoneNumber) {
-      setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
+    const resolvedApiKey = apiKey;
+    const resolvedPhone = phoneNumber;
+    const resolvedProfile = messagingProfileId;
+    const resolvedVoiceApp = voiceAppId;
+
+    if (resolvedApiKey || resolvedPhone || resolvedProfile || resolvedVoiceApp) {
+      setTelnyxCredentials(resolvedApiKey, resolvedPhone, resolvedProfile, resolvedVoiceApp);
       saveData();
     }
 
-    const testRes = await testSignalWireConnection();
+    const testRes = await testTelnyxConnection();
     return res.json(testRes);
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || 'SignalWire diagnostic failed' });
+    return res.status(500).json({ success: false, error: err.message || 'Telnyx diagnostic failed' });
   }
 };
 
-app.post('/api/admin/signalwire/test', requireAdmin, handleSignalWireTest);
+app.post('/api/admin/telnyx/test', requireAdmin, handleTelnyxTest);
 
-// TASK 4: Admin Free Number Provisioning
-// Provisions a number directly from SignalWire WITHOUT charging.
-// Check: if (session.user.email === 'miracle@goldmailer.xyz') { bypass payment }
-// The free provisioning is ONLY for admin email.
-// When admin taps get new number, the old number remains and is still active.
+// Admin Free Number Provisioning
+// Provisions a number directly from Telnyx WITHOUT charging.
 app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const authUser = resolveUserIdFromReq(req);
     const sessionEmail = (authUser.email || '').toLowerCase().trim();
 
-    // Check: if (session.user.email === 'miracle@goldmailer.xyz') { bypass payment }
     if (sessionEmail !== 'miracle@goldmailer.xyz' && authUser.id !== 'usr_miracle_01') {
       return res.status(403).json({
         error: 'Forbidden. Free number provisioning is exclusively reserved for miracle@goldmailer.xyz.'
@@ -5860,9 +5880,9 @@ app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
     const requestedNumber = req.body?.phoneNumber;
     const friendlyName = req.body?.friendlyName;
 
-    // Direct provision from SignalWire without charging
-    const provisionResult = await buySignalWirePhoneNumber(requestedNumber);
-    const targetNum = provisionResult.phoneNumber || requestedNumber || '+12056076793';
+    // Direct provision from Telnyx without charging
+    const provisionResult = await buyTelnyxPhoneNumber(requestedNumber);
+    const targetNum = provisionResult.phoneNumber || requestedNumber || '+14236662513';
 
     // The old number remains and still active for existing clients
     const newRecord: StoredPhoneNumber = {
@@ -5871,7 +5891,7 @@ app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
       userEmail: 'miracle@goldmailer.xyz',
       phoneNumber: targetNum,
       friendlyName: friendlyName || `${targetNum} (Admin Line)`,
-      provider: 'signalwire',
+      provider: 'telnyx',
       status: 'active',
       purchasedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
@@ -5886,16 +5906,16 @@ app.post('/api/admin/provision-number', async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      message: `New phone number ${targetNum} provisioned directly from SignalWire without charging. Previous numbers remain active.`,
+      message: `New phone number ${targetNum} provisioned directly from Telnyx without charging. Previous numbers remain active.`,
       number: newRecord
     });
   } catch (err: any) {
     console.error('[ADMIN PROVISION ERROR]', err);
-    return res.status(500).json({ error: err.message || 'Failed to provision number from SignalWire' });
+    return res.status(500).json({ error: err.message || 'Failed to provision number from Telnyx' });
   }
 });
 
-// ================= PHONE & SMS APIS (SIGNALWIRE & NOWPAYMENTS) =================
+// ================= PHONE & SMS APIS (TELNYX & NOWPAYMENTS) =================
 
 // Helper to get active user ID from token or session safely
 const resolveUserIdFromReq = (req: Request): { id: string; email: string; role?: string } => {
@@ -6101,122 +6121,92 @@ export const deductCoins = (
   return { success: true, remainingCoins: wallet.coins, suspended };
 };
 
-// 1. SIGNALWIRE INBOUND WEBHOOK (Receive SMS or Voice Calls, save to DB, return LAML)
-export const handleSignalWireInboundWebhook = async (req: Request, res: Response) => {
+// 1. TELNYX INBOUND SMS WEBHOOK
+// Handles Telnyx v2 events: message.sent, message.delivered, message.delivery_failed, message.delivery_undelivered, message.received
+export const handleTelnyxSmsWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
 
-    // Verify SignalWire HMAC signature with signing key PSK_zd8NAKiZku142b86cW8CDkDU
-    const verification = verifySignalWireWebhook(req);
+    const verification = verifyTelnyxWebhook(req);
     if (!verification.isValid) {
-      console.warn('[SIGNALWIRE WEBHOOK] Signature validation failed:', verification.reason, 'Signature header:', verification.signature);
-      res.setHeader('Content-Type', 'text/xml');
-      return res.status(403).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>');
-    } else {
-      console.log(`[SIGNALWIRE WEBHOOK] Verified successfully via ${verification.method || verification.reason}`);
+      console.warn('[TELNYX SMS WEBHOOK] Signature validation failed:', verification.reason);
+      return res.status(403).json({ error: 'Invalid webhook signature' });
     }
 
-    let bodyObj: Record<string, any> = {};
-    if (typeof req.body === 'string') {
-      try {
-        bodyObj = Object.fromEntries(new URLSearchParams(req.body));
-      } catch {}
-    } else if (Buffer.isBuffer(req.body)) {
-      try {
-        bodyObj = Object.fromEntries(new URLSearchParams(req.body.toString('utf-8')));
-      } catch {}
-    } else if (req.body && typeof req.body === 'object') {
-      bodyObj = req.body;
-    } else if ((req as any).readable) {
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req as any) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        }
-        const raw = Buffer.concat(chunks).toString('utf-8');
-        if (raw) {
-          try {
-            bodyObj = Object.fromEntries(new URLSearchParams(raw));
-          } catch {
-            try {
-              bodyObj = JSON.parse(raw);
-            } catch {}
-          }
-        }
-      } catch {}
+    let bodyData: any = req.body;
+    if (typeof bodyData === 'string') {
+      try { bodyData = JSON.parse(bodyData); } catch {}
+    } else if (Buffer.isBuffer(bodyData)) {
+      try { bodyData = JSON.parse(bodyData.toString('utf-8')); } catch {}
     }
 
-    const queryObj = (req.query || {}) as Record<string, any>;
-    const payload = { ...queryObj, ...bodyObj };
+    const eventType = String(bodyData?.data?.event_type || bodyData?.event_type || '').toLowerCase();
+    const payload = bodyData?.data?.payload || bodyData?.payload || bodyData?.data || bodyData || {};
 
-    const from = String(payload.From || payload.from || '').trim();
-    const to = String(payload.To || payload.to || '+12056076793').trim();
-    const text = String(payload.Body || payload.body || '').trim();
-    const messageSid = String(payload.MessageSid || payload.messageSid || payload.SmsSid || payload.sid || '').trim();
-    const callSid = String(payload.CallSid || payload.callSid || '').trim();
-    const callStatus = String(payload.CallStatus || payload.callStatus || '').trim();
+    const rawFrom = payload.from?.phone_number || (typeof payload.from === 'string' ? payload.from : '') || '';
+    const rawTo = payload.to?.[0]?.phone_number || (typeof payload.to === 'string' ? payload.to : '') || '+14236662513';
+    const text = String(payload.text || payload.body || '').trim();
+    const messageId = String(payload.id || bodyData?.data?.id || ('msg_' + Date.now())).trim();
 
+    const from = normalizePhoneNumber(rawFrom, '+1');
+    const to = normalizePhoneNumber(rawTo, '+1');
+
+    console.log(`[TELNYX SMS WEBHOOK] Event: "${eventType}", MessageID: "${messageId}", From: "${from}", To: "${to}", Body: "${text}"`);
+
+    // Handle delivery receipts & status callbacks
+    if (
+      eventType === 'message.delivered' ||
+      eventType === 'message.sent' ||
+      eventType === 'message.delivery_failed' ||
+      eventType === 'message.delivery_undelivered'
+    ) {
+      const deliveryStatus =
+        eventType === 'message.delivered'
+          ? 'delivered'
+          : eventType === 'message.sent'
+          ? 'sent'
+          : eventType === 'message.delivery_undelivered'
+          ? 'undelivered'
+          : 'failed';
+
+      const existing = sms_inbox.find(s => s.messageSid === messageId || s.telnyx_message_id === messageId);
+      if (existing) {
+        existing.status = deliveryStatus;
+        saveData();
+        broadcastNewSMS(existing);
+      }
+      return res.status(200).json({ success: true, event: eventType, messageId, status: deliveryStatus });
+    }
+
+    // Handle Opt-Out keywords: STOP, UNSUBSCRIBE, CANCEL, QUIT, END
+    const upperText = text.toUpperCase();
+    if (['STOP', 'UNSUBSCRIBE', 'CANCEL', 'QUIT', 'END'].includes(upperText)) {
+      addOptOut(from);
+      console.log(`[TELNYX OPT-OUT] Contact ${from} opted out via keyword "${upperText}"`);
+    } else if (['START', 'UNSTOP'].includes(upperText)) {
+      removeOptOut(from);
+      console.log(`[TELNYX OPT-IN] Contact ${from} opted in via keyword "${upperText}"`);
+    }
+
+    // Inbound SMS processing
     const cleanToDigits = to.replace(/\D/g, '');
-    const matchedNumber = [...userPhoneNumbers].reverse().find(p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits);
+    const matchedNumber = [...userPhoneNumbers].reverse().find(
+      p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits
+    );
     const targetUser = matchedNumber
       ? goldUsers.find(u => u.id === matchedNumber.userId)
       : (goldUsers.find(u => u.phone && u.phone.replace(/\D/g, '') === cleanToDigits) || goldUsers[0]);
 
     const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
-    const isTargetAdmin = targetUser?.email === 'miracle@goldmailer.xyz' || targetUser?.role === 'admin' || targetUserId === 'usr_miracle_01';
-
-    // Check if this is an incoming Voice Call or status callback
-    if (callSid || (callStatus && !text)) {
-      console.log(`[SIGNALWIRE VOICE WEBHOOK] Call event: SID=${callSid}, From=${from}, To=${to}, Status=${callStatus}`);
-
-      if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
-        console.warn(`[SIGNALWIRE VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
-        res.setHeader('Content-Type', 'text/xml');
-        return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>`);
-      }
-
-      // Deduct 5 coins/min for inbound voice call for regular users
-      if (!isTargetAdmin) {
-        deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
-      }
-
-      const existingCall = calls_history.find(c => c.callSid === callSid);
-      if (existingCall) {
-        if (callStatus) existingCall.status = callStatus.toLowerCase() as any;
-        saveData();
-        broadcastNewCall(existingCall);
-      } else {
-        const newCall: StoredCall = {
-          id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-          userId: targetUserId,
-          from: from || 'Caller',
-          to: to || '+12056076793',
-          direction: 'inbound',
-          status: (callStatus.toLowerCase() as any) || 'in-progress',
-          callSid: callSid || 'CA_' + Date.now(),
-          startedAt: new Date().toISOString()
-        };
-        calls_history.unshift(newCall);
-        saveData();
-        broadcastNewCall(newCall);
-      }
-
-      res.setHeader('Content-Type', 'text/xml');
-      return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">Welcome to GoldMailer secure voice line. Your call is now connected.</Say>
-  <Pause length="30"/>
-</Response>`);
-    }
-
-    // Inbound SMS
-    console.log(`[SIGNALWIRE SMS WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
+    const isTargetAdmin =
+      targetUser?.email === 'miracle@goldmailer.xyz' ||
+      targetUser?.role === 'admin' ||
+      targetUserId === 'usr_miracle_01';
 
     // Check if line is suspended
     if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
-      console.warn(`[SIGNALWIRE SMS WEBHOOK] SMS dropped: Line ${to} is suspended.`);
-      res.setHeader('Content-Type', 'text/xml');
-      return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+      console.warn(`[TELNYX SMS WEBHOOK] SMS dropped: Line ${to} is suspended.`);
+      return res.status(200).json({ success: false, reason: 'Line suspended' });
     }
 
     // Deduct 2.5 coins for incoming SMS (free for admin)
@@ -6228,17 +6218,20 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
       id: 'sms_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       userId: targetUserId,
       from: from || 'Unknown Sender',
-      to: to || '+12056076793',
+      to: to || '+14236662513',
       body: text,
       receivedAt: new Date().toISOString(),
-      messageSid: messageSid || 'SM_' + Date.now(),
+      messageSid: messageId,
+      telnyx_message_id: messageId,
       direction: 'inbound',
       status: 'received',
       is_read: false
     };
 
-    if (messageSid) {
-      const existingIdx = sms_inbox.findIndex(s => s.messageSid === messageSid);
+    if (messageId) {
+      const existingIdx = sms_inbox.findIndex(
+        s => s.messageSid === messageId || s.telnyx_message_id === messageId
+      );
       if (existingIdx !== -1) {
         sms_inbox[existingIdx] = { ...sms_inbox[existingIdx], ...newSms, id: sms_inbox[existingIdx].id };
       } else {
@@ -6251,59 +6244,148 @@ export const handleSignalWireInboundWebhook = async (req: Request, res: Response
     saveData();
     broadcastNewSMS(newSms);
 
-    console.log(`[SIGNALWIRE WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}: "${text}"`);
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+    console.log(`[TELNYX WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}: "${text}"`);
+    return res.status(200).json({ success: true, messageId: newSms.id });
   } catch (err: any) {
-    console.error('[SIGNALWIRE WEBHOOK] Exception handling webhook:', err);
-    res.setHeader('Content-Type', 'text/xml');
-    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+    console.error('[TELNYX SMS WEBHOOK] Exception handling webhook:', err);
+    return res.status(200).json({ success: true, warning: err.message });
   }
 };
 
-app.all(
-  [
-    '/api/signalwire/inbound',
-    '/api/webhook/signalwire/inbound',
-    '/api/webhooks/signalwire/inbound',
-    '/api/webhook/signalwire/sms',
-    '/api/webhooks/signalwire/sms',
-    '/api/webhooks/signalwire/*',
-    '/api/webhook/signalwire/*',
-    '/api/sms/incoming'
-  ],
-  handleSignalWireInboundWebhook
-);
-
-// Voice Call Status Callback
-export const handleSignalWireVoiceStatusWebhook = async (req: Request, res: Response) => {
+// 2. TELNYX VOICE CALLS WEBHOOK
+// Handles Telnyx v2 events: call.initiated, call.answered, call.hangup, call.machine.detection.ended, call.recording.saved
+export const handleTelnyxVoiceWebhook = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const body = { ...(req.query || {}), ...(req.body || {}) };
-    const callSid = String(body.CallSid || body.callSid || '');
-    const callStatus = String(body.CallStatus || body.callStatus || 'completed').toLowerCase() as any;
-    const duration = parseInt(body.CallDuration || body.Duration || '0', 10);
 
-    const call = calls_history.find(c => c.callSid === callSid);
-    if (call) {
-      call.status = callStatus;
-      if (duration > 0) call.durationSeconds = duration;
-      call.endedAt = new Date().toISOString();
-      saveData();
-      broadcastNewCall(call);
+    const verification = verifyTelnyxWebhook(req);
+    if (!verification.isValid) {
+      console.warn('[TELNYX VOICE WEBHOOK] Signature validation failed:', verification.reason);
+      return res.status(403).json({ error: 'Invalid webhook signature' });
     }
-    return res.status(200).send('OK');
+
+    let bodyData: any = req.body;
+    if (typeof bodyData === 'string') {
+      try { bodyData = JSON.parse(bodyData); } catch {}
+    } else if (Buffer.isBuffer(bodyData)) {
+      try { bodyData = JSON.parse(bodyData.toString('utf-8')); } catch {}
+    }
+
+    const eventType = String(bodyData?.data?.event_type || bodyData?.event_type || '').toLowerCase();
+    const payload = bodyData?.data?.payload || bodyData?.payload || bodyData?.data || bodyData || {};
+
+    const callControlId = String(payload.call_control_id || payload.call_leg_id || payload.id || bodyData?.data?.id || '').trim();
+    const rawFrom = payload.from || '';
+    const rawTo = payload.to || '+14236662513';
+    const from = normalizePhoneNumber(rawFrom, '+1');
+    const to = normalizePhoneNumber(rawTo, '+1');
+    const direction = (payload.direction || 'inbound').toLowerCase().includes('inbound') ? 'inbound' : 'outbound';
+
+    console.log(`[TELNYX VOICE WEBHOOK] Event: "${eventType}", CallControlID: "${callControlId}", From: "${from}", To: "${to}"`);
+
+    const cleanToDigits = to.replace(/\D/g, '');
+    const matchedNumber = [...userPhoneNumbers].reverse().find(
+      p => p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanToDigits
+    );
+    const targetUser = matchedNumber
+      ? goldUsers.find(u => u.id === matchedNumber.userId)
+      : (goldUsers.find(u => u.phone && u.phone.replace(/\D/g, '') === cleanToDigits) || goldUsers[0]);
+
+    const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : 'usr_miracle_01');
+    const isTargetAdmin =
+      targetUser?.email === 'miracle@goldmailer.xyz' ||
+      targetUser?.role === 'admin' ||
+      targetUserId === 'usr_miracle_01';
+
+    let existingCall = calls_history.find(c => c.callSid === callControlId);
+
+    if (eventType === 'call.initiated') {
+      if (!isTargetAdmin && matchedNumber && matchedNumber.status === 'suspended') {
+        console.warn(`[TELNYX VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
+        return res.status(200).json({ success: false, reason: 'Line suspended' });
+      }
+
+      if (!isTargetAdmin && direction === 'inbound') {
+        deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
+      }
+
+      if (!existingCall) {
+        existingCall = {
+          id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          userId: targetUserId,
+          from: from || 'Caller',
+          to: to || '+14236662513',
+          direction,
+          status: 'ringing',
+          callSid: callControlId || ('CA_' + Date.now()),
+          startedAt: new Date().toISOString()
+        };
+        calls_history.unshift(existingCall);
+      } else {
+        existingCall.status = 'ringing';
+      }
+      saveData();
+      broadcastNewCall(existingCall);
+      return res.status(200).json({ success: true, callId: existingCall.id });
+    }
+
+    if (eventType === 'call.answered') {
+      if (existingCall) {
+        existingCall.status = 'in-progress';
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, status: 'in-progress' });
+    }
+
+    if (eventType === 'call.hangup') {
+      const duration = parseInt(payload.duration_seconds || payload.call_duration || '0', 10);
+      if (existingCall) {
+        existingCall.status = 'completed';
+        if (duration > 0) existingCall.durationSeconds = duration;
+        existingCall.endedAt = new Date().toISOString();
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, status: 'completed', duration });
+    }
+
+    if (eventType === 'call.recording.saved') {
+      const recordingUrl = payload.recording_urls?.mp3 || payload.recording_url;
+      if (existingCall && recordingUrl) {
+        existingCall.recordingUrl = recordingUrl;
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, recordingUrl });
+    }
+
+    return res.status(200).json({ success: true, handled: eventType });
   } catch (err: any) {
-    return res.status(200).send('OK');
+    console.error('[TELNYX VOICE WEBHOOK] Exception:', err);
+    return res.status(200).json({ success: true, warning: err.message });
   }
 };
 
-app.all(
+// 3. GENERAL TELNYX INBOUND ROUTER (Supports single webhook URL pointing to https://goldmailer.xyz/api/webhooks/telnyx-inbound)
+export const handleTelnyxGeneralWebhook = async (req: Request, res: Response) => {
+  const eventType = String(req.body?.data?.event_type || req.body?.event_type || '').toLowerCase();
+  if (eventType.startsWith('call.')) {
+    return handleTelnyxVoiceWebhook(req, res);
+  }
+  return handleTelnyxSmsWebhook(req, res);
+};
+
+// Mount Telnyx Webhook Endpoints
+app.post(['/api/webhooks/telnyx-sms', '/api/telnyx/sms'], handleTelnyxSmsWebhook);
+app.post(['/api/webhooks/telnyx-voice', '/api/telnyx/voice'], handleTelnyxVoiceWebhook);
+app.post(
   [
-    '/api/signalwire/voice/status',
-    '/api/webhook/signalwire/voice/status'
+    '/api/webhooks/telnyx-inbound',
+    '/api/telnyx/inbound',
+    '/api/sms/incoming'
   ],
-  handleSignalWireVoiceStatusWebhook
+  handleTelnyxGeneralWebhook
 );
 
 // 2. NOWPAYMENTS WEBHOOK (Verify IPN_SECRET, extend 30 days & add coins)
@@ -6393,7 +6475,7 @@ export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
           userId: targetUserId,
           paymentId: String(body.payment_id || ''),
           orderId: orderId,
-          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+14236662513',
           amount: dollarAmount,
           currency: String(body.price_currency || 'usd'),
           status: 'finished',
@@ -6430,7 +6512,7 @@ export const handleNowPaymentsWebhook = async (req: Request, res: Response) => {
           userId: targetUserId,
           paymentId: String(body.payment_id || ''),
           orderId: orderId,
-          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+12056076793',
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || '+14236662513',
           amount: Number(body.price_amount || 6.0),
           currency: String(body.price_currency || 'usd'),
           status: 'finished',
@@ -6455,55 +6537,55 @@ app.post(
   handleNowPaymentsWebhook
 );
 
-// 3. GET /api/phone/numbers - Retrieve user's phone numbers with live SignalWire sync
+// 3. GET /api/phone/numbers - Retrieve user's phone numbers with live Telnyx sync
 app.get('/api/phone/numbers', async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const { phoneNumber: adminPhoneNumber, isConfigured } = getSignalWireConfig();
+  const { phoneNumber: adminPhoneNumber, isConfigured } = getTelnyxConfig();
   const isAdmin = isReqAdmin(authUser);
-  const activeAdminDigits = '12056076793';
+  const activeAdminDigits = (adminPhoneNumber || '+14236662513').replace(/\D/g, '');
 
-  // Live Sync active numbers directly from SignalWire API
+  // Live Sync active numbers directly from Telnyx API
   if (isConfigured) {
     try {
-      const swActiveNumbers = await getActiveSignalWireNumbers();
-      for (const swNum of swActiveNumbers) {
-        const cleanDigits = swNum.phoneNumber.replace(/\D/g, '');
+      const telnyxActiveNumbers = await getActiveTelnyxNumbers();
+      for (const tNum of telnyxActiveNumbers) {
+        const cleanDigits = tNum.phoneNumber.replace(/\D/g, '');
         const existingIdx = userPhoneNumbers.findIndex(
-          p => (p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanDigits) || p.sid === swNum.sid
+          p => (p.phoneNumber && p.phoneNumber.replace(/\D/g, '') === cleanDigits) || p.sid === tNum.id
         );
         if (existingIdx !== -1) {
-          userPhoneNumbers[existingIdx].provider = 'signalwire';
+          userPhoneNumbers[existingIdx].provider = 'telnyx';
           userPhoneNumbers[existingIdx].status = 'active';
           userPhoneNumbers[existingIdx].capabilities = {
-            voice: swNum.capabilities.voice,
-            sms: swNum.capabilities.sms
+            voice: tNum.capabilities.voice,
+            sms: tNum.capabilities.sms
           };
         } else {
           userPhoneNumbers.push({
-            id: 'phone_sw_' + swNum.sid,
+            id: 'phone_telnyx_' + (tNum.id || cleanDigits),
             userId: authUser.id || 'usr_miracle_01',
             userEmail: authUser.email || 'miracle@goldmailer.xyz',
-            phoneNumber: swNum.phoneNumber,
-            friendlyName: swNum.friendlyName || `${swNum.phoneNumber} (Live Line)`,
-            provider: 'signalwire',
+            phoneNumber: tNum.phoneNumber,
+            friendlyName: tNum.friendlyName || `${tNum.phoneNumber} (Telnyx Line)`,
+            provider: 'telnyx',
             status: 'active',
             purchasedAt: new Date().toISOString(),
             expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
             autoRenew: true,
             capabilities: {
-              voice: swNum.capabilities.voice,
-              sms: swNum.capabilities.sms
+              voice: tNum.capabilities.voice,
+              sms: tNum.capabilities.sms
             }
           });
         }
       }
     } catch (syncErr) {
-      console.warn('[PHONE NUMBERS] SignalWire live sync warning:', syncErr);
+      console.warn('[PHONE NUMBERS] Telnyx live sync warning:', syncErr);
     }
   }
 
-  // Ensure admin has the configured primary phone line (+1 205 607-6793)
+  // Ensure admin has the configured primary phone line (+1 423 666-2513)
   if (isAdmin || !authUser.id) {
     const adminPhoneIndex = userPhoneNumbers.findIndex(
       p => p.id === 'phone_free_miracle_admin' || p.phoneNumber.replace(/\D/g, '') === activeAdminDigits
@@ -6513,9 +6595,9 @@ app.get('/api/phone/numbers', async (req: Request, res: Response) => {
         id: 'phone_free_miracle_admin',
         userId: authUser.id || 'usr_miracle_01',
         userEmail: authUser.email || 'miracle@goldmailer.xyz',
-        phoneNumber: adminPhoneNumber,
-        friendlyName: `${adminPhoneNumber} (Primary Line)`,
-        provider: 'signalwire',
+        phoneNumber: adminPhoneNumber || '+14236662513',
+        friendlyName: `${adminPhoneNumber || '+14236662513'} (Primary Line)`,
+        provider: 'telnyx',
         status: 'active',
         purchasedAt: '2026-10-13T00:00:00.000Z',
         expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1000).toISOString(),
@@ -6524,9 +6606,9 @@ app.get('/api/phone/numbers', async (req: Request, res: Response) => {
       });
       saveData();
     } else {
-      userPhoneNumbers[adminPhoneIndex].provider = 'signalwire';
+      userPhoneNumbers[adminPhoneIndex].provider = 'telnyx';
       userPhoneNumbers[adminPhoneIndex].status = 'active';
-      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber;
+      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber || '+14236662513';
     }
   }
 
@@ -6554,19 +6636,19 @@ app.get('/api/phone/numbers', async (req: Request, res: Response) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: adminPhoneNumber,
+    adminNumber: adminPhoneNumber || '+14236662513',
     coins: isAdmin ? 999999 : wallet.coins,
     unlimitedCoins: isAdmin,
-    isSignalWireConfigured: getSignalWireConfig().isConfigured
+    isTelnyxConfigured: isConfigured
   });
 });
 
-// 4. GET /api/phone/available & GET /api/numbers/available - Search available numbers to buy directly from SignalWire API
+// 4. GET /api/phone/available & GET /api/numbers/available - Search available numbers to buy directly from Telnyx API
 const handleAvailableNumbers = async (_req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const list = await listAvailablePhoneNumbers(16);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
 
     const boughtSet = new Set<string>();
     userPhoneNumbers.forEach(p => {
@@ -6605,17 +6687,17 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
       return res.json({
         success: true,
         isAdmin: true,
-        message: 'Admin account has free lifetime direct activation from SignalWire.'
+        message: 'Admin account has free lifetime direct activation from Telnyx.'
       });
     }
 
-    const targetNum = phoneNumber || '+12056076793';
+    const targetNum = phoneNumber || '+14236662513';
     const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const basePrice = 6.0;
     const networkFee = Number((basePrice * 0.015).toFixed(2)); // 1.5% network fee ($0.09)
     const totalPrice = Number((basePrice + networkFee).toFixed(2)); // $6.09
 
-    const description = `SignalWire Phone Subscription for ${targetNum} (${authUser.email}) - $6.00 + $${networkFee} Network Fee (300 Coins + 30 Days)`;
+    const description = `Telnyx Phone Subscription for ${targetNum} (${authUser.email}) - $6.00 + $${networkFee} Network Fee (300 Coins + 30 Days)`;
 
     const invoiceResult = await createNowPaymentsInvoice({
       priceAmount: totalPrice,
@@ -6640,7 +6722,7 @@ app.post('/api/phone/buy-intent', async (req: Request, res: Response) => {
   }
 });
 
-// 6. POST /api/phone/buy-number & POST /api/numbers/buy - Direct provision / activation of purchased phone number via SignalWire
+// 6. POST /api/phone/buy-number & POST /api/numbers/buy - Direct provision / activation of purchased phone number via Telnyx
 const handleBuyNumber = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
@@ -6648,9 +6730,9 @@ const handleBuyNumber = async (req: Request, res: Response) => {
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = authUser.email === 'miracle@goldmailer.xyz' || authUser.id === 'usr_miracle_01';
 
-    // Purchase via SignalWire API
-    const buyResult = await buySignalWirePhoneNumber(phoneNumber);
-    const targetNum = buyResult.phoneNumber || phoneNumber || '+12056076793';
+    // Purchase via Telnyx API
+    const buyResult = await buyTelnyxPhoneNumber(phoneNumber);
+    const targetNum = buyResult.phoneNumber || phoneNumber || '+14236662513';
 
     let existing = userPhoneNumbers.find(p => p.phoneNumber === targetNum);
     if (existing) {
@@ -6667,7 +6749,7 @@ const handleBuyNumber = async (req: Request, res: Response) => {
         userEmail: authUser.email,
         phoneNumber: targetNum,
         friendlyName: friendlyName || targetNum,
-        provider: 'signalwire',
+        provider: 'telnyx',
         status: 'active',
         purchasedAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + (isAdmin ? 3650 : 30) * 24 * 3600 * 1000).toISOString(),
@@ -6685,7 +6767,7 @@ const handleBuyNumber = async (req: Request, res: Response) => {
     saveData();
     return res.json({
       success: true,
-      message: `Phone number ${targetNum} activated successfully on SignalWire.`,
+      message: `Phone number ${targetNum} activated successfully on Telnyx.`,
       number: existing
     });
   } catch (err: any) {
@@ -6924,29 +7006,31 @@ app.delete('/api/phone/contacts/:id', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 11. GET /api/phone/sms & GET /api/sms/inbox - Retrieve user's SMS inbox (with live SignalWire sync for admin)
+// 11. GET /api/phone/sms & GET /api/sms/inbox - Retrieve user's SMS inbox (with live Telnyx sync for admin)
 const handleGetSmsInbox = async (req: Request, res: Response) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const isAdmin = isReqAdmin(authUser);
-  const { phoneNumber: adminNumber } = getSignalWireConfig();
+  const { phoneNumber: adminNumber } = getTelnyxConfig();
 
-  // Active sync from live SignalWire API
+  // Active sync from live Telnyx API
   try {
-    const liveMessages = await getSignalWireLogs(40);
+    const liveMessages = await getTelnyxLogs(40);
     let hasNew = false;
-    for (const sm of liveMessages) {
-      if (!sms_inbox.some(s => s.messageSid === sm.sid)) {
+    for (const tm of liveMessages) {
+      const msgSid = tm.id || tm.sid;
+      if (!sms_inbox.some(s => s.messageSid === msgSid || s.telnyx_message_id === msgSid)) {
         const newLiveSms: StoredSMS = {
-          id: 'sms_live_' + sm.sid,
+          id: 'sms_live_' + msgSid,
           userId: authUser.id || 'usr_miracle_01',
-          from: sm.from || 'Unknown',
-          to: sm.to || adminNumber || '+12056076793',
-          body: sm.body || '',
-          receivedAt: sm.dateSent || new Date().toISOString(),
-          messageSid: sm.sid,
-          direction: (sm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
-          status: sm.status,
+          from: tm.from || 'Unknown',
+          to: tm.to || adminNumber || '+14236662513',
+          body: tm.body || tm.text || '',
+          receivedAt: tm.receivedAt || tm.dateSent || new Date().toISOString(),
+          messageSid: msgSid,
+          telnyx_message_id: msgSid,
+          direction: (tm.direction || '').includes('inbound') ? 'inbound' : 'outbound',
+          status: tm.status,
           is_read: false
         };
         sms_inbox.unshift(newLiveSms);
@@ -6958,7 +7042,7 @@ const handleGetSmsInbox = async (req: Request, res: Response) => {
       saveData();
     }
   } catch (syncErr: any) {
-    console.warn('[SIGNALWIRE ACTIVE SYNC] Note:', syncErr.message || syncErr);
+    console.warn('[TELNYX ACTIVE SYNC] Note:', syncErr.message || syncErr);
   }
 
   const userPhonesDigits = new Set<string>();
@@ -6988,14 +7072,14 @@ const handleGetSmsInbox = async (req: Request, res: Response) => {
 
 app.get(['/api/phone/sms', '/api/sms/inbox'], handleGetSmsInbox);
 
-// 12. POST /api/phone/send-sms & POST /api/sms/send - Send outbound SMS through SignalWire (Costs 5 coins)
+// 12. POST /api/phone/send-sms & POST /api/sms/send - Send outbound SMS through Telnyx (Costs 5 coins)
 const handleSendSms = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const { to, body, from } = req.body;
+    const { to, body, from, campaignId } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
     const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
 
     if (!isAdmin && userPhones.length === 0) {
@@ -7023,7 +7107,7 @@ const handleSendSms = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recipient phone number (to) and message (body) are required.' });
     }
 
-    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '');
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '') || '+14236662513';
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to send SMS.' });
@@ -7031,10 +7115,19 @@ const handleSendSms = async (req: Request, res: Response) => {
 
     const normalizedTo = normalizePhoneNumber(to, '+234');
 
-    const swResult = await sendSmsViaSignalWire({
+    // Check opt-out
+    if (isOptedOut(normalizedTo)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Recipient has opted out of SMS messages (STOP keyword received).'
+      });
+    }
+
+    const telnyxResult = await sendSmsViaTelnyx({
       to: normalizedTo,
       from: fromNumber,
-      body
+      body,
+      campaignId
     });
 
     const outboundSms: StoredSMS = {
@@ -7044,9 +7137,10 @@ const handleSendSms = async (req: Request, res: Response) => {
       to: normalizedTo,
       body,
       receivedAt: new Date().toISOString(),
-      messageSid: swResult.messageSid || 'SM_' + Date.now(),
+      messageSid: telnyxResult.messageSid || telnyxResult.messageId || ('SM_' + Date.now()),
+      telnyx_message_id: telnyxResult.messageId || telnyxResult.messageSid,
       direction: 'outbound',
-      status: swResult.success ? (swResult.status || 'sent') : 'failed',
+      status: telnyxResult.success ? (telnyxResult.status || 'sent') : 'failed',
       is_read: true
     };
 
@@ -7062,9 +7156,10 @@ const handleSendSms = async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      messageSid: swResult.messageSid || outboundSms.messageSid,
+      messageSid: telnyxResult.messageSid || telnyxResult.messageId || outboundSms.messageSid,
+      messageId: telnyxResult.messageId || telnyxResult.messageSid,
       sms: outboundSms,
-      carrierNotice: swResult.success ? undefined : swResult.error
+      carrierNotice: telnyxResult.success ? undefined : telnyxResult.error
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -7104,14 +7199,14 @@ app.delete('/api/phone/sms', (req: Request, res: Response) => {
   return res.json({ success: true });
 });
 
-// 18. OUTGOING CALL: POST /api/phone/call & POST /api/voice/call (Direct SignalWire voice call - Costs 5 coins/min)
+// 18. OUTGOING CALL: POST /api/phone/call & POST /api/voice/call (Direct Telnyx voice call - Costs 5 coins/min)
 const handleMakeVoiceCall = async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
-    const { to, from } = req.body;
+    const { to, from, audioUrl, ttsText } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
     const userPhones = userPhoneNumbers.filter(p => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
 
     if (!isAdmin && userPhones.length === 0) {
@@ -7139,7 +7234,7 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recipient phone number (to) is required.' });
     }
 
-    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '');
+    const fromNumber = from || (userPhones[0]?.phoneNumber) || (isAdmin ? adminNumber : '') || '+14236662513';
 
     if (!fromNumber) {
       return res.status(400).json({ error: 'You must have an active phone number to place calls.' });
@@ -7147,9 +7242,11 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
 
     const normalizedTo = normalizePhoneNumber(to, '+234');
 
-    const callResult = await makeCallViaSignalWire({
+    const callResult = await makeCallViaTelnyx({
       to: normalizedTo,
-      from: fromNumber
+      from: fromNumber,
+      audioUrl,
+      ttsText
     });
 
     const outboundCall: StoredCall = {
@@ -7159,7 +7256,7 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
       to: normalizedTo,
       direction: 'outbound',
       status: callResult.success ? ((callResult.status as any) || 'in-progress') : 'failed',
-      callSid: callResult.callSid || 'CA_' + Date.now(),
+      callSid: callResult.callSid || callResult.callControlId || ('CA_' + Date.now()),
       startedAt: new Date().toISOString()
     };
 
@@ -7176,7 +7273,7 @@ const handleMakeVoiceCall = async (req: Request, res: Response) => {
     if (!callResult.success) {
       return res.status(400).json({
         success: false,
-        error: callResult.error || 'SignalWire rejected the call',
+        error: callResult.error || 'Telnyx rejected the call',
         carrierNotice: callResult.error,
         callSid: outboundCall.callSid,
         call: outboundCall
@@ -7206,27 +7303,27 @@ const handleGetCalls = async (req: Request, res: Response) => {
       .map(p => p.phoneNumber)
   );
 
-  // Sync calls from SignalWire in real-time
+  // Sync calls from Telnyx in real-time
   try {
-    const swCalls = await getSignalWireCallLogs(20);
-    for (const sc of swCalls) {
-      const existing = calls_history.find(c => c.callSid === sc.callSid);
+    const telnyxCalls = await getTelnyxCallLogs(20);
+    for (const tc of telnyxCalls) {
+      const existing = calls_history.find(c => c.callSid === tc.callSid);
       if (existing) {
-        existing.status = sc.status;
-        if (sc.durationSeconds) existing.durationSeconds = sc.durationSeconds;
-        if (sc.endedAt) existing.endedAt = sc.endedAt;
+        existing.status = tc.status;
+        if (tc.durationSeconds) existing.durationSeconds = tc.durationSeconds;
+        if (tc.endedAt) existing.endedAt = tc.endedAt;
       } else {
         calls_history.unshift({
-          id: 'call_live_' + sc.callSid,
+          id: 'call_live_' + tc.callSid,
           userId: authUser.id || 'usr_miracle_01',
-          from: sc.from,
-          to: sc.to,
-          direction: sc.direction,
-          status: sc.status,
-          durationSeconds: sc.durationSeconds,
-          callSid: sc.callSid,
-          startedAt: sc.startedAt,
-          endedAt: sc.endedAt
+          from: tc.from,
+          to: tc.to,
+          direction: tc.direction,
+          status: tc.status,
+          durationSeconds: tc.durationSeconds,
+          callSid: tc.callSid,
+          startedAt: tc.startedAt,
+          endedAt: tc.endedAt
         });
       }
     }

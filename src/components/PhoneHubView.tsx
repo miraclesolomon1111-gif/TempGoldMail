@@ -312,7 +312,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
     };
   }, [activeThreadNumber, conversationThreads, contacts, messages]);
 
-  // Place Call Handler (Direct SignalWire Voice Calling)
+  // Place Call Handler (Direct Telnyx Voice Calling)
   const handleMakeCall = async (e?: React.FormEvent, directNumber?: string) => {
     if (e) e.preventDefault();
     const rawTarget = directNumber || callRecipient.trim();
@@ -533,13 +533,13 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
       if (res.success) {
         setAdminProvisionNotice({
           type: 'success',
-          message: res.message || 'New number provisioned from SignalWire. Existing lines remain active!'
+          message: res.message || 'New number provisioned from Telnyx. Existing lines remain active!'
         });
         await loadPhoneData();
       } else {
         setAdminProvisionNotice({
           type: 'error',
-          message: res.error || 'Failed to provision number from SignalWire'
+          message: res.error || 'Failed to provision number from Telnyx'
         });
       }
     } catch (err: any) {
@@ -719,14 +719,14 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
             <span>Re-subscribe Now</span>
           </button>
 
-          {/* Admin "Get New Number" from SignalWire (Free) */}
+          {/* Admin "Get New Number" from Telnyx (Free) */}
           {isAdmin && (
             <button
               type="button"
               onClick={() => handleAdminGetNewNumber()}
               disabled={isAdminProvisioning}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-bold shadow-md hover:opacity-95 transition-all cursor-pointer disabled:opacity-50"
-              title="Provision a new number directly from SignalWire without charging"
+              title="Provision a new number directly from Telnyx without charging"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>{isAdminProvisioning ? 'Provisioning...' : 'Get New Number'}</span>
@@ -1054,7 +1054,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     <span className="font-mono">
-                      Carrier Line: {selectedFromNumber || activeNumber?.phoneNumber || (isAdmin ? '+1 (205) 607-6793' : 'Direct SignalWire Line')}
+                      Carrier Line: {selectedFromNumber || activeNumber?.phoneNumber || (isAdmin ? '+1 (423) 666-2513' : 'Direct Telnyx Line')}
                     </span>
                   </div>
                   <div className="font-mono">
@@ -1539,7 +1539,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                 <h2 className="text-base font-bold flex items-center gap-2">
                   <span>Available Phone Numbers</span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400/10 text-amber-400 border border-amber-400/20">
-                    SignalWire Carrier
+                    Telnyx Carrier
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
@@ -1567,7 +1567,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                     <div>
                       <span className="font-bold">Admin Account (miracle@goldmailer.xyz):</span>
                       <p className="text-[11px] text-zinc-300 mt-0.5">
-                        Free direct provisioning from SignalWire without charging. Existing numbers remain active for clients with no disruption.
+                        Free direct provisioning from Telnyx without charging. Existing numbers remain active for clients with no disruption.
                       </p>
                     </div>
                   </div>
@@ -1600,9 +1600,9 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                 darkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white border-zinc-200'
               }`}>
                 <Coins className="w-10 h-10 mx-auto text-amber-400 mb-2 stroke-[1.5]" />
-                <h3 className="text-sm font-bold">Querying SignalWire Inventory</h3>
+                <h3 className="text-sm font-bold">Querying Telnyx Inventory</h3>
                 <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
-                  Available numbers are queried live from SignalWire API. If no numbers appear, configure your SignalWire account credentials in the environment.
+                  Available numbers are queried live from Telnyx API. If no numbers appear, configure your Telnyx account credentials in the environment.
                 </p>
               </div>
             ) : (
@@ -1625,7 +1625,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                       </div>
 
                       <p className="text-xs text-zinc-400">
-                        Carrier: SignalWire US · SMS & Voice Enabled
+                        Carrier: Telnyx US · SMS & Voice Enabled
                       </p>
 
                       <div className="flex items-center gap-2 pt-1 text-[11px] text-zinc-400">
@@ -1938,7 +1938,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                   <span>Master Administrator Line</span>
                 </div>
                 <p className="text-zinc-300">
-                  The eSIM card feature applies strictly to client user accounts. As administrator (<code className="font-mono text-amber-300">miracle@goldmailer.xyz</code>), your primary line (<code className="font-mono text-amber-300">+1 205 607-6793</code>) routes directly through SignalWire master carrier with unlimited free coins and calls.
+                  The eSIM card feature applies strictly to client user accounts. As administrator (<code className="font-mono text-amber-300">miracle@goldmailer.xyz</code>), your primary line (<code className="font-mono text-amber-300">+1 423 666-2513</code>) routes directly through Telnyx master carrier with unlimited free coins and calls.
                 </p>
               </div>
             ) : !activeNumber ? (
@@ -1974,7 +1974,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
                           </div>
                           <div>
                             <h4 className="text-sm font-bold text-white tracking-wide">GoldMobile eSIM</h4>
-                            <span className="text-[10px] text-zinc-400 font-mono">Carrier: SignalWire US</span>
+                            <span className="text-[10px] text-zinc-400 font-mono">Carrier: Telnyx US</span>
                           </div>
                         </div>
 
@@ -2479,7 +2479,7 @@ export const PhoneHubView: React.FC<PhoneHubViewProps> = ({
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-400">Carrier:</span>
-                <span className="font-medium text-emerald-400">SignalWire US Carrier</span>
+                <span className="font-medium text-emerald-400">Telnyx US Carrier</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-400">Capabilities:</span>

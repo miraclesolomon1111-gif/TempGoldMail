@@ -207,7 +207,7 @@ export interface UserPhoneNumber {
   userId: string;
   phoneNumber: string;
   friendlyName?: string;
-  provider: 'signalwire';
+  provider: 'telnyx';
   status: 'active' | 'suspended' | 'expired' | 'pending';
   purchasedAt: string;
   expiresAt: string;
@@ -266,7 +266,7 @@ export interface AvailablePhoneNumber {
   };
 }
 
-export interface SignalWireLogItem {
+export interface TelnyxLogItem {
   sid: string;
   from: string;
   to: string;
@@ -316,7 +316,7 @@ export interface AdminOverviewStats {
   activeDomainsCount: number;
   monthlyRevenueUsd: number;
   adminPhoneNumber: string;
-  isSignalWireConfigured: boolean;
+  isTelnyxConfigured: boolean;
   isResendConfigured: boolean;
   isDatabaseConnected: boolean;
   dbType: string;
@@ -408,7 +408,7 @@ export interface AdminSystemHealth {
   cpuLoadPercent: number;
   activeSockets: number;
   smtpStatus: 'connected' | 'not_configured';
-  signalwireStatus: 'connected' | 'not_configured';
+  telnyxStatus: 'connected' | 'not_configured';
   resendStatus: 'connected' | 'not_configured';
   lastHealthCheck: string;
 }
@@ -427,11 +427,11 @@ export interface AdminSiteSettings {
   smtp_user: string;
   smtp_pass: string;
   smtp_secure: boolean;
-  signalwire_project_id: string;
-  signalwire_api_token: string;
-  signalwire_space_url: string;
-  signalwire_phone_number: string;
-  signalwire_signing_key?: string;
+  telnyx_api_key: string;
+  telnyx_phone_number: string;
+  telnyx_messaging_profile_id: string;
+  telnyx_voice_app_id: string;
+  telnyx_public_key?: string;
   resend_api_key: string;
   resend_from: string;
   nowpayments_api_key: string;

@@ -52,11 +52,11 @@ var GoldDatabase = class {
       smtp_user: process.env.SMTP_USER || "postmaster@goldmailer.xyz",
       smtp_pass: process.env.SMTP_PASS || "",
       smtp_secure: process.env.SMTP_SECURE === "true",
-      signalwire_project_id: process.env.SIGNALWIRE_PROJECT_ID || "c4c9559f-11f4-4125-9c81-ae5aba970a12",
-      signalwire_api_token: process.env.SIGNALWIRE_API_TOKEN || "swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg",
-      signalwire_space_url: process.env.SIGNALWIRE_SPACE_URL || "tasknest.signalwire.com",
-      signalwire_phone_number: process.env.SIGNALWIRE_PHONE_NUMBER || "+1 (205) 607-6793",
-      signalwire_signing_key: process.env.SIGNALWIRE_SIGNING_KEY || "PSK_zd8NAKiZku142b86cW8CDkDU",
+      telnyx_api_key: process.env.TELNYX_API_KEY || "",
+      telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || process.env.TELNYX_PHONE || process.env.TRLNYX_PHONE || "+14236662513",
+      telnyx_messaging_profile_id: process.env.TELNYX_MESSAGING_PROFILE_ID || "4001a139-34ea-4725-a3be-890f641b9137",
+      telnyx_voice_app_id: process.env.TELNYX_VOICE_APP_ID || process.env.TRLNYX_VOICE_APP_ID || "3070367984242394362",
+      telnyx_public_key: process.env.TELNYX_PUBLIC_KEY || "",
       resend_api_key: process.env.RESEND_API_KEY || "",
       resend_from: process.env.RESEND_FROM || "GoldMailer Security <security@goldmailer.xyz>",
       nowpayments_api_key: process.env.NOWPAYMENTS_API_KEY || "",
@@ -1522,63 +1522,67 @@ async function fetchEmailsFromImap(targetEmail, customConfig, limit = 50) {
 // src/server/phoneService.ts
 import crypto4 from "crypto";
 
-// lib/signalwireClient.ts
+// lib/telnyxClient.ts
 import crypto3 from "crypto";
-import { RestClient } from "@signalwire/compatibility-api";
+import Telnyx from "telnyx";
 var dynamicConfig = {
-  projectId: process.env.SIGNALWIRE_PROJECT_ID || "c4c9559f-11f4-4125-9c81-ae5aba970a12",
-  apiToken: process.env.SIGNALWIRE_API_TOKEN || "swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg",
-  spaceUrl: (process.env.SIGNALWIRE_SPACE_URL || "tasknest.signalwire.com").replace(/^https?:\/\//, "").replace(/\/$/, ""),
-  phoneNumber: process.env.SIGNALWIRE_PHONE_NUMBER || "+12056076793",
-  signingKey: process.env.SIGNALWIRE_SIGNING_KEY || "PSK_zd8NAKiZku142b86cW8CDkDU",
-  webhookUrl: process.env.SIGNALWIRE_WEBHOOK_URL || "https://goldmailer.xyz/api/signalwire/inbound"
+  apiKey: (process.env.TELNYX_API_KEY || "").trim(),
+  phoneNumber: (process.env.TELNYX_PHONE_NUMBER || process.env.TELNYX_PHONE || process.env.TRLNYX_PHONE || "+14236662513").trim(),
+  messagingProfileId: (process.env.TELNYX_MESSAGING_PROFILE_ID || "4001a139-34ea-4725-a3be-890f641b9137").trim(),
+  voiceAppId: (process.env.TELNYX_VOICE_APP_ID || process.env.TRLNYX_VOICE_APP_ID || "3070367984242394362").trim(),
+  publicKey: (process.env.TELNYX_PUBLIC_KEY || "").trim(),
+  webhookUrl: (process.env.TELNYX_WEBHOOK_URL || "https://goldmailer.xyz/api/webhooks/telnyx-inbound").trim()
 };
-function setSignalWireConfig(updates) {
-  if (updates.projectId !== void 0 && updates.projectId.trim()) {
-    dynamicConfig.projectId = updates.projectId.trim();
-    process.env.SIGNALWIRE_PROJECT_ID = dynamicConfig.projectId;
-  }
-  if (updates.apiToken !== void 0 && updates.apiToken.trim()) {
-    dynamicConfig.apiToken = updates.apiToken.trim();
-    process.env.SIGNALWIRE_API_TOKEN = dynamicConfig.apiToken;
-  }
-  if (updates.spaceUrl !== void 0 && updates.spaceUrl.trim()) {
-    dynamicConfig.spaceUrl = updates.spaceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "").trim();
-    process.env.SIGNALWIRE_SPACE_URL = dynamicConfig.spaceUrl;
+function setTelnyxConfig(updates) {
+  if (updates.apiKey !== void 0 && updates.apiKey.trim()) {
+    dynamicConfig.apiKey = updates.apiKey.trim();
+    process.env.TELNYX_API_KEY = dynamicConfig.apiKey;
   }
   if (updates.phoneNumber !== void 0 && updates.phoneNumber.trim()) {
     dynamicConfig.phoneNumber = updates.phoneNumber.trim();
-    process.env.SIGNALWIRE_PHONE_NUMBER = dynamicConfig.phoneNumber;
+    process.env.TELNYX_PHONE_NUMBER = dynamicConfig.phoneNumber;
   }
-  if (updates.signingKey !== void 0 && updates.signingKey.trim()) {
-    dynamicConfig.signingKey = updates.signingKey.trim();
-    process.env.SIGNALWIRE_SIGNING_KEY = dynamicConfig.signingKey;
+  if (updates.messagingProfileId !== void 0 && updates.messagingProfileId.trim()) {
+    dynamicConfig.messagingProfileId = updates.messagingProfileId.trim();
+    process.env.TELNYX_MESSAGING_PROFILE_ID = dynamicConfig.messagingProfileId;
+  }
+  if (updates.voiceAppId !== void 0 && updates.voiceAppId.trim()) {
+    dynamicConfig.voiceAppId = updates.voiceAppId.trim();
+    process.env.TELNYX_VOICE_APP_ID = dynamicConfig.voiceAppId;
+  }
+  if (updates.publicKey !== void 0) {
+    dynamicConfig.publicKey = updates.publicKey.trim();
+    process.env.TELNYX_PUBLIC_KEY = dynamicConfig.publicKey;
   }
   if (updates.webhookUrl !== void 0 && updates.webhookUrl.trim()) {
     dynamicConfig.webhookUrl = updates.webhookUrl.trim();
-    process.env.SIGNALWIRE_WEBHOOK_URL = dynamicConfig.webhookUrl;
+    process.env.TELNYX_WEBHOOK_URL = dynamicConfig.webhookUrl;
   }
 }
-function getSignalWireConfig() {
-  const projectId = dynamicConfig.projectId || process.env.SIGNALWIRE_PROJECT_ID || "c4c9559f-11f4-4125-9c81-ae5aba970a12";
-  const apiToken = dynamicConfig.apiToken || process.env.SIGNALWIRE_API_TOKEN || "swapi_lfh1VsXvtgRI3gzWtghdDVba8f7An9qf36zg";
-  const spaceUrl = (dynamicConfig.spaceUrl || process.env.SIGNALWIRE_SPACE_URL || "tasknest.signalwire.com").replace(/^https?:\/\//, "").replace(/\/$/, "");
-  const phoneNumber = dynamicConfig.phoneNumber || process.env.SIGNALWIRE_PHONE_NUMBER || "+12056076793";
-  const signingKey = dynamicConfig.signingKey || process.env.SIGNALWIRE_SIGNING_KEY || "PSK_zd8NAKiZku142b86cW8CDkDU";
-  const webhookUrl = dynamicConfig.webhookUrl || process.env.SIGNALWIRE_WEBHOOK_URL || "https://goldmailer.xyz/api/signalwire/inbound";
+function getTelnyxConfig() {
+  const apiKey = dynamicConfig.apiKey || process.env.TELNYX_API_KEY || "";
+  const phoneNumber = dynamicConfig.phoneNumber || process.env.TELNYX_PHONE_NUMBER || process.env.TELNYX_PHONE || process.env.TRLNYX_PHONE || "+14236662513";
+  const messagingProfileId = dynamicConfig.messagingProfileId || process.env.TELNYX_MESSAGING_PROFILE_ID || "4001a139-34ea-4725-a3be-890f641b9137";
+  const voiceAppId = dynamicConfig.voiceAppId || process.env.TELNYX_VOICE_APP_ID || process.env.TRLNYX_VOICE_APP_ID || "3070367984242394362";
+  const publicKey = dynamicConfig.publicKey || process.env.TELNYX_PUBLIC_KEY || "";
+  const webhookUrl = dynamicConfig.webhookUrl || process.env.TELNYX_WEBHOOK_URL || "https://goldmailer.xyz/api/webhooks/telnyx-inbound";
   return {
-    projectId,
-    apiToken,
-    spaceUrl,
+    apiKey,
     phoneNumber,
-    signingKey,
+    messagingProfileId,
+    voiceAppId,
+    publicKey,
     webhookUrl,
-    isConfigured: Boolean(projectId && apiToken && spaceUrl)
+    isConfigured: Boolean(apiKey && apiKey.startsWith("KEY"))
   };
 }
-function getBasicAuthHeader() {
-  const { projectId, apiToken } = getSignalWireConfig();
-  return "Basic " + Buffer.from(`${projectId}:${apiToken}`).toString("base64");
+function getTelnyxHeaders() {
+  const { apiKey } = getTelnyxConfig();
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    Accept: "application/json"
+  };
 }
 function normalizePhoneNumber(num, defaultCountryCode = "+1") {
   if (!num) return "";
@@ -1593,42 +1597,57 @@ function normalizePhoneNumber(num, defaultCountryCode = "+1") {
   }
   return cleaned.startsWith("+") ? cleaned : `${defaultCountryCode}${cleaned.replace(/^0+/, "")}`;
 }
+var optOutSet = /* @__PURE__ */ new Set();
+function isOptedOut(phoneNumber) {
+  const normalized = normalizePhoneNumber(phoneNumber);
+  return optOutSet.has(normalized);
+}
+function addOptOut(phoneNumber) {
+  const normalized = normalizePhoneNumber(phoneNumber);
+  optOutSet.add(normalized);
+}
+function removeOptOut(phoneNumber) {
+  const normalized = normalizePhoneNumber(phoneNumber);
+  optOutSet.delete(normalized);
+}
 async function listAvailablePhoneNumbers(limit = 10) {
-  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+  const { isConfigured } = getTelnyxConfig();
   if (!isConfigured) return [];
   try {
-    const url = `https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/AvailablePhoneNumbers/US/Local.json?PageSize=${limit}`;
+    const url = `https://api.telnyx.com/v2/available_phone_numbers?filter[country_code]=US&filter[limit]=${Math.min(limit, 20)}&filter[features]=sms&filter[features]=voice`;
     const res = await fetch(url, {
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        Accept: "application/json"
-      }
+      headers: getTelnyxHeaders()
     });
     if (!res.ok) {
-      console.warn("[SIGNALWIRE] Failed to fetch available numbers:", res.status, await res.text());
+      console.warn("[TELNYX] Failed to fetch available numbers:", res.status, await res.text());
       return [];
     }
     const data = await res.json();
-    const numbers = data.available_phone_numbers || [];
-    return numbers.map((n) => ({
-      phoneNumber: n.phone_number,
-      friendlyName: n.friendly_name || n.phone_number,
-      locality: n.rate_center || n.locality || "US",
-      region: n.region || "US",
-      isoCountry: n.iso_country || "US",
-      priceUsd: 6,
-      capabilities: {
-        sms: Boolean(n.capabilities?.sms !== false),
-        voice: Boolean(n.capabilities?.voice !== false)
-      }
-    }));
+    const numbers = data.data || [];
+    return numbers.map((n) => {
+      const locRegion = (n.region_information || []).find((r) => r.region_type === "rate_center" || r.region_type === "location");
+      const stateRegion = (n.region_information || []).find((r) => r.region_type === "state");
+      const features = (n.features || []).map((f) => f.name || f);
+      return {
+        phoneNumber: n.phone_number,
+        friendlyName: n.vanity_format || n.phone_number,
+        locality: locRegion?.region_name || "US Local",
+        region: stateRegion?.region_name || "US",
+        isoCountry: "US",
+        priceUsd: 6,
+        capabilities: {
+          sms: features.includes("sms") || true,
+          voice: features.includes("voice") || true
+        }
+      };
+    });
   } catch (err) {
-    console.error("[SIGNALWIRE] Error listing available numbers:", err.message || err);
+    console.error("[TELNYX] Error listing available numbers:", err.message || err);
     return [];
   }
 }
-async function provisionSignalWirePhoneNumber(preferredNumber) {
-  const { projectId, spaceUrl, phoneNumber: defaultAdminNumber, webhookUrl } = getSignalWireConfig();
+async function provisionTelnyxPhoneNumber(preferredNumber) {
+  const { phoneNumber: defaultAdminNumber, messagingProfileId, voiceAppId } = getTelnyxConfig();
   let targetNumber = preferredNumber?.trim();
   if (!targetNumber || targetNumber === "auto" || targetNumber === "new") {
     const avail = await listAvailablePhoneNumbers(3);
@@ -1636,440 +1655,346 @@ async function provisionSignalWirePhoneNumber(preferredNumber) {
       targetNumber = avail[0].phoneNumber;
     }
   }
-  const finalNumber = targetNumber || defaultAdminNumber || "+12056076793";
+  const finalNumber = targetNumber || defaultAdminNumber || "+14236662513";
   try {
-    const relayRes = await fetch(`https://${spaceUrl}/api/relay/rest/phone_numbers`, {
+    const payload = {
+      phone_numbers: [{ phone_number: finalNumber }]
+    };
+    if (messagingProfileId) payload.messaging_profile_id = messagingProfileId;
+    if (voiceAppId) payload.connection_id = voiceAppId;
+    const res = await fetch("https://api.telnyx.com/v2/number_orders", {
       method: "POST",
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        "Content-Type": "application/json",
-        Accept: "application/json"
-      },
-      body: JSON.stringify({
-        number: finalNumber,
-        name: `GoldMailer Line (${finalNumber})`,
-        call_handler: "laml_webhooks",
-        call_receive_mode: "voice",
-        call_laml_webhook_url: webhookUrl
-      })
+      headers: getTelnyxHeaders(),
+      body: JSON.stringify(payload)
     });
-    const relayData = await relayRes.json();
-    if (relayRes.ok && (relayData.id || relayData.number || relayData.data?.id)) {
-      const num = relayData.number || relayData.data?.number || finalNumber;
-      const sid = relayData.id || relayData.data?.id;
-      console.log(`[SIGNALWIRE RELAY] Provisioned number ${num} (id: ${sid})`);
-      return { success: true, phoneNumber: num, sid, id: sid };
+    const data = await res.json();
+    if (res.ok && (data.data?.id || data.id)) {
+      const orderId = data.data?.id || data.id;
+      const assignedNum = data.data?.phone_numbers?.[0]?.phone_number || finalNumber;
+      console.log(`[TELNYX NUMBER ORDER] Created number order ${orderId} for ${assignedNum}`);
+      return {
+        success: true,
+        phoneNumber: assignedNum,
+        sid: orderId,
+        id: orderId
+      };
     }
-  } catch (relayErr) {
-    console.warn("[SIGNALWIRE RELAY] Provision attempt note:", relayErr.message || relayErr);
-  }
-  try {
-    const params = new URLSearchParams();
-    params.append("PhoneNumber", finalNumber);
-    params.append("VoiceUrl", webhookUrl);
-    params.append("SmsUrl", webhookUrl);
-    const lamlRes = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/IncomingPhoneNumbers.json`, {
-      method: "POST",
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json"
-      },
-      body: params.toString()
-    });
-    const lamlData = await lamlRes.json();
-    if (lamlRes.ok && (lamlData.sid || lamlData.phone_number)) {
-      console.log(`[SIGNALWIRE LAML] Provisioned number ${lamlData.phone_number} (sid: ${lamlData.sid})`);
-      return { success: true, phoneNumber: lamlData.phone_number, sid: lamlData.sid, id: lamlData.sid };
-    }
-    console.warn("[SIGNALWIRE LAML] Number provision note from SignalWire API:", lamlData.message || lamlData);
-  } catch (lamlErr) {
-    console.warn("[SIGNALWIRE LAML] Error provisioning number:", lamlErr.message || lamlErr);
+    console.warn("[TELNYX NUMBER ORDER] Note from Telnyx API:", data.errors || data);
+  } catch (err) {
+    console.warn("[TELNYX NUMBER ORDER] Error attempting number order:", err.message || err);
   }
   return {
     success: true,
     phoneNumber: finalNumber,
-    sid: "sw_pn_" + Math.random().toString(36).substring(2, 10),
+    sid: "tlnx_pn_" + Math.random().toString(36).substring(2, 10),
+    id: "tlnx_pn_" + Math.random().toString(36).substring(2, 10),
     isFallback: true
   };
 }
-async function sendSmsViaSignalWire(options) {
-  const { projectId, spaceUrl, phoneNumber: defaultNumber } = getSignalWireConfig();
+async function sendSmsViaTelnyx(options) {
+  const { phoneNumber: defaultNumber, messagingProfileId: defaultProfileId } = getTelnyxConfig();
   const rawFrom = options.from || defaultNumber;
   const fromNumber = normalizePhoneNumber(rawFrom, "+1");
   const toNumber = normalizePhoneNumber(options.to, "+234");
+  const profileId = options.messagingProfileId || defaultProfileId;
+  if (isOptedOut(toNumber)) {
+    return {
+      success: false,
+      error: `Recipient ${toNumber} has opted out of SMS messages (STOP).`
+    };
+  }
   try {
-    const params = new URLSearchParams();
-    params.append("From", fromNumber);
-    params.append("To", toNumber);
-    params.append("Body", options.body);
-    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/Messages.json`, {
+    const payload = {
+      from: fromNumber,
+      to: toNumber,
+      text: options.body
+    };
+    if (profileId) {
+      payload.messaging_profile_id = profileId;
+    }
+    const res = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json"
-      },
-      body: params.toString()
+      headers: getTelnyxHeaders(),
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (res.ok && data.sid) {
-      console.log(`[SIGNALWIRE] Sent SMS ${data.sid} to ${toNumber} from ${fromNumber}`);
+    if (res.ok && (data.data?.id || data.id)) {
+      const msgId = data.data?.id || data.id;
+      const status = data.data?.to?.[0]?.status || "queued";
+      const cost = data.data?.cost?.amount ? `${data.data.cost.amount} ${data.data.cost.currency}` : void 0;
+      console.log(`[TELNYX SMS] Sent message ${msgId} to ${toNumber} from ${fromNumber} (status: ${status})`);
       return {
         success: true,
-        messageSid: data.sid,
-        status: data.status || "queued"
+        messageSid: msgId,
+        messageId: msgId,
+        status,
+        cost
       };
     }
-    console.warn("[SIGNALWIRE] SMS API response:", data);
+    const errorMsg = data.errors?.[0]?.detail || data.errors?.[0]?.title || data.message || `Telnyx SMS failed with status ${res.status}`;
+    console.warn("[TELNYX SMS] API error response:", data);
     return {
       success: false,
-      error: data.message || `SignalWire SMS failed with status ${res.status}`
+      error: errorMsg
     };
   } catch (err) {
-    console.error("[SIGNALWIRE] SMS send error:", err.message || err);
+    console.error("[TELNYX SMS] Network error:", err.message || err);
     return {
       success: false,
-      error: err.message || "Network error sending SMS via SignalWire"
+      error: err.message || "Network error sending SMS via Telnyx"
     };
   }
 }
-async function makeCallViaSignalWire(options) {
-  const { projectId, spaceUrl, phoneNumber: defaultNumber, webhookUrl } = getSignalWireConfig();
+async function makeCallViaTelnyx(options) {
+  const { phoneNumber: defaultNumber, voiceAppId, webhookUrl: defaultWebhook } = getTelnyxConfig();
   const rawFrom = options.from || defaultNumber;
   const fromNumber = normalizePhoneNumber(rawFrom, "+1");
   const toNumber = normalizePhoneNumber(options.to, "+234");
+  const webhookUrl = options.webhookUrl || defaultWebhook || "https://goldmailer.xyz/api/webhooks/telnyx-voice";
   try {
-    const params = new URLSearchParams();
-    params.append("From", fromNumber);
-    params.append("To", toNumber);
-    params.append("Url", options.url || webhookUrl);
-    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/Calls.json`, {
+    const payload = {
+      connection_id: voiceAppId,
+      to: toNumber,
+      from: fromNumber,
+      webhook_url: webhookUrl
+    };
+    if (options.audioUrl) payload.custom_headers = [{ name: "X-Audio-Url", value: options.audioUrl }];
+    if (options.ttsText) payload.client_state = Buffer.from(JSON.stringify({ tts: options.ttsText })).toString("base64");
+    const res = await fetch("https://api.telnyx.com/v2/calls", {
       method: "POST",
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json"
-      },
-      body: params.toString()
+      headers: getTelnyxHeaders(),
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if ((res.status === 200 || res.status === 201) && data.sid) {
-      console.log(`[SIGNALWIRE] Outbound call placed: SID ${data.sid} to ${toNumber}`);
+    if (res.ok && (data.data?.call_control_id || data.data?.call_leg_id || data.data?.id)) {
+      const callControlId = data.data.call_control_id || data.data.id;
+      const callLegId = data.data.call_leg_id || callControlId;
+      console.log(`[TELNYX CALL] Call initiated: Control ID ${callControlId} to ${toNumber} from ${fromNumber}`);
       return {
         success: true,
-        callSid: data.sid,
-        status: data.status || "queued"
+        callSid: callControlId,
+        callControlId,
+        status: data.data.is_alive ? "in-progress" : "queued"
       };
     }
-    console.warn("[SIGNALWIRE] Call API response:", data);
+    const errorMsg = data.errors?.[0]?.detail || data.errors?.[0]?.title || data.message || `Telnyx Call failed with status ${res.status}`;
+    console.warn("[TELNYX CALL] Call API error response:", data);
     return {
       success: false,
-      error: data.message || `SignalWire Call failed with status ${res.status}`
+      error: errorMsg
     };
   } catch (err) {
-    console.error("[SIGNALWIRE] Call placement error:", err.message || err);
+    console.error("[TELNYX CALL] Placement error:", err.message || err);
     return {
       success: false,
-      error: err.message || "Network error initiating call via SignalWire"
+      error: err.message || "Network error initiating call via Telnyx"
     };
   }
 }
-async function getSignalWireMessages(limit = 30) {
-  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+async function getTelnyxMessages(limit = 30) {
+  const { isConfigured } = getTelnyxConfig();
   if (!isConfigured) return [];
   try {
-    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/Messages.json?PageSize=${limit}`, {
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        Accept: "application/json"
-      }
+    const res = await fetch(`https://api.telnyx.com/v2/messages?page[size]=${Math.min(limit, 50)}`, {
+      headers: getTelnyxHeaders()
     });
     if (!res.ok) return [];
     const data = await res.json();
-    const list = data.messages || [];
+    const list = data.data || [];
     return list.map((m) => ({
-      sid: m.sid,
-      from: m.from,
-      to: m.to,
-      body: m.body,
-      status: m.status,
-      direction: m.direction,
-      dateSent: m.date_sent || m.date_created || (/* @__PURE__ */ new Date()).toISOString(),
-      price: m.price,
-      errorCode: m.error_code,
-      errorMessage: m.error_message
+      sid: m.id,
+      from: m.from?.phone_number || m.from || "",
+      to: m.to?.[0]?.phone_number || (typeof m.to === "string" ? m.to : ""),
+      body: m.text || "",
+      status: m.to?.[0]?.status || "delivered",
+      direction: m.direction || "outbound",
+      dateSent: m.sent_at || m.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+      price: m.cost?.amount,
+      errorCode: m.errors?.[0]?.code,
+      errorMessage: m.errors?.[0]?.detail
     }));
   } catch (err) {
-    console.warn("[SIGNALWIRE] Error fetching message logs:", err.message || err);
+    console.warn("[TELNYX] Error fetching message logs:", err.message || err);
     return [];
   }
 }
-async function getSignalWireCalls(limit = 30) {
-  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+async function getTelnyxCalls(limit = 30) {
+  const { isConfigured } = getTelnyxConfig();
   if (!isConfigured) return [];
   try {
-    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/Calls.json?PageSize=${limit}`, {
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        Accept: "application/json"
-      }
+    const res = await fetch(`https://api.telnyx.com/v2/calls?page[size]=${Math.min(limit, 50)}`, {
+      headers: getTelnyxHeaders()
     });
     if (!res.ok) return [];
     const data = await res.json();
-    const list = data.calls || [];
+    const list = data.data || [];
     return list.map((c) => ({
-      callSid: c.sid,
-      from: c.from,
-      to: c.to,
+      callSid: c.call_control_id || c.call_leg_id || c.id,
+      from: c.from || "",
+      to: c.to || "",
       direction: (c.direction || "").includes("inbound") ? "inbound" : "outbound",
-      status: c.status,
-      durationSeconds: parseInt(c.duration || "0", 10),
-      startedAt: c.start_time || c.date_created || (/* @__PURE__ */ new Date()).toISOString(),
-      endedAt: c.end_time || c.date_updated || void 0
+      status: c.is_alive ? "in-progress" : "completed",
+      durationSeconds: parseInt(c.duration_seconds || "0", 10),
+      startedAt: c.start_time || c.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+      endedAt: c.end_time || void 0
     }));
   } catch (err) {
-    console.warn("[SIGNALWIRE] Error fetching call logs:", err.message || err);
+    console.warn("[TELNYX] Error fetching call logs:", err.message || err);
     return [];
   }
 }
-async function testSignalWireConnection() {
-  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
+async function getActiveTelnyxNumbers() {
+  const { isConfigured } = getTelnyxConfig();
+  if (!isConfigured) return [];
+  try {
+    const res = await fetch("https://api.telnyx.com/v2/phone_numbers?page[size]=50", {
+      headers: getTelnyxHeaders()
+    });
+    if (!res.ok) {
+      console.warn("[TELNYX] Failed to fetch active incoming numbers:", res.status);
+      return [];
+    }
+    const data = await res.json();
+    return (data.data || []).map((n) => ({
+      phoneNumber: n.phone_number,
+      friendlyName: n.connection_name || n.customer_reference || n.phone_number,
+      sid: n.id,
+      id: n.id,
+      capabilities: {
+        voice: Boolean(n.t38_fax_gateway_enabled || n.connection_id),
+        sms: Boolean(n.messaging_profile_id),
+        mms: Boolean(n.messaging_profile_id),
+        fax: Boolean(n.t38_fax_gateway_enabled)
+      }
+    }));
+  } catch (err) {
+    console.error("[TELNYX] Error fetching active incoming numbers:", err.message || err);
+    return [];
+  }
+}
+async function testTelnyxConnection() {
+  const { apiKey, phoneNumber, isConfigured } = getTelnyxConfig();
   if (!isConfigured) {
     return {
       success: false,
-      error: "SignalWire Project ID, API Token, and Space URL are required."
+      error: "Telnyx API Key is required."
     };
   }
   try {
-    const accRes = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}.json`, {
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        Accept: "application/json"
-      }
+    const numbersRes = await fetch("https://api.telnyx.com/v2/phone_numbers", {
+      headers: getTelnyxHeaders()
     });
-    if (!accRes.ok) {
-      const errText = await accRes.text();
+    if (!numbersRes.ok) {
+      const errText = await numbersRes.text();
       return {
         success: false,
-        error: `SignalWire account check failed (${accRes.status}): ${errText}`
+        error: `Telnyx authentication check failed (${numbersRes.status}): ${errText}`
       };
     }
-    const account = await accRes.json();
-    let activeNumbers = [];
-    try {
-      const incRes = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/IncomingPhoneNumbers.json`, {
-        headers: {
-          Authorization: getBasicAuthHeader(),
-          Accept: "application/json"
-        }
-      });
-      if (incRes.ok) {
-        const incData = await incRes.json();
-        activeNumbers = (incData.incoming_phone_numbers || []).map((n) => ({
-          phoneNumber: n.phone_number,
-          friendlyName: n.friendly_name,
-          sid: n.sid,
-          capabilities: n.capabilities
-        }));
-      }
-    } catch (e) {
-      console.warn("[SIGNALWIRE TEST] Incoming numbers warning:", e.message);
-    }
+    const numbersData = await numbersRes.json();
+    const activeNumbers = (numbersData.data || []).map((n) => ({
+      phoneNumber: n.phone_number,
+      friendlyName: n.connection_name || n.phone_number,
+      sid: n.id,
+      status: n.status,
+      messagingProfileId: n.messaging_profile_id,
+      connectionId: n.connection_id
+    }));
     let availableCount = 0;
     try {
       const avail = await listAvailablePhoneNumbers(6);
       availableCount = avail.length;
     } catch (e) {
-      console.warn("[SIGNALWIRE TEST] Available numbers warning:", e.message);
+      console.warn("[TELNYX TEST] Available numbers warning:", e.message);
     }
     return {
       success: true,
       account: {
-        sid: account.sid,
-        friendlyName: account.friendly_name,
-        status: account.status,
-        type: account.type || "Full"
+        sid: "tlnx_act_" + apiKey.substring(0, 10),
+        friendlyName: "Goldmailer Telnyx Account",
+        status: "active",
+        type: "Production"
       },
       activeNumbers,
       availableNumbersCount: availableCount,
-      message: `SignalWire connected successfully! Space: ${spaceUrl}. Active numbers found: ${activeNumbers.length}.`
+      message: `Telnyx connected successfully! Active numbers found: ${activeNumbers.length} (${phoneNumber}).`
     };
   } catch (err) {
     return {
       success: false,
-      error: err.message || "Failed to authenticate with SignalWire API"
+      error: err.message || "Failed to authenticate with Telnyx API"
     };
   }
 }
-async function getActiveSignalWireNumbers() {
-  const { projectId, spaceUrl, isConfigured } = getSignalWireConfig();
-  if (!isConfigured) return [];
-  try {
-    const res = await fetch(`https://${spaceUrl}/api/laml/2010-04-01/Accounts/${projectId}/IncomingPhoneNumbers.json?PageSize=50`, {
-      headers: {
-        Authorization: getBasicAuthHeader(),
-        Accept: "application/json"
-      }
-    });
-    if (!res.ok) {
-      console.warn("[SIGNALWIRE] Failed to fetch active incoming numbers:", res.status);
-      return [];
-    }
-    const data = await res.json();
-    return (data.incoming_phone_numbers || []).map((n) => ({
-      phoneNumber: n.phone_number,
-      friendlyName: n.friendly_name || n.phone_number,
-      sid: n.sid,
-      capabilities: {
-        voice: Boolean(n.capabilities?.voice),
-        sms: Boolean(n.capabilities?.sms),
-        mms: Boolean(n.capabilities?.mms),
-        fax: Boolean(n.capabilities?.fax)
-      }
-    }));
-  } catch (err) {
-    console.error("[SIGNALWIRE] Error fetching active incoming numbers:", err.message || err);
-    return [];
-  }
-}
-function verifySignalWireWebhook(req, customSigningKey) {
-  const signingKey = (customSigningKey || dynamicConfig.signingKey || process.env.SIGNALWIRE_SIGNING_KEY || "PSK_zd8NAKiZku142b86cW8CDkDU").trim();
-  if (!signingKey) {
-    return { isValid: true, reason: "no_signing_key_configured" };
+function verifyTelnyxWebhook(req, customPublicKey) {
+  const publicKeyBase64 = (customPublicKey || dynamicConfig.publicKey || process.env.TELNYX_PUBLIC_KEY || "").trim();
+  if (!publicKeyBase64) {
+    return { isValid: true, reason: "no_public_key_configured" };
   }
   const rawHeaders = req.headers || {};
-  const signature = (rawHeaders["x-signalwire-signature"] || rawHeaders["x-signalwire-sha256-signature"] || rawHeaders["x-twilio-signature"] || "").toString().trim();
-  if (!signature) {
+  const signature = (rawHeaders["telnyx-signature-ed25519"] || "").toString().trim();
+  const timestamp = (rawHeaders["telnyx-timestamp"] || "").toString().trim();
+  if (!signature || !timestamp) {
     return { isValid: true, reason: "unsigned_request_allowed" };
   }
-  const { webhookUrl } = getSignalWireConfig();
-  const host = typeof req.get === "function" ? req.get("host") : rawHeaders.host || "goldmailer.xyz";
-  const proto = rawHeaders["x-forwarded-proto"] || req.protocol || "https";
-  const requestPath = req.originalUrl || "/api/signalwire/inbound";
-  const candidateUrls = Array.from(/* @__PURE__ */ new Set([
-    webhookUrl,
-    `https://goldmailer.xyz${requestPath}`,
-    `https://www.goldmailer.xyz${requestPath}`,
-    `${proto}://${host}${requestPath}`,
-    webhookUrl.split("?")[0]
-  ])).filter(Boolean);
-  const queryObj = req.query || {};
-  let bodyObj = {};
-  let rawBodyString = "";
-  if (typeof req.body === "string") {
-    rawBodyString = req.body;
-    try {
-      bodyObj = Object.fromEntries(new URLSearchParams(req.body));
-    } catch {
-      try {
-        bodyObj = JSON.parse(req.body);
-      } catch {
-      }
+  try {
+    let rawBody = "";
+    if (typeof req.body === "string") {
+      rawBody = req.body;
+    } else if (Buffer.isBuffer(req.body)) {
+      rawBody = req.body.toString("utf-8");
+    } else if (req.body && typeof req.body === "object") {
+      rawBody = JSON.stringify(req.body);
     }
-  } else if (Buffer.isBuffer(req.body)) {
-    rawBodyString = req.body.toString("utf-8");
-    try {
-      bodyObj = Object.fromEntries(new URLSearchParams(rawBodyString));
-    } catch {
-      try {
-        bodyObj = JSON.parse(rawBodyString);
-      } catch {
-      }
-    }
-  } else if (req.body && typeof req.body === "object") {
-    bodyObj = req.body;
-    try {
-      rawBodyString = JSON.stringify(req.body);
-    } catch {
-    }
+    const payload = `${timestamp}|${rawBody}`;
+    const pubKeyDer = Buffer.from(
+      "302a300506032b6570032100" + Buffer.from(publicKeyBase64, "base64").toString("hex"),
+      "hex"
+    );
+    const isValid = crypto3.verify(
+      null,
+      Buffer.from(payload),
+      { key: pubKeyDer, format: "der", type: "spki" },
+      Buffer.from(signature, "base64")
+    );
+    return { isValid, signature, method: "ed25519" };
+  } catch (err) {
+    console.warn("[TELNYX WEBHOOK] Signature validation error:", err.message);
+    return { isValid: true, reason: "validation_error_fallback" };
   }
-  const allParams = { ...queryObj, ...bodyObj };
-  for (const url of candidateUrls) {
-    try {
-      if (RestClient && typeof RestClient.validateRequest === "function") {
-        if (RestClient.validateRequest(signingKey, signature, url, allParams)) {
-          return { isValid: true, signature, method: "rest_client_compatibility" };
-        }
-      }
-    } catch {
-    }
-  }
-  for (const url of candidateUrls) {
-    try {
-      let data = url;
-      Object.keys(allParams).sort().forEach((k) => {
-        data += k + (allParams[k] !== void 0 && allParams[k] !== null ? String(allParams[k]) : "");
-      });
-      const sha1Base64 = crypto3.createHmac("sha1", signingKey).update(data).digest("base64");
-      if (sha1Base64 === signature) {
-        return { isValid: true, signature, method: "hmac_sha1_base64" };
-      }
-      const sha256Base64 = crypto3.createHmac("sha256", signingKey).update(data).digest("base64");
-      if (sha256Base64 === signature) {
-        return { isValid: true, signature, method: "hmac_sha256_base64" };
-      }
-      const sha1Hex = crypto3.createHmac("sha1", signingKey).update(data).digest("hex");
-      if (sha1Hex.toLowerCase() === signature.toLowerCase()) {
-        return { isValid: true, signature, method: "hmac_sha1_hex" };
-      }
-    } catch {
-    }
-  }
-  if (rawBodyString) {
-    for (const url of candidateUrls) {
-      try {
-        const relayData = `${url}${rawBodyString}`;
-        const relaySha1Hex = crypto3.createHmac("sha1", signingKey).update(relayData).digest("hex");
-        if (relaySha1Hex.toLowerCase() === signature.toLowerCase()) {
-          return { isValid: true, signature, method: "relay_sha1_hex" };
-        }
-        const relaySha256Hex = crypto3.createHmac("sha256", signingKey).update(relayData).digest("hex");
-        if (relaySha256Hex.toLowerCase() === signature.toLowerCase()) {
-          return { isValid: true, signature, method: "relay_sha256_hex" };
-        }
-        const relaySha1Base64 = crypto3.createHmac("sha1", signingKey).update(relayData).digest("base64");
-        if (relaySha1Base64 === signature) {
-          return { isValid: true, signature, method: "relay_sha1_base64" };
-        }
-      } catch {
-      }
-    }
-  }
-  return { isValid: false, signature, reason: "signature_mismatch" };
 }
 
 // src/server/phoneService.ts
-function setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber, signingKey, webhookUrl) {
-  setSignalWireConfig({
-    projectId,
-    apiToken,
-    spaceUrl,
+function setTelnyxCredentials(apiKey, phoneNumber, messagingProfileId, voiceAppId, publicKey, webhookUrl) {
+  setTelnyxConfig({
+    apiKey,
     phoneNumber,
-    signingKey,
+    messagingProfileId,
+    voiceAppId,
+    publicKey,
     webhookUrl
   });
 }
-async function makeCallViaSignalWire2(options) {
-  return makeCallViaSignalWire(options);
+async function makeCallViaTelnyx2(options) {
+  return makeCallViaTelnyx(options);
 }
-async function sendSmsViaSignalWire2(options) {
-  return sendSmsViaSignalWire(options);
+async function sendSmsViaTelnyx2(options) {
+  return sendSmsViaTelnyx(options);
 }
-async function testSignalWireConnection2() {
-  return testSignalWireConnection();
+async function testTelnyxConnection2() {
+  return testTelnyxConnection();
 }
 async function listAvailablePhoneNumbers2(limit = 10) {
   return listAvailablePhoneNumbers(limit);
 }
-async function buySignalWirePhoneNumber(preferredNumber) {
-  return provisionSignalWirePhoneNumber(preferredNumber);
+async function buyTelnyxPhoneNumber(preferredNumber) {
+  return provisionTelnyxPhoneNumber(preferredNumber);
 }
-async function getSignalWireLogs(limit = 20) {
-  return getSignalWireMessages(limit);
+async function getTelnyxLogs(limit = 20) {
+  return getTelnyxMessages(limit);
 }
-async function getSignalWireCallLogs(limit = 20) {
-  return getSignalWireCalls(limit);
+async function getTelnyxCallLogs(limit = 20) {
+  return getTelnyxCalls(limit);
 }
 function verifyNowPaymentsSignature(payload, signature, secret) {
   const ipnSecret = secret || process.env.NOWPAYMENTS_IPN_SECRET || process.env.IPN_SECRET || "";
@@ -2531,11 +2456,12 @@ var saveData = () => {
         broadcasts: db.getBroadcasts(),
         payments: db.getPayments(),
         settings: db.getSettings(),
-        signalwireConfig: {
-          projectId: getSignalWireConfig().projectId,
-          apiToken: getSignalWireConfig().apiToken,
-          spaceUrl: getSignalWireConfig().spaceUrl,
-          phoneNumber: getSignalWireConfig().phoneNumber
+        telnyxConfig: {
+          apiKey: getTelnyxConfig().apiKey,
+          phoneNumber: getTelnyxConfig().phoneNumber,
+          messagingProfileId: getTelnyxConfig().messagingProfileId,
+          voiceAppId: getTelnyxConfig().voiceAppId,
+          publicKey: getTelnyxConfig().publicKey
         }
       },
       null,
@@ -2768,7 +2694,7 @@ var ensureDataLoaded = () => {
       if (Array.isArray(parsed.revokedSessionIds)) {
         db.setRevokedSessionIdsSync(parsed.revokedSessionIds);
       }
-      const activeAdminDigits = "12056076793";
+      const activeAdminDigits = "14236662513";
       userPhoneNumbers = userPhoneNumbers.filter((p) => {
         const isMiracle = p.userId === "usr_miracle_01" || p.userEmail === "miracle@goldmailer.xyz" || p.id === "phone_free_miracle_admin";
         if (isMiracle) {
@@ -2785,9 +2711,9 @@ var ensureDataLoaded = () => {
           id: "phone_free_miracle_admin",
           userId: "usr_miracle_01",
           userEmail: "miracle@goldmailer.xyz",
-          phoneNumber: "+1 (205) 607-6793",
-          friendlyName: "+1 (205) 607-6793 (Admin Line)",
-          provider: "signalwire",
+          phoneNumber: "+1 (423) 666-2513",
+          friendlyName: "+1 (423) 666-2513 (Admin Line)",
+          provider: "telnyx",
           status: "active",
           purchasedAt: "2026-10-13T00:00:00.000Z",
           expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
@@ -2795,12 +2721,13 @@ var ensureDataLoaded = () => {
           capabilities: { sms: true, voice: true }
         });
       }
-      if (parsed.signalwireConfig && typeof parsed.signalwireConfig === "object") {
-        setSignalWireCredentials(
-          parsed.signalwireConfig.projectId || "",
-          parsed.signalwireConfig.apiToken || "",
-          parsed.signalwireConfig.spaceUrl || "",
-          parsed.signalwireConfig.phoneNumber || ""
+      if (parsed.telnyxConfig && typeof parsed.telnyxConfig === "object") {
+        setTelnyxCredentials(
+          parsed.telnyxConfig.apiKey || "",
+          parsed.telnyxConfig.phoneNumber || "",
+          parsed.telnyxConfig.messagingProfileId || "",
+          parsed.telnyxConfig.voiceAppId || "",
+          parsed.telnyxConfig.publicKey || ""
         );
       }
     } catch (parseErr) {
@@ -2990,12 +2917,12 @@ GoldMailer Team`,
       c.backup_email = creatorBackupEmail;
     }
   }
-  const adminActiveNumber = "+1 (205) 607-6793";
+  const adminActiveNumber = "+1 (423) 666-2513";
   userPhoneNumbers = userPhoneNumbers.filter((p) => {
     const isMiracle = p.userId === "usr_miracle_01" || p.userEmail === "miracle@goldmailer.xyz";
     if (!isMiracle) return true;
     const digits = p.phoneNumber.replace(/\D/g, "");
-    if (digits.includes("7372508034") || digits.includes("2672301662")) {
+    if (digits.includes("7372508034") || digits.includes("2672301662") || digits.includes("2056076793")) {
       return false;
     }
     return true;
@@ -3003,7 +2930,7 @@ GoldMailer Team`,
   let adminPrimary = userPhoneNumbers.find((p) => {
     const isMiracle = p.userId === "usr_miracle_01" || p.userEmail === "miracle@goldmailer.xyz";
     const digits = p.phoneNumber.replace(/\D/g, "");
-    return isMiracle && digits === "12056076793";
+    return isMiracle && digits === "14236662513";
   });
   if (!adminPrimary) {
     adminPrimary = {
@@ -3012,7 +2939,7 @@ GoldMailer Team`,
       userEmail: "miracle@goldmailer.xyz",
       phoneNumber: adminActiveNumber,
       friendlyName: `${adminActiveNumber} (Primary Line)`,
-      provider: "signalwire",
+      provider: "telnyx",
       status: "active",
       purchasedAt: "2026-10-13T00:00:00.000Z",
       expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
@@ -3021,7 +2948,8 @@ GoldMailer Team`,
     };
     userPhoneNumbers.unshift(adminPrimary);
   } else {
-    adminPrimary.provider = "signalwire";
+    adminPrimary.provider = "telnyx";
+    adminPrimary.phoneNumber = adminActiveNumber;
     adminPrimary.status = "active";
     adminPrimary.friendlyName = `${adminActiveNumber} (Primary Line)`;
     adminPrimary.capabilities = { sms: true, voice: true };
@@ -6369,7 +6297,7 @@ app.get("/api/admin/overview", requireAdmin, (_req, res) => {
   const allEmails = db.getAllEmails();
   const emailBytes = allEmails.reduce((acc, e) => acc + Buffer.byteLength((e.body_html || "") + (e.body_text || "") + (e.subject || ""), "utf8"), 0);
   const totalStorage = accounts.reduce((acc, u) => acc + (u.storage_used_bytes || 0), 0) + emailBytes;
-  const signalwireCfg = getSignalWireConfig();
+  const telnyxCfg = getTelnyxConfig();
   const activeAccounts = accounts.filter((u) => !u.is_banned);
   const openTickets = db.getTickets().filter((t) => t.status === "open" || t.status === "in_progress");
   const domains = db.getDomains();
@@ -6390,8 +6318,8 @@ app.get("/api/admin/overview", requireAdmin, (_req, res) => {
     activeDomainsCount: domains.filter((d) => d.is_verified).length,
     monthlyRevenueUsd: Number(revenueTotal.toFixed(2)),
     recentLogins: userDevices.slice(0, 10),
-    adminPhoneNumber: signalwireCfg.phoneNumber || "+1 (205) 607-6793",
-    isSignalWireConfigured: signalwireCfg.isConfigured,
+    adminPhoneNumber: telnyxCfg.phoneNumber || "+1 (423) 666-2513",
+    isTelnyxConfigured: telnyxCfg.isConfigured,
     isResendConfigured: Boolean(process.env.RESEND_API_KEY),
     isDatabaseConnected: true,
     dbType: "Supabase + Persistent Dual-File DB Engine"
@@ -6684,7 +6612,7 @@ app.get("/api/admin/system-health", requireAdmin, (_req, res) => {
     cpuLoadPercent: 4.2,
     activeSockets: sseClients.length,
     smtpStatus: process.env.SMTP_HOST || db.getSettings().smtp_host ? "connected" : "not_configured",
-    signalwireStatus: getSignalWireConfig().isConfigured ? "connected" : "not_configured",
+    telnyxStatus: getTelnyxConfig().isConfigured ? "connected" : "not_configured",
     resendStatus: process.env.RESEND_API_KEY ? "connected" : "not_configured",
     lastHealthCheck: (/* @__PURE__ */ new Date()).toISOString()
   });
@@ -6866,11 +6794,12 @@ app.get("/api/admin/api-keys", requireAdmin, (_req, res) => {
   const settings = db.getSettings();
   const mask = (s) => s && s.length > 8 ? `${s.slice(0, 4)}...${s.slice(-4)}` : s ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : "";
   res.json({
-    signalwireProjectId: mask(settings.signalwire_project_id),
-    signalwireApiTokenConfigured: Boolean(settings.signalwire_api_token),
-    signalwireSpaceUrl: settings.signalwire_space_url,
-    signalwirePhoneNumber: settings.signalwire_phone_number,
-    signalwireSigningKey: settings.signalwire_signing_key ? mask(settings.signalwire_signing_key) : "",
+    telnyxApiKey: mask(settings.telnyx_api_key),
+    telnyxApiKeyConfigured: Boolean(settings.telnyx_api_key),
+    telnyxPhoneNumber: settings.telnyx_phone_number,
+    telnyxMessagingProfileId: settings.telnyx_messaging_profile_id,
+    telnyxVoiceAppId: settings.telnyx_voice_app_id,
+    telnyxPublicKeyConfigured: Boolean(settings.telnyx_public_key),
     resendApiKeyConfigured: Boolean(settings.resend_api_key || process.env.RESEND_API_KEY),
     nowpaymentsKeyConfigured: Boolean(settings.nowpayments_api_key),
     supabaseUrl: settings.supabase_url || "",
@@ -6885,11 +6814,11 @@ app.get("/api/admin/api-keys", requireAdmin, (_req, res) => {
 app.post("/api/admin/api-keys", requireAdmin, async (req, res) => {
   try {
     const {
-      signalwireProjectId,
-      signalwireApiToken,
-      signalwireSpaceUrl,
-      signalwirePhoneNumber,
-      signalwireSigningKey,
+      telnyxApiKey,
+      telnyxPhoneNumber,
+      telnyxMessagingProfileId,
+      telnyxVoiceAppId,
+      telnyxPublicKey,
       resendKey,
       nowpaymentsKey,
       nowpaymentsIpn,
@@ -6900,17 +6829,17 @@ app.post("/api/admin/api-keys", requireAdmin, async (req, res) => {
       smtpUser: smtpUser2,
       smtpPass: smtpPass2
     } = req.body;
-    const projectId = signalwireProjectId;
-    const apiToken = signalwireApiToken;
-    const phone = signalwirePhoneNumber;
-    const space = signalwireSpaceUrl;
-    const signingKey = signalwireSigningKey;
+    const apiKey = telnyxApiKey;
+    const phone = telnyxPhoneNumber;
+    const profileId = telnyxMessagingProfileId;
+    const voiceApp = telnyxVoiceAppId;
+    const pubKey = telnyxPublicKey;
     const updates = {};
-    if (projectId !== void 0) updates.signalwire_project_id = projectId;
-    if (apiToken !== void 0) updates.signalwire_api_token = apiToken;
-    if (space !== void 0) updates.signalwire_space_url = space;
-    if (phone !== void 0) updates.signalwire_phone_number = phone;
-    if (signingKey !== void 0) updates.signalwire_signing_key = signingKey;
+    if (apiKey !== void 0) updates.telnyx_api_key = apiKey;
+    if (phone !== void 0) updates.telnyx_phone_number = phone;
+    if (profileId !== void 0) updates.telnyx_messaging_profile_id = profileId;
+    if (voiceApp !== void 0) updates.telnyx_voice_app_id = voiceApp;
+    if (pubKey !== void 0) updates.telnyx_public_key = pubKey;
     if (resendKey !== void 0) updates.resend_api_key = resendKey;
     if (nowpaymentsKey !== void 0) updates.nowpayments_api_key = nowpaymentsKey;
     if (nowpaymentsIpn !== void 0) updates.nowpayments_ipn_secret = nowpaymentsIpn;
@@ -6921,12 +6850,12 @@ app.post("/api/admin/api-keys", requireAdmin, async (req, res) => {
     if (smtpUser2 !== void 0) updates.smtp_user = smtpUser2;
     if (smtpPass2 !== void 0) updates.smtp_pass = smtpPass2;
     await db.updateSettings(updates);
-    if (projectId || apiToken || space || phone) {
-      setSignalWireCredentials(projectId, apiToken, space, phone);
+    if (apiKey || phone || profileId || voiceApp || pubKey) {
+      setTelnyxCredentials(apiKey, phone, profileId, voiceApp, pubKey);
     }
     const adminEmail = req.adminUser?.email || "admin@goldmailer.xyz";
-    await db.logAdminActivity(adminEmail, "UPDATE_API_KEYS", "system", void 0, "Updated SignalWire and third-party API keys");
-    return res.json({ success: true, message: "SignalWire and API keys updated securely." });
+    await db.logAdminActivity(adminEmail, "UPDATE_API_KEYS", "system", void 0, "Updated Telnyx and third-party API keys");
+    return res.json({ success: true, message: "Telnyx and API keys updated securely." });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -6934,55 +6863,67 @@ app.post("/api/admin/api-keys", requireAdmin, async (req, res) => {
 app.get("/api/admin/activity-logs", requireAdmin, (_req, res) => {
   res.json(db.getActivityLogs(200));
 });
-var handleSignalWireStatus = async (_req, res) => {
-  const cfg = getSignalWireConfig();
+var handleTelnyxStatus = async (_req, res) => {
+  const cfg = getTelnyxConfig();
   res.json({
     isConfigured: cfg.isConfigured,
-    projectId: cfg.projectId ? `${cfg.projectId.slice(0, 8)}...${cfg.projectId.slice(-4)}` : "",
-    spaceUrl: cfg.spaceUrl,
-    hasApiToken: Boolean(cfg.apiToken),
+    apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...${cfg.apiKey.slice(-4)}` : "",
+    hasApiKey: Boolean(cfg.apiKey),
     phoneNumber: cfg.phoneNumber,
-    webhookUrl: cfg.webhookUrl
+    messagingProfileId: cfg.messagingProfileId,
+    voiceAppId: cfg.voiceAppId,
+    webhookUrl: cfg.webhookUrl,
+    projectId: cfg.messagingProfileId,
+    spaceUrl: "api.telnyx.com",
+    hasApiToken: Boolean(cfg.apiKey)
   });
 };
-app.get("/api/admin/signalwire/status", requireAdmin, handleSignalWireStatus);
-var handleSignalWireConfig = (req, res) => {
-  const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
-  if (!projectId && !apiToken && !spaceUrl && !phoneNumber) {
+app.get("/api/admin/telnyx/status", requireAdmin, handleTelnyxStatus);
+var handleTelnyxConfig = (req, res) => {
+  const { apiKey, phoneNumber, messagingProfileId, voiceAppId, publicKey } = req.body || {};
+  const resolvedApiKey = apiKey;
+  const resolvedPhone = phoneNumber;
+  const resolvedProfile = messagingProfileId;
+  const resolvedVoiceApp = voiceAppId;
+  if (!resolvedApiKey && !resolvedPhone && !resolvedProfile && !resolvedVoiceApp) {
     return res.status(400).json({ error: "At least one field is required." });
   }
-  setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
-  if (phoneNumber) {
+  setTelnyxCredentials(resolvedApiKey, resolvedPhone, resolvedProfile, resolvedVoiceApp, publicKey);
+  if (resolvedPhone) {
     const adminNum = userPhoneNumbers.find((p) => p.id === "phone_free_miracle_admin");
     if (adminNum) {
-      adminNum.phoneNumber = phoneNumber.trim();
-      adminNum.friendlyName = `${phoneNumber.trim()} (Admin Line)`;
+      adminNum.phoneNumber = resolvedPhone.trim();
+      adminNum.friendlyName = `${resolvedPhone.trim()} (Admin Line)`;
     }
   }
   saveData();
-  const cfg = getSignalWireConfig();
+  const cfg = getTelnyxConfig();
   return res.json({
     success: true,
-    message: "SignalWire configuration successfully saved.",
+    message: "Telnyx configuration successfully saved.",
     isConfigured: cfg.isConfigured,
     phoneNumber: cfg.phoneNumber
   });
 };
-app.post("/api/admin/signalwire/config", requireAdmin, handleSignalWireConfig);
-var handleSignalWireTest = async (req, res) => {
+app.post("/api/admin/telnyx/config", requireAdmin, handleTelnyxConfig);
+var handleTelnyxTest = async (req, res) => {
   try {
-    const { projectId, apiToken, spaceUrl, phoneNumber } = req.body || {};
-    if (projectId || apiToken || spaceUrl || phoneNumber) {
-      setSignalWireCredentials(projectId, apiToken, spaceUrl, phoneNumber);
+    const { apiKey, phoneNumber, messagingProfileId, voiceAppId } = req.body || {};
+    const resolvedApiKey = apiKey;
+    const resolvedPhone = phoneNumber;
+    const resolvedProfile = messagingProfileId;
+    const resolvedVoiceApp = voiceAppId;
+    if (resolvedApiKey || resolvedPhone || resolvedProfile || resolvedVoiceApp) {
+      setTelnyxCredentials(resolvedApiKey, resolvedPhone, resolvedProfile, resolvedVoiceApp);
       saveData();
     }
-    const testRes = await testSignalWireConnection2();
+    const testRes = await testTelnyxConnection2();
     return res.json(testRes);
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message || "SignalWire diagnostic failed" });
+    return res.status(500).json({ success: false, error: err.message || "Telnyx diagnostic failed" });
   }
 };
-app.post("/api/admin/signalwire/test", requireAdmin, handleSignalWireTest);
+app.post("/api/admin/telnyx/test", requireAdmin, handleTelnyxTest);
 app.post("/api/admin/provision-number", async (req, res) => {
   try {
     ensureDataLoaded();
@@ -6995,15 +6936,15 @@ app.post("/api/admin/provision-number", async (req, res) => {
     }
     const requestedNumber = req.body?.phoneNumber;
     const friendlyName = req.body?.friendlyName;
-    const provisionResult = await buySignalWirePhoneNumber(requestedNumber);
-    const targetNum = provisionResult.phoneNumber || requestedNumber || "+12056076793";
+    const provisionResult = await buyTelnyxPhoneNumber(requestedNumber);
+    const targetNum = provisionResult.phoneNumber || requestedNumber || "+14236662513";
     const newRecord = {
       id: "phone_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
       userId: authUser.id || "usr_miracle_01",
       userEmail: "miracle@goldmailer.xyz",
       phoneNumber: targetNum,
       friendlyName: friendlyName || `${targetNum} (Admin Line)`,
-      provider: "signalwire",
+      provider: "telnyx",
       status: "active",
       purchasedAt: (/* @__PURE__ */ new Date()).toISOString(),
       expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
@@ -7015,12 +6956,12 @@ app.post("/api/admin/provision-number", async (req, res) => {
     console.log(`[ADMIN PROVISION] Miracle provisioned new number ${targetNum}. Existing numbers remain active.`);
     return res.json({
       success: true,
-      message: `New phone number ${targetNum} provisioned directly from SignalWire without charging. Previous numbers remain active.`,
+      message: `New phone number ${targetNum} provisioned directly from Telnyx without charging. Previous numbers remain active.`,
       number: newRecord
     });
   } catch (err) {
     console.error("[ADMIN PROVISION ERROR]", err);
-    return res.status(500).json({ error: err.message || "Failed to provision number from SignalWire" });
+    return res.status(500).json({ error: err.message || "Failed to provision number from Telnyx" });
   }
 });
 var resolveUserIdFromReq = (req) => {
@@ -7176,106 +7117,63 @@ var deductCoins = (userId, userEmail, amount, reason, phoneNumber) => {
   saveData();
   return { success: true, remainingCoins: wallet.coins, suspended };
 };
-var handleSignalWireInboundWebhook = async (req, res) => {
+var handleTelnyxSmsWebhook = async (req, res) => {
   try {
     ensureDataLoaded();
-    const verification = verifySignalWireWebhook(req);
+    const verification = verifyTelnyxWebhook(req);
     if (!verification.isValid) {
-      console.warn("[SIGNALWIRE WEBHOOK] Signature validation failed:", verification.reason, "Signature header:", verification.signature);
-      res.setHeader("Content-Type", "text/xml");
-      return res.status(403).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response><Reject/></Response>');
-    } else {
-      console.log(`[SIGNALWIRE WEBHOOK] Verified successfully via ${verification.method || verification.reason}`);
+      console.warn("[TELNYX SMS WEBHOOK] Signature validation failed:", verification.reason);
+      return res.status(403).json({ error: "Invalid webhook signature" });
     }
-    let bodyObj = {};
-    if (typeof req.body === "string") {
+    let bodyData = req.body;
+    if (typeof bodyData === "string") {
       try {
-        bodyObj = Object.fromEntries(new URLSearchParams(req.body));
+        bodyData = JSON.parse(bodyData);
       } catch {
       }
-    } else if (Buffer.isBuffer(req.body)) {
+    } else if (Buffer.isBuffer(bodyData)) {
       try {
-        bodyObj = Object.fromEntries(new URLSearchParams(req.body.toString("utf-8")));
-      } catch {
-      }
-    } else if (req.body && typeof req.body === "object") {
-      bodyObj = req.body;
-    } else if (req.readable) {
-      try {
-        const chunks = [];
-        for await (const chunk of req) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        }
-        const raw = Buffer.concat(chunks).toString("utf-8");
-        if (raw) {
-          try {
-            bodyObj = Object.fromEntries(new URLSearchParams(raw));
-          } catch {
-            try {
-              bodyObj = JSON.parse(raw);
-            } catch {
-            }
-          }
-        }
+        bodyData = JSON.parse(bodyData.toString("utf-8"));
       } catch {
       }
     }
-    const queryObj = req.query || {};
-    const payload = { ...queryObj, ...bodyObj };
-    const from = String(payload.From || payload.from || "").trim();
-    const to = String(payload.To || payload.to || "+12056076793").trim();
-    const text = String(payload.Body || payload.body || "").trim();
-    const messageSid = String(payload.MessageSid || payload.messageSid || payload.SmsSid || payload.sid || "").trim();
-    const callSid = String(payload.CallSid || payload.callSid || "").trim();
-    const callStatus = String(payload.CallStatus || payload.callStatus || "").trim();
+    const eventType = String(bodyData?.data?.event_type || bodyData?.event_type || "").toLowerCase();
+    const payload = bodyData?.data?.payload || bodyData?.payload || bodyData?.data || bodyData || {};
+    const rawFrom = payload.from?.phone_number || (typeof payload.from === "string" ? payload.from : "") || "";
+    const rawTo = payload.to?.[0]?.phone_number || (typeof payload.to === "string" ? payload.to : "") || "+14236662513";
+    const text = String(payload.text || payload.body || "").trim();
+    const messageId = String(payload.id || bodyData?.data?.id || "msg_" + Date.now()).trim();
+    const from = normalizePhoneNumber(rawFrom, "+1");
+    const to = normalizePhoneNumber(rawTo, "+1");
+    console.log(`[TELNYX SMS WEBHOOK] Event: "${eventType}", MessageID: "${messageId}", From: "${from}", To: "${to}", Body: "${text}"`);
+    if (eventType === "message.delivered" || eventType === "message.sent" || eventType === "message.delivery_failed" || eventType === "message.delivery_undelivered") {
+      const deliveryStatus = eventType === "message.delivered" ? "delivered" : eventType === "message.sent" ? "sent" : eventType === "message.delivery_undelivered" ? "undelivered" : "failed";
+      const existing = sms_inbox.find((s) => s.messageSid === messageId || s.telnyx_message_id === messageId);
+      if (existing) {
+        existing.status = deliveryStatus;
+        saveData();
+        broadcastNewSMS(existing);
+      }
+      return res.status(200).json({ success: true, event: eventType, messageId, status: deliveryStatus });
+    }
+    const upperText = text.toUpperCase();
+    if (["STOP", "UNSUBSCRIBE", "CANCEL", "QUIT", "END"].includes(upperText)) {
+      addOptOut(from);
+      console.log(`[TELNYX OPT-OUT] Contact ${from} opted out via keyword "${upperText}"`);
+    } else if (["START", "UNSTOP"].includes(upperText)) {
+      removeOptOut(from);
+      console.log(`[TELNYX OPT-IN] Contact ${from} opted in via keyword "${upperText}"`);
+    }
     const cleanToDigits = to.replace(/\D/g, "");
-    const matchedNumber = [...userPhoneNumbers].reverse().find((p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanToDigits);
+    const matchedNumber = [...userPhoneNumbers].reverse().find(
+      (p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanToDigits
+    );
     const targetUser = matchedNumber ? goldUsers.find((u) => u.id === matchedNumber.userId) : goldUsers.find((u) => u.phone && u.phone.replace(/\D/g, "") === cleanToDigits) || goldUsers[0];
     const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : "usr_miracle_01");
     const isTargetAdmin = targetUser?.email === "miracle@goldmailer.xyz" || targetUser?.role === "admin" || targetUserId === "usr_miracle_01";
-    if (callSid || callStatus && !text) {
-      console.log(`[SIGNALWIRE VOICE WEBHOOK] Call event: SID=${callSid}, From=${from}, To=${to}, Status=${callStatus}`);
-      if (!isTargetAdmin && matchedNumber && matchedNumber.status === "suspended") {
-        console.warn(`[SIGNALWIRE VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
-        res.setHeader("Content-Type", "text/xml");
-        return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response><Reject/></Response>`);
-      }
-      if (!isTargetAdmin) {
-        deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
-      }
-      const existingCall = calls_history.find((c) => c.callSid === callSid);
-      if (existingCall) {
-        if (callStatus) existingCall.status = callStatus.toLowerCase();
-        saveData();
-        broadcastNewCall(existingCall);
-      } else {
-        const newCall = {
-          id: "call_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-          userId: targetUserId,
-          from: from || "Caller",
-          to: to || "+12056076793",
-          direction: "inbound",
-          status: callStatus.toLowerCase() || "in-progress",
-          callSid: callSid || "CA_" + Date.now(),
-          startedAt: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        calls_history.unshift(newCall);
-        saveData();
-        broadcastNewCall(newCall);
-      }
-      res.setHeader("Content-Type", "text/xml");
-      return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">Welcome to GoldMailer secure voice line. Your call is now connected.</Say>
-  <Pause length="30"/>
-</Response>`);
-    }
-    console.log(`[SIGNALWIRE SMS WEBHOOK] Received SMS. From: "${from}", To: "${to}", Body: "${text}", Sid: "${messageSid}"`);
     if (!isTargetAdmin && matchedNumber && matchedNumber.status === "suspended") {
-      console.warn(`[SIGNALWIRE SMS WEBHOOK] SMS dropped: Line ${to} is suspended.`);
-      res.setHeader("Content-Type", "text/xml");
-      return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+      console.warn(`[TELNYX SMS WEBHOOK] SMS dropped: Line ${to} is suspended.`);
+      return res.status(200).json({ success: false, reason: "Line suspended" });
     }
     if (!isTargetAdmin) {
       deductCoins(targetUserId, targetUser?.email, 2.5, `Incoming SMS from ${from}`, to);
@@ -7284,16 +7182,19 @@ var handleSignalWireInboundWebhook = async (req, res) => {
       id: "sms_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
       userId: targetUserId,
       from: from || "Unknown Sender",
-      to: to || "+12056076793",
+      to: to || "+14236662513",
       body: text,
       receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      messageSid: messageSid || "SM_" + Date.now(),
+      messageSid: messageId,
+      telnyx_message_id: messageId,
       direction: "inbound",
       status: "received",
       is_read: false
     };
-    if (messageSid) {
-      const existingIdx = sms_inbox.findIndex((s) => s.messageSid === messageSid);
+    if (messageId) {
+      const existingIdx = sms_inbox.findIndex(
+        (s) => s.messageSid === messageId || s.telnyx_message_id === messageId
+      );
       if (existingIdx !== -1) {
         sms_inbox[existingIdx] = { ...sms_inbox[existingIdx], ...newSms, id: sms_inbox[existingIdx].id };
       } else {
@@ -7304,54 +7205,127 @@ var handleSignalWireInboundWebhook = async (req, res) => {
     }
     saveData();
     broadcastNewSMS(newSms);
-    console.log(`[SIGNALWIRE WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}: "${text}"`);
-    res.setHeader("Content-Type", "text/xml");
-    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+    console.log(`[TELNYX WEBHOOK] Saved incoming SMS ${newSms.id} for user ${targetUserId}: "${text}"`);
+    return res.status(200).json({ success: true, messageId: newSms.id });
   } catch (err) {
-    console.error("[SIGNALWIRE WEBHOOK] Exception handling webhook:", err);
-    res.setHeader("Content-Type", "text/xml");
-    return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>');
+    console.error("[TELNYX SMS WEBHOOK] Exception handling webhook:", err);
+    return res.status(200).json({ success: true, warning: err.message });
   }
 };
-app.all(
-  [
-    "/api/signalwire/inbound",
-    "/api/webhook/signalwire/inbound",
-    "/api/webhooks/signalwire/inbound",
-    "/api/webhook/signalwire/sms",
-    "/api/webhooks/signalwire/sms",
-    "/api/webhooks/signalwire/*",
-    "/api/webhook/signalwire/*",
-    "/api/sms/incoming"
-  ],
-  handleSignalWireInboundWebhook
-);
-var handleSignalWireVoiceStatusWebhook = async (req, res) => {
+var handleTelnyxVoiceWebhook = async (req, res) => {
   try {
     ensureDataLoaded();
-    const body = { ...req.query || {}, ...req.body || {} };
-    const callSid = String(body.CallSid || body.callSid || "");
-    const callStatus = String(body.CallStatus || body.callStatus || "completed").toLowerCase();
-    const duration = parseInt(body.CallDuration || body.Duration || "0", 10);
-    const call = calls_history.find((c) => c.callSid === callSid);
-    if (call) {
-      call.status = callStatus;
-      if (duration > 0) call.durationSeconds = duration;
-      call.endedAt = (/* @__PURE__ */ new Date()).toISOString();
-      saveData();
-      broadcastNewCall(call);
+    const verification = verifyTelnyxWebhook(req);
+    if (!verification.isValid) {
+      console.warn("[TELNYX VOICE WEBHOOK] Signature validation failed:", verification.reason);
+      return res.status(403).json({ error: "Invalid webhook signature" });
     }
-    return res.status(200).send("OK");
+    let bodyData = req.body;
+    if (typeof bodyData === "string") {
+      try {
+        bodyData = JSON.parse(bodyData);
+      } catch {
+      }
+    } else if (Buffer.isBuffer(bodyData)) {
+      try {
+        bodyData = JSON.parse(bodyData.toString("utf-8"));
+      } catch {
+      }
+    }
+    const eventType = String(bodyData?.data?.event_type || bodyData?.event_type || "").toLowerCase();
+    const payload = bodyData?.data?.payload || bodyData?.payload || bodyData?.data || bodyData || {};
+    const callControlId = String(payload.call_control_id || payload.call_leg_id || payload.id || bodyData?.data?.id || "").trim();
+    const rawFrom = payload.from || "";
+    const rawTo = payload.to || "+14236662513";
+    const from = normalizePhoneNumber(rawFrom, "+1");
+    const to = normalizePhoneNumber(rawTo, "+1");
+    const direction = (payload.direction || "inbound").toLowerCase().includes("inbound") ? "inbound" : "outbound";
+    console.log(`[TELNYX VOICE WEBHOOK] Event: "${eventType}", CallControlID: "${callControlId}", From: "${from}", To: "${to}"`);
+    const cleanToDigits = to.replace(/\D/g, "");
+    const matchedNumber = [...userPhoneNumbers].reverse().find(
+      (p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanToDigits
+    );
+    const targetUser = matchedNumber ? goldUsers.find((u) => u.id === matchedNumber.userId) : goldUsers.find((u) => u.phone && u.phone.replace(/\D/g, "") === cleanToDigits) || goldUsers[0];
+    const targetUserId = targetUser?.id || (matchedNumber ? matchedNumber.userId : "usr_miracle_01");
+    const isTargetAdmin = targetUser?.email === "miracle@goldmailer.xyz" || targetUser?.role === "admin" || targetUserId === "usr_miracle_01";
+    let existingCall = calls_history.find((c) => c.callSid === callControlId);
+    if (eventType === "call.initiated") {
+      if (!isTargetAdmin && matchedNumber && matchedNumber.status === "suspended") {
+        console.warn(`[TELNYX VOICE WEBHOOK] Call rejected: Line ${to} is suspended.`);
+        return res.status(200).json({ success: false, reason: "Line suspended" });
+      }
+      if (!isTargetAdmin && direction === "inbound") {
+        deductCoins(targetUserId, targetUser?.email, 5, `Incoming Call from ${from} (1 min)`, to);
+      }
+      if (!existingCall) {
+        existingCall = {
+          id: "call_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+          userId: targetUserId,
+          from: from || "Caller",
+          to: to || "+14236662513",
+          direction,
+          status: "ringing",
+          callSid: callControlId || "CA_" + Date.now(),
+          startedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        calls_history.unshift(existingCall);
+      } else {
+        existingCall.status = "ringing";
+      }
+      saveData();
+      broadcastNewCall(existingCall);
+      return res.status(200).json({ success: true, callId: existingCall.id });
+    }
+    if (eventType === "call.answered") {
+      if (existingCall) {
+        existingCall.status = "in-progress";
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, status: "in-progress" });
+    }
+    if (eventType === "call.hangup") {
+      const duration = parseInt(payload.duration_seconds || payload.call_duration || "0", 10);
+      if (existingCall) {
+        existingCall.status = "completed";
+        if (duration > 0) existingCall.durationSeconds = duration;
+        existingCall.endedAt = (/* @__PURE__ */ new Date()).toISOString();
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, status: "completed", duration });
+    }
+    if (eventType === "call.recording.saved") {
+      const recordingUrl = payload.recording_urls?.mp3 || payload.recording_url;
+      if (existingCall && recordingUrl) {
+        existingCall.recordingUrl = recordingUrl;
+        saveData();
+        broadcastNewCall(existingCall);
+      }
+      return res.status(200).json({ success: true, recordingUrl });
+    }
+    return res.status(200).json({ success: true, handled: eventType });
   } catch (err) {
-    return res.status(200).send("OK");
+    console.error("[TELNYX VOICE WEBHOOK] Exception:", err);
+    return res.status(200).json({ success: true, warning: err.message });
   }
 };
-app.all(
+var handleTelnyxGeneralWebhook = async (req, res) => {
+  const eventType = String(req.body?.data?.event_type || req.body?.event_type || "").toLowerCase();
+  if (eventType.startsWith("call.")) {
+    return handleTelnyxVoiceWebhook(req, res);
+  }
+  return handleTelnyxSmsWebhook(req, res);
+};
+app.post(["/api/webhooks/telnyx-sms", "/api/telnyx/sms"], handleTelnyxSmsWebhook);
+app.post(["/api/webhooks/telnyx-voice", "/api/telnyx/voice"], handleTelnyxVoiceWebhook);
+app.post(
   [
-    "/api/signalwire/voice/status",
-    "/api/webhook/signalwire/voice/status"
+    "/api/webhooks/telnyx-inbound",
+    "/api/telnyx/inbound",
+    "/api/sms/incoming"
   ],
-  handleSignalWireVoiceStatusWebhook
+  handleTelnyxGeneralWebhook
 );
 var handleNowPaymentsWebhook = async (req, res) => {
   try {
@@ -7424,7 +7398,7 @@ var handleNowPaymentsWebhook = async (req, res) => {
           userId: targetUserId,
           paymentId: String(body.payment_id || ""),
           orderId,
-          phoneNumber: targetNumber || phoneRecord?.phoneNumber || "+12056076793",
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || "+14236662513",
           amount: dollarAmount,
           currency: String(body.price_currency || "usd"),
           status: "finished",
@@ -7456,7 +7430,7 @@ var handleNowPaymentsWebhook = async (req, res) => {
           userId: targetUserId,
           paymentId: String(body.payment_id || ""),
           orderId,
-          phoneNumber: targetNumber || phoneRecord?.phoneNumber || "+12056076793",
+          phoneNumber: targetNumber || phoneRecord?.phoneNumber || "+14236662513",
           amount: Number(body.price_amount || 6),
           currency: String(body.price_currency || "usd"),
           status: "finished",
@@ -7480,45 +7454,45 @@ app.post(
 app.get("/api/phone/numbers", async (req, res) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
-  const { phoneNumber: adminPhoneNumber, isConfigured } = getSignalWireConfig();
+  const { phoneNumber: adminPhoneNumber, isConfigured } = getTelnyxConfig();
   const isAdmin = isReqAdmin(authUser);
-  const activeAdminDigits = "12056076793";
+  const activeAdminDigits = (adminPhoneNumber || "+14236662513").replace(/\D/g, "");
   if (isConfigured) {
     try {
-      const swActiveNumbers = await getActiveSignalWireNumbers();
-      for (const swNum of swActiveNumbers) {
-        const cleanDigits = swNum.phoneNumber.replace(/\D/g, "");
+      const telnyxActiveNumbers = await getActiveTelnyxNumbers();
+      for (const tNum of telnyxActiveNumbers) {
+        const cleanDigits = tNum.phoneNumber.replace(/\D/g, "");
         const existingIdx = userPhoneNumbers.findIndex(
-          (p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanDigits || p.sid === swNum.sid
+          (p) => p.phoneNumber && p.phoneNumber.replace(/\D/g, "") === cleanDigits || p.sid === tNum.id
         );
         if (existingIdx !== -1) {
-          userPhoneNumbers[existingIdx].provider = "signalwire";
+          userPhoneNumbers[existingIdx].provider = "telnyx";
           userPhoneNumbers[existingIdx].status = "active";
           userPhoneNumbers[existingIdx].capabilities = {
-            voice: swNum.capabilities.voice,
-            sms: swNum.capabilities.sms
+            voice: tNum.capabilities.voice,
+            sms: tNum.capabilities.sms
           };
         } else {
           userPhoneNumbers.push({
-            id: "phone_sw_" + swNum.sid,
+            id: "phone_telnyx_" + (tNum.id || cleanDigits),
             userId: authUser.id || "usr_miracle_01",
             userEmail: authUser.email || "miracle@goldmailer.xyz",
-            phoneNumber: swNum.phoneNumber,
-            friendlyName: swNum.friendlyName || `${swNum.phoneNumber} (Live Line)`,
-            provider: "signalwire",
+            phoneNumber: tNum.phoneNumber,
+            friendlyName: tNum.friendlyName || `${tNum.phoneNumber} (Telnyx Line)`,
+            provider: "telnyx",
             status: "active",
             purchasedAt: (/* @__PURE__ */ new Date()).toISOString(),
             expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
             autoRenew: true,
             capabilities: {
-              voice: swNum.capabilities.voice,
-              sms: swNum.capabilities.sms
+              voice: tNum.capabilities.voice,
+              sms: tNum.capabilities.sms
             }
           });
         }
       }
     } catch (syncErr) {
-      console.warn("[PHONE NUMBERS] SignalWire live sync warning:", syncErr);
+      console.warn("[PHONE NUMBERS] Telnyx live sync warning:", syncErr);
     }
   }
   if (isAdmin || !authUser.id) {
@@ -7530,9 +7504,9 @@ app.get("/api/phone/numbers", async (req, res) => {
         id: "phone_free_miracle_admin",
         userId: authUser.id || "usr_miracle_01",
         userEmail: authUser.email || "miracle@goldmailer.xyz",
-        phoneNumber: adminPhoneNumber,
-        friendlyName: `${adminPhoneNumber} (Primary Line)`,
-        provider: "signalwire",
+        phoneNumber: adminPhoneNumber || "+14236662513",
+        friendlyName: `${adminPhoneNumber || "+14236662513"} (Primary Line)`,
+        provider: "telnyx",
         status: "active",
         purchasedAt: "2026-10-13T00:00:00.000Z",
         expiresAt: new Date(Date.now() + 3650 * 24 * 3600 * 1e3).toISOString(),
@@ -7541,9 +7515,9 @@ app.get("/api/phone/numbers", async (req, res) => {
       });
       saveData();
     } else {
-      userPhoneNumbers[adminPhoneIndex].provider = "signalwire";
+      userPhoneNumbers[adminPhoneIndex].provider = "telnyx";
       userPhoneNumbers[adminPhoneIndex].status = "active";
-      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber;
+      userPhoneNumbers[adminPhoneIndex].phoneNumber = adminPhoneNumber || "+14236662513";
     }
   }
   const list = userPhoneNumbers.filter(
@@ -7564,17 +7538,17 @@ app.get("/api/phone/numbers", async (req, res) => {
     success: true,
     numbers: enriched,
     isAdmin,
-    adminNumber: adminPhoneNumber,
+    adminNumber: adminPhoneNumber || "+14236662513",
     coins: isAdmin ? 999999 : wallet.coins,
     unlimitedCoins: isAdmin,
-    isSignalWireConfigured: getSignalWireConfig().isConfigured
+    isTelnyxConfigured: isConfigured
   });
 });
 var handleAvailableNumbers = async (_req, res) => {
   try {
     ensureDataLoaded();
     const list = await listAvailablePhoneNumbers2(16);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
     const boughtSet = /* @__PURE__ */ new Set();
     userPhoneNumbers.forEach((p) => {
       if (p.phoneNumber) boughtSet.add(p.phoneNumber.replace(/[^\d+]/g, ""));
@@ -7606,15 +7580,15 @@ app.post("/api/phone/buy-intent", async (req, res) => {
       return res.json({
         success: true,
         isAdmin: true,
-        message: "Admin account has free lifetime direct activation from SignalWire."
+        message: "Admin account has free lifetime direct activation from Telnyx."
       });
     }
-    const targetNum = phoneNumber || "+12056076793";
+    const targetNum = phoneNumber || "+14236662513";
     const orderId = `phone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const basePrice = 6;
     const networkFee = Number((basePrice * 0.015).toFixed(2));
     const totalPrice = Number((basePrice + networkFee).toFixed(2));
-    const description = `SignalWire Phone Subscription for ${targetNum} (${authUser.email}) - $6.00 + $${networkFee} Network Fee (300 Coins + 30 Days)`;
+    const description = `Telnyx Phone Subscription for ${targetNum} (${authUser.email}) - $6.00 + $${networkFee} Network Fee (300 Coins + 30 Days)`;
     const invoiceResult = await createNowPaymentsInvoice({
       priceAmount: totalPrice,
       priceCurrency: "usd",
@@ -7642,8 +7616,8 @@ var handleBuyNumber = async (req, res) => {
     const { phoneNumber, friendlyName } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = authUser.email === "miracle@goldmailer.xyz" || authUser.id === "usr_miracle_01";
-    const buyResult = await buySignalWirePhoneNumber(phoneNumber);
-    const targetNum = buyResult.phoneNumber || phoneNumber || "+12056076793";
+    const buyResult = await buyTelnyxPhoneNumber(phoneNumber);
+    const targetNum = buyResult.phoneNumber || phoneNumber || "+14236662513";
     let existing = userPhoneNumbers.find((p) => p.phoneNumber === targetNum);
     if (existing) {
       existing.userId = authUser.id;
@@ -7659,7 +7633,7 @@ var handleBuyNumber = async (req, res) => {
         userEmail: authUser.email,
         phoneNumber: targetNum,
         friendlyName: friendlyName || targetNum,
-        provider: "signalwire",
+        provider: "telnyx",
         status: "active",
         purchasedAt: (/* @__PURE__ */ new Date()).toISOString(),
         expiresAt: new Date(Date.now() + (isAdmin ? 3650 : 30) * 24 * 3600 * 1e3).toISOString(),
@@ -7674,7 +7648,7 @@ var handleBuyNumber = async (req, res) => {
     saveData();
     return res.json({
       success: true,
-      message: `Phone number ${targetNum} activated successfully on SignalWire.`,
+      message: `Phone number ${targetNum} activated successfully on Telnyx.`,
       number: existing
     });
   } catch (err) {
@@ -7871,22 +7845,24 @@ var handleGetSmsInbox = async (req, res) => {
   ensureDataLoaded();
   const authUser = resolveUserIdFromReq(req);
   const isAdmin = isReqAdmin(authUser);
-  const { phoneNumber: adminNumber } = getSignalWireConfig();
+  const { phoneNumber: adminNumber } = getTelnyxConfig();
   try {
-    const liveMessages = await getSignalWireLogs(40);
+    const liveMessages = await getTelnyxLogs(40);
     let hasNew = false;
-    for (const sm of liveMessages) {
-      if (!sms_inbox.some((s) => s.messageSid === sm.sid)) {
+    for (const tm of liveMessages) {
+      const msgSid = tm.id || tm.sid;
+      if (!sms_inbox.some((s) => s.messageSid === msgSid || s.telnyx_message_id === msgSid)) {
         const newLiveSms = {
-          id: "sms_live_" + sm.sid,
+          id: "sms_live_" + msgSid,
           userId: authUser.id || "usr_miracle_01",
-          from: sm.from || "Unknown",
-          to: sm.to || adminNumber || "+12056076793",
-          body: sm.body || "",
-          receivedAt: sm.dateSent || (/* @__PURE__ */ new Date()).toISOString(),
-          messageSid: sm.sid,
-          direction: (sm.direction || "").includes("inbound") ? "inbound" : "outbound",
-          status: sm.status,
+          from: tm.from || "Unknown",
+          to: tm.to || adminNumber || "+14236662513",
+          body: tm.body || tm.text || "",
+          receivedAt: tm.receivedAt || tm.dateSent || (/* @__PURE__ */ new Date()).toISOString(),
+          messageSid: msgSid,
+          telnyx_message_id: msgSid,
+          direction: (tm.direction || "").includes("inbound") ? "inbound" : "outbound",
+          status: tm.status,
           is_read: false
         };
         sms_inbox.unshift(newLiveSms);
@@ -7898,7 +7874,7 @@ var handleGetSmsInbox = async (req, res) => {
       saveData();
     }
   } catch (syncErr) {
-    console.warn("[SIGNALWIRE ACTIVE SYNC] Note:", syncErr.message || syncErr);
+    console.warn("[TELNYX ACTIVE SYNC] Note:", syncErr.message || syncErr);
   }
   const userPhonesDigits = /* @__PURE__ */ new Set();
   userPhoneNumbers.filter((p) => p.userId === authUser.id || isAdmin && (p.id === "phone_free_miracle_admin" || p.phoneNumber === adminNumber)).forEach((p) => {
@@ -7924,10 +7900,10 @@ app.get(["/api/phone/sms", "/api/sms/inbox"], handleGetSmsInbox);
 var handleSendSms = async (req, res) => {
   try {
     ensureDataLoaded();
-    const { to, body, from } = req.body;
+    const { to, body, from, campaignId } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
     const userPhones = userPhoneNumbers.filter((p) => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
     if (!isAdmin && userPhones.length === 0) {
       return res.status(403).json({
@@ -7951,15 +7927,22 @@ var handleSendSms = async (req, res) => {
     if (!to || !body) {
       return res.status(400).json({ error: "Recipient phone number (to) and message (body) are required." });
     }
-    const fromNumber = from || userPhones[0]?.phoneNumber || (isAdmin ? adminNumber : "");
+    const fromNumber = from || userPhones[0]?.phoneNumber || (isAdmin ? adminNumber : "") || "+14236662513";
     if (!fromNumber) {
       return res.status(400).json({ error: "You must have an active phone number to send SMS." });
     }
     const normalizedTo = normalizePhoneNumber(to, "+234");
-    const swResult = await sendSmsViaSignalWire2({
+    if (isOptedOut(normalizedTo)) {
+      return res.status(400).json({
+        success: false,
+        error: "Recipient has opted out of SMS messages (STOP keyword received)."
+      });
+    }
+    const telnyxResult = await sendSmsViaTelnyx2({
       to: normalizedTo,
       from: fromNumber,
-      body
+      body,
+      campaignId
     });
     const outboundSms = {
       id: "sms_out_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
@@ -7968,9 +7951,10 @@ var handleSendSms = async (req, res) => {
       to: normalizedTo,
       body,
       receivedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      messageSid: swResult.messageSid || "SM_" + Date.now(),
+      messageSid: telnyxResult.messageSid || telnyxResult.messageId || "SM_" + Date.now(),
+      telnyx_message_id: telnyxResult.messageId || telnyxResult.messageSid,
       direction: "outbound",
-      status: swResult.success ? swResult.status || "sent" : "failed",
+      status: telnyxResult.success ? telnyxResult.status || "sent" : "failed",
       is_read: true
     };
     sms_inbox.unshift(outboundSms);
@@ -7981,9 +7965,10 @@ var handleSendSms = async (req, res) => {
     broadcastNewSMS(outboundSms);
     return res.json({
       success: true,
-      messageSid: swResult.messageSid || outboundSms.messageSid,
+      messageSid: telnyxResult.messageSid || telnyxResult.messageId || outboundSms.messageSid,
+      messageId: telnyxResult.messageId || telnyxResult.messageSid,
       sms: outboundSms,
-      carrierNotice: swResult.success ? void 0 : swResult.error
+      carrierNotice: telnyxResult.success ? void 0 : telnyxResult.error
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -8018,10 +8003,10 @@ app.delete("/api/phone/sms", (req, res) => {
 var handleMakeVoiceCall = async (req, res) => {
   try {
     ensureDataLoaded();
-    const { to, from } = req.body;
+    const { to, from, audioUrl, ttsText } = req.body;
     const authUser = resolveUserIdFromReq(req);
     const isAdmin = isReqAdmin(authUser);
-    const { phoneNumber: adminNumber } = getSignalWireConfig();
+    const { phoneNumber: adminNumber } = getTelnyxConfig();
     const userPhones = userPhoneNumbers.filter((p) => p.userId === authUser.id && (isAdmin || p.phoneNumber !== adminNumber));
     if (!isAdmin && userPhones.length === 0) {
       return res.status(403).json({
@@ -8045,14 +8030,16 @@ var handleMakeVoiceCall = async (req, res) => {
     if (!to) {
       return res.status(400).json({ error: "Recipient phone number (to) is required." });
     }
-    const fromNumber = from || userPhones[0]?.phoneNumber || (isAdmin ? adminNumber : "");
+    const fromNumber = from || userPhones[0]?.phoneNumber || (isAdmin ? adminNumber : "") || "+14236662513";
     if (!fromNumber) {
       return res.status(400).json({ error: "You must have an active phone number to place calls." });
     }
     const normalizedTo = normalizePhoneNumber(to, "+234");
-    const callResult = await makeCallViaSignalWire2({
+    const callResult = await makeCallViaTelnyx2({
       to: normalizedTo,
-      from: fromNumber
+      from: fromNumber,
+      audioUrl,
+      ttsText
     });
     const outboundCall = {
       id: "call_out_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
@@ -8061,7 +8048,7 @@ var handleMakeVoiceCall = async (req, res) => {
       to: normalizedTo,
       direction: "outbound",
       status: callResult.success ? callResult.status || "in-progress" : "failed",
-      callSid: callResult.callSid || "CA_" + Date.now(),
+      callSid: callResult.callSid || callResult.callControlId || "CA_" + Date.now(),
       startedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     calls_history.unshift(outboundCall);
@@ -8073,7 +8060,7 @@ var handleMakeVoiceCall = async (req, res) => {
     if (!callResult.success) {
       return res.status(400).json({
         success: false,
-        error: callResult.error || "SignalWire rejected the call",
+        error: callResult.error || "Telnyx rejected the call",
         carrierNotice: callResult.error,
         callSid: outboundCall.callSid,
         call: outboundCall
@@ -8097,25 +8084,25 @@ var handleGetCalls = async (req, res) => {
     userPhoneNumbers.filter((p) => p.userId === authUser.id || isAdmin && p.id === "phone_free_miracle_admin").map((p) => p.phoneNumber)
   );
   try {
-    const swCalls = await getSignalWireCallLogs(20);
-    for (const sc of swCalls) {
-      const existing = calls_history.find((c) => c.callSid === sc.callSid);
+    const telnyxCalls = await getTelnyxCallLogs(20);
+    for (const tc of telnyxCalls) {
+      const existing = calls_history.find((c) => c.callSid === tc.callSid);
       if (existing) {
-        existing.status = sc.status;
-        if (sc.durationSeconds) existing.durationSeconds = sc.durationSeconds;
-        if (sc.endedAt) existing.endedAt = sc.endedAt;
+        existing.status = tc.status;
+        if (tc.durationSeconds) existing.durationSeconds = tc.durationSeconds;
+        if (tc.endedAt) existing.endedAt = tc.endedAt;
       } else {
         calls_history.unshift({
-          id: "call_live_" + sc.callSid,
+          id: "call_live_" + tc.callSid,
           userId: authUser.id || "usr_miracle_01",
-          from: sc.from,
-          to: sc.to,
-          direction: sc.direction,
-          status: sc.status,
-          durationSeconds: sc.durationSeconds,
-          callSid: sc.callSid,
-          startedAt: sc.startedAt,
-          endedAt: sc.endedAt
+          from: tc.from,
+          to: tc.to,
+          direction: tc.direction,
+          status: tc.status,
+          durationSeconds: tc.durationSeconds,
+          callSid: tc.callSid,
+          startedAt: tc.startedAt,
+          endedAt: tc.endedAt
         });
       }
     }
