@@ -9,6 +9,7 @@
  * 5. Verify available numbers search
  */
 
+import 'dotenv/config';
 import {
   getTelnyxConfig,
   setTelnyxConfig,

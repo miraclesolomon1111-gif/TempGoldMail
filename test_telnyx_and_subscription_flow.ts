@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { testTelnyxConnection, listAvailablePhoneNumbers, getTelnyxConfig } from './lib/telnyxClient.ts';
 
 async function runTestSuite() {
