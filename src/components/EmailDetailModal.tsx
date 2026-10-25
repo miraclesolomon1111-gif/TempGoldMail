@@ -189,6 +189,14 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
           </div>
         )}
 
+        {/* Forwarded banner */}
+        {(email.forwarded_from || email.raw?.forwarded_from) && (
+          <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs flex items-center gap-2">
+            <Mail className="w-4 h-4 text-amber-500 flex-shrink-0" />
+            <span className="font-semibold">Forwarded from: <span className="font-mono text-amber-300 font-bold">{email.forwarded_from || email.raw?.forwarded_from}</span></span>
+          </div>
+        )}
+
         {/* Subject Header */}
         <div className="flex items-start justify-between gap-4">
           <h1 className={`text-xl sm:text-2xl font-bold tracking-tight leading-snug ${
@@ -196,9 +204,16 @@ export const EmailDetailModal: React.FC<EmailDetailModalProps> = ({
           }`}>
             {email.subject || '(No Subject)'}
           </h1>
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#FF6A00]/15 text-[#FF8C42] border border-[#FF6A00]/30 uppercase tracking-wider flex-shrink-0">
-            {email.folder || 'Inbox'}
-          </span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {(email.forwarded_from || email.raw?.forwarded_from) && (
+              <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                Forwarded
+              </span>
+            )}
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#FF6A00]/15 text-[#FF8C42] border border-[#FF6A00]/30 uppercase tracking-wider">
+              {email.folder || 'Inbox'}
+            </span>
+          </div>
         </div>
 
         {/* Sender details pill */}

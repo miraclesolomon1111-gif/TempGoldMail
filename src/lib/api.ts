@@ -20,7 +20,8 @@ import {
   AdminBroadcastItem,
   AdminPaymentItem,
   AdminSystemHealth,
-  AdminSiteSettings
+  AdminSiteSettings,
+  ConnectedEmail
 } from '../types';
 
 // Helper: Normalize email messages
@@ -94,7 +95,8 @@ export function normalizeEmail(raw: any): EmailMessage {
     folder: raw.folder || 'primary',
     category: raw.category || 'primary',
     scheduled_for: raw.scheduled_for,
-    avatar_color: raw.avatar_color
+    avatar_color: raw.avatar_color,
+    forwarded_from: raw.forwarded_from || raw.raw?.forwarded_from || raw.forwardedFrom
   };
 }
 
@@ -1812,3 +1814,102 @@ export async function fetchUserEsim(phoneNumber?: string): Promise<{
   });
   return safeJsonParse(res);
 }
+
+// ================= CONNECTED EMAILS & GOOGLE AUTO-FORWARD =================
+
+export async function fetchConnectedEmails(userId?: string): Promise<ConnectedEmail[]> {
+  const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+  const res = await fetch(`/api/connected-emails${query}`, {
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  return data.connectedEmails || [];
+}
+
+export async function requestConnectedEmailVerification(email: string, userId?: string): Promise<{
+  success: boolean;
+  message: string;
+  code?: string;
+}> {
+  const res = await fetch('/api/connected-emails/request-verification', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email, userId })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to request verification');
+  return data;
+}
+
+export async function verifyConnectedEmailCode(email: string, code: string, userId?: string): Promise<{
+  success: boolean;
+  connectedEmail: ConnectedEmail;
+  message?: string;
+}> {
+  const res = await fetch('/api/connected-emails/verify-code', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email, code, userId })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to verify code');
+  return data;
+}
+
+export async function deleteConnectedEmail(id: string): Promise<boolean> {
+  const res = await fetch(`/api/connected-emails/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  return Boolean(data.success);
+}
+
+export async function syncConnectedEmail(id: string): Promise<{
+  success: boolean;
+  importedCount: number;
+  message: string;
+}> {
+  const res = await fetch(`/api/connected-emails/${encodeURIComponent(id)}/sync`, {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Sync failed');
+  return data;
+}
+
+export async function toggleConnectedEmailForwarding(id: string, enabled: boolean): Promise<ConnectedEmail> {
+  const res = await fetch(`/api/connected-emails/${encodeURIComponent(id)}/toggle`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ enabled })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to toggle forwarding');
+  return data.connectedEmail;
+}
+
+export async function fetchGoogleOAuthConfig(): Promise<{
+  redirect_uri: string;
+  javascript_origin: string;
+  is_configured: boolean;
+  client_id?: string;
+}> {
+  const res = await fetch('/api/auth/google/config', {
+    headers: getHeaders()
+  });
+  return safeJsonParse(res);
+}
+
+export async function saveGoogleOAuthConfig(clientId: string, clientSecret: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/auth/google/config', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ clientId, clientSecret })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to save Google OAuth configuration');
+  return data;
+}
+

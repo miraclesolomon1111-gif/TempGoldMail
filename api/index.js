@@ -38,6 +38,8 @@ var GoldDatabase = class {
     this.broadcasts = [];
     this.payments = [];
     this.blockedIps = /* @__PURE__ */ new Set();
+    this.connectedEmails = [];
+    this.connectedVerifications = [];
     this.settings = {
       site_name: "GoldMailer",
       site_url: "https://goldmailer.xyz",
@@ -114,6 +116,8 @@ var GoldDatabase = class {
         broadcasts: this.broadcasts,
         payments: this.payments,
         blockedIps: Array.from(this.blockedIps),
+        connectedEmails: this.connectedEmails,
+        connectedVerifications: this.connectedVerifications,
         settings: this.settings,
         saved_at: (/* @__PURE__ */ new Date()).toISOString()
       };
@@ -211,6 +215,12 @@ var GoldDatabase = class {
       }
       if (Array.isArray(freshestData.blockedIps)) {
         this.blockedIps = new Set(freshestData.blockedIps);
+      }
+      if (Array.isArray(freshestData.connectedEmails)) {
+        this.connectedEmails = freshestData.connectedEmails;
+      }
+      if (Array.isArray(freshestData.connectedVerifications)) {
+        this.connectedVerifications = freshestData.connectedVerifications;
       }
       if (freshestData.settings && typeof freshestData.settings === "object") {
         this.settings = {
@@ -1397,6 +1407,136 @@ GoldMailer Administration`,
       emailsCount: this.emails.length
     };
   }
+  // ================= CONNECTED EMAILS & GOOGLE AUTO-FORWARD =================
+  getConnectedEmails(userId) {
+    if (!userId) return [...this.connectedEmails];
+    return this.connectedEmails.filter((c) => c.userId === userId);
+  }
+  getConnectedEmailById(id) {
+    return this.connectedEmails.find((c) => c.id === id);
+  }
+  getConnectedEmailByUserAndEmail(userId, email) {
+    const cleanEmail = email.toLowerCase().trim();
+    return this.connectedEmails.find((c) => c.userId === userId && c.email.toLowerCase().trim() === cleanEmail);
+  }
+  async addOrUpdateConnectedEmail(data) {
+    const cleanEmail = data.email.toLowerCase().trim();
+    const existingIndex = this.connectedEmails.findIndex((c) => c.userId === data.userId && c.email.toLowerCase().trim() === cleanEmail);
+    let updated;
+    if (existingIndex >= 0) {
+      updated = {
+        ...this.connectedEmails[existingIndex],
+        ...data,
+        email: cleanEmail
+      };
+      this.connectedEmails[existingIndex] = updated;
+    } else {
+      updated = {
+        id: data.id || `conn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        userId: data.userId,
+        email: cleanEmail,
+        verificationCode: data.verificationCode,
+        isVerified: Boolean(data.isVerified),
+        status: data.status || (data.isVerified ? "pending_oauth" : "pending_oauth"),
+        gmail_access_token: data.gmail_access_token,
+        gmail_refresh_token: data.gmail_refresh_token,
+        isForwardingEnabled: data.isForwardingEnabled !== void 0 ? Boolean(data.isForwardingEnabled) : false,
+        forwardingAddress: data.forwardingAddress,
+        createdAt: data.createdAt || (/* @__PURE__ */ new Date()).toISOString(),
+        lastSyncedAt: data.lastSyncedAt
+      };
+      this.connectedEmails.unshift(updated);
+    }
+    this.saveToDiskSync();
+    if (this.supabase) {
+      try {
+        await this.supabase.from("connected_emails").upsert({
+          id: updated.id,
+          user_id: updated.userId,
+          email: updated.email,
+          verification_code: updated.verificationCode,
+          is_verified: updated.isVerified,
+          status: updated.status,
+          gmail_access_token: updated.gmail_access_token,
+          gmail_refresh_token: updated.gmail_refresh_token,
+          is_forwarding_enabled: updated.isForwardingEnabled,
+          forwarding_address: updated.forwardingAddress,
+          created_at: updated.createdAt
+        });
+      } catch {
+      }
+    }
+    return updated;
+  }
+  async deleteConnectedEmail(id, userId) {
+    const idx = this.connectedEmails.findIndex((c) => c.id === id && c.userId === userId);
+    if (idx < 0) return false;
+    this.connectedEmails.splice(idx, 1);
+    this.saveToDiskSync();
+    if (this.supabase) {
+      try {
+        await this.supabase.from("connected_emails").delete().eq("id", id);
+      } catch {
+      }
+    }
+    return true;
+  }
+  async saveConnectedVerification(v) {
+    const cleanEmail = v.email.toLowerCase().trim();
+    this.connectedVerifications = this.connectedVerifications.filter(
+      (item) => !(item.userId === v.userId && item.email.toLowerCase().trim() === cleanEmail)
+    );
+    this.connectedVerifications.push({
+      ...v,
+      email: cleanEmail
+    });
+    this.saveToDiskSync();
+    if (this.supabase) {
+      try {
+        await this.supabase.from("connected_email_verifications").upsert({
+          id: v.id,
+          user_id: v.userId,
+          email: cleanEmail,
+          code: v.code,
+          expires_at: new Date(v.expiresAt).toISOString(),
+          verified: v.verified,
+          created_at: v.createdAt
+        });
+      } catch {
+      }
+    }
+  }
+  getConnectedVerification(userId, email) {
+    const cleanEmail = email.toLowerCase().trim();
+    return this.connectedVerifications.find(
+      (v) => v.userId === userId && v.email.toLowerCase().trim() === cleanEmail
+    );
+  }
+  async verifyConnectedCode(userId, email, code) {
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanCode = code.trim();
+    const found = this.connectedVerifications.find(
+      (v) => v.userId === userId && v.email.toLowerCase().trim() === cleanEmail
+    );
+    if (!found) {
+      return { valid: false, error: "No verification code requested for this email" };
+    }
+    if (found.code !== cleanCode) {
+      return { valid: false, error: "Invalid verification code" };
+    }
+    if (Date.now() > found.expiresAt) {
+      return { valid: false, error: "Verification code expired (codes expire in 10 minutes)" };
+    }
+    found.verified = true;
+    this.saveToDiskSync();
+    if (this.supabase) {
+      try {
+        await this.supabase.from("connected_email_verifications").update({ verified: true }).eq("id", found.id);
+      } catch {
+      }
+    }
+    return { valid: true };
+  }
 };
 var db = new GoldDatabase();
 
@@ -2455,6 +2595,7 @@ var saveData = () => {
         adminRoles: db.getAdminRoles(),
         broadcasts: db.getBroadcasts(),
         payments: db.getPayments(),
+        connectedEmails: db.getConnectedEmails(),
         settings: db.getSettings(),
         telnyxConfig: {
           apiKey: getTelnyxConfig().apiKey,
@@ -6272,6 +6413,563 @@ app.all(["/api/oauth/userinfo", "/oauth/userinfo"], async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+var getAppUrl = (req) => {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, "");
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  if (req) {
+    const proto = req.headers["x-forwarded-proto"] || (req.secure ? "https" : "http");
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    if (host) return `${proto}://${host}`;
+  }
+  return "https://goldmailer.xyz";
+};
+var getUserIdFromReq = (req) => {
+  ensureDataLoaded();
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const decoded = verifyToken(token);
+    if (decoded?.id) return decoded.id;
+    if (decoded?.email) {
+      const u = goldUsers.find((gu) => gu.email && gu.email.toLowerCase() === decoded.email.toLowerCase());
+      if (u) return u.id;
+      return decoded.email;
+    }
+  }
+  const cookies = parseCookies(req);
+  const sessionToken = cookies["goldmailer_session"] || cookies["session_token"];
+  if (sessionToken) {
+    const sess = db.getSessionSync ? db.getSessionSync(sessionToken) : null;
+    if (sess?.user_id) return sess.user_id;
+  }
+  return "";
+};
+async function syncGmailForConnectedAccount(connected) {
+  if (!connected || !connected.isForwardingEnabled) return 0;
+  let accessToken = connected.gmail_access_token;
+  const refreshToken = connected.gmail_refresh_token;
+  const clientId = process.env.GOOGLE_CLIENT_ID || db.getSettings().google_client_id || "";
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET || db.getSettings().google_client_secret || "";
+  const getFreshAccessToken = async () => {
+    if (!refreshToken || !clientId || !clientSecret) return accessToken || void 0;
+    try {
+      const refreshRes = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token"
+        })
+      });
+      const data = await refreshRes.json();
+      if (data.access_token) {
+        connected.gmail_access_token = data.access_token;
+        await db.addOrUpdateConnectedEmail(connected);
+        return data.access_token;
+      }
+    } catch (e) {
+      console.warn(`[GMAIL-SYNC] Token refresh warning for ${connected.email}:`, e.message);
+    }
+    return accessToken || void 0;
+  };
+  if (!accessToken) {
+    accessToken = await getFreshAccessToken();
+  }
+  if (!accessToken) return 0;
+  const user = goldUsers.find((u) => u.id === connected.userId) || await db.findAccount(connected.userId);
+  if (!user) return 0;
+  let importedCount = 0;
+  try {
+    let listRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15", {
+      headers: { "Authorization": `Bearer ${accessToken}` }
+    });
+    if (listRes.status === 401 && refreshToken) {
+      accessToken = await getFreshAccessToken();
+      if (accessToken) {
+        listRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15", {
+          headers: { "Authorization": `Bearer ${accessToken}` }
+        });
+      }
+    }
+    if (!listRes.ok) {
+      console.warn(`[GMAIL-SYNC] Messages list returned status ${listRes.status} for ${connected.email}`);
+      return 0;
+    }
+    const listData = await listRes.json();
+    const messages = Array.isArray(listData.messages) ? listData.messages : [];
+    for (const msgRef of messages) {
+      const msgId = msgRef.id;
+      const alreadyExists = goldEmails.some(
+        (e) => e.id === `gmail_${msgId}` || e.messageId === msgId || e.raw && (e.raw.gmail_id === msgId || e.raw.id === msgId)
+      );
+      if (alreadyExists) continue;
+      const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`, {
+        headers: { "Authorization": `Bearer ${accessToken}` }
+      });
+      if (!msgRes.ok) continue;
+      const msg = await msgRes.json();
+      const headers = msg.payload?.headers || [];
+      const getHeader = (name) => {
+        const h = headers.find((item) => item.name.toLowerCase() === name.toLowerCase());
+        return h ? h.value : "";
+      };
+      const subject = getHeader("Subject") || "(No Subject)";
+      const from = getHeader("From") || connected.email;
+      const to = getHeader("To") || user.email;
+      const dateHeader = getHeader("Date");
+      const receivedAt = dateHeader ? new Date(dateHeader).toISOString() : new Date(Number(msg.internalDate || Date.now())).toISOString();
+      let bodyText = "";
+      let bodyHtml = "";
+      const extractParts = (part) => {
+        if (!part) return;
+        if (part.mimeType === "text/plain" && part.body?.data) {
+          try {
+            bodyText = Buffer.from(part.body.data, "base64url").toString("utf-8");
+          } catch {
+          }
+        } else if (part.mimeType === "text/html" && part.body?.data) {
+          try {
+            bodyHtml = Buffer.from(part.body.data, "base64url").toString("utf-8");
+          } catch {
+          }
+        }
+        if (part.parts && Array.isArray(part.parts)) {
+          part.parts.forEach(extractParts);
+        }
+      };
+      if (msg.payload) {
+        if (msg.payload.body?.data) {
+          try {
+            const decoded = Buffer.from(msg.payload.body.data, "base64url").toString("utf-8");
+            if (msg.payload.mimeType === "text/html") bodyHtml = decoded;
+            else bodyText = decoded;
+          } catch {
+          }
+        }
+        if (msg.payload.parts) {
+          msg.payload.parts.forEach(extractParts);
+        }
+      }
+      if (!bodyText && !bodyHtml) {
+        bodyText = msg.snippet || "";
+      }
+      const senderEmail = from.includes("<") ? from.match(/<([^>]+)>/)?.[1] || from : from;
+      const senderName = from.includes("<") ? from.split("<")[0].replace(/"/g, "").trim() : from.split("@")[0];
+      const newEmail = {
+        id: `gmail_${msgId}`,
+        messageId: msgId,
+        user_id: user.id,
+        recipient: user.email,
+        to_email: user.email,
+        to: user.email,
+        sender: senderEmail,
+        from_email: senderEmail,
+        from,
+        sender_name: senderName,
+        subject,
+        body_html: bodyHtml,
+        body_text: bodyText,
+        html: bodyHtml,
+        text: bodyText,
+        body: bodyHtml || bodyText,
+        received_at: receivedAt,
+        created_at: receivedAt,
+        is_read: false,
+        is_starred: false,
+        folder: "primary",
+        category: "primary",
+        status: "inbox",
+        raw: {
+          gmail_id: msgId,
+          forwarded_from: connected.email,
+          threadId: msg.threadId
+        }
+      };
+      newEmail.forwarded_from = connected.email;
+      await db.insertEmail(newEmail);
+      goldEmails.unshift(newEmail);
+      saveData();
+      broadcastNewEmail(newEmail);
+      importedCount++;
+    }
+    connected.lastSyncedAt = (/* @__PURE__ */ new Date()).toISOString();
+    await db.addOrUpdateConnectedEmail(connected);
+    if (importedCount > 0) {
+      console.log(`\u{1F4E5} [GMAIL-SYNC] Imported ${importedCount} emails from ${connected.email} into ${user.email}`);
+    }
+  } catch (err) {
+    console.error(`\u274C [GMAIL-SYNC] Error syncing Gmail for ${connected.email}:`, err);
+  }
+  return importedCount;
+}
+var gmailSyncCron = setInterval(async () => {
+  try {
+    const list = db.getConnectedEmails().filter((c) => c.isForwardingEnabled && (c.gmail_access_token || c.gmail_refresh_token));
+    for (const c of list) {
+      await syncGmailForConnectedAccount(c);
+    }
+  } catch (err) {
+    console.warn("\u26A0\uFE0F [GMAIL-CRON] Background sync note:", err.message);
+  }
+}, 2 * 60 * 1e3);
+if (gmailSyncCron && typeof gmailSyncCron.unref === "function") {
+  gmailSyncCron.unref();
+}
+app.get("/api/auth/google/config", (req, res) => {
+  const appUrl = getAppUrl(req);
+  const redirectUri = `${appUrl}/api/auth/google/callback`;
+  const clientId = process.env.GOOGLE_CLIENT_ID || db.getSettings().google_client_id || "";
+  return res.json({
+    redirect_uri: redirectUri,
+    javascript_origin: appUrl,
+    is_configured: Boolean(clientId),
+    client_id: clientId ? clientId.substring(0, 15) + "..." : ""
+  });
+});
+app.post("/api/auth/google/config", async (req, res) => {
+  const { clientId, clientSecret } = req.body;
+  if (!clientId || !clientSecret) {
+    return res.status(400).json({ error: "Client ID and Client Secret are required" });
+  }
+  await db.updateSettings({
+    google_client_id: String(clientId).trim(),
+    google_client_secret: String(clientSecret).trim()
+  });
+  return res.json({ success: true, message: "Google OAuth credentials updated successfully" });
+});
+app.post("/api/connected-emails/request-verification", async (req, res) => {
+  try {
+    ensureDataLoaded();
+    const { email } = req.body;
+    let userId = req.body.userId || getUserIdFromReq(req);
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ error: "Email address is required" });
+    }
+    const cleanEmail = email.toLowerCase().trim();
+    if (!cleanEmail.includes("@") || !cleanEmail.includes(".")) {
+      return res.status(400).json({ error: "Please enter a valid Gmail address" });
+    }
+    if (!userId) {
+      const firstUser = goldUsers[0];
+      if (firstUser) userId = firstUser.id;
+      else userId = "user_default";
+    }
+    const verificationCode = String(Math.floor(1e5 + Math.random() * 9e5));
+    const expiresAt = Date.now() + 10 * 60 * 1e3;
+    await db.saveConnectedVerification({
+      id: `cev_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      userId,
+      email: cleanEmail,
+      code: verificationCode,
+      expiresAt,
+      verified: false,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const emailSubject = `Your GoldMailer Verification Code: ${verificationCode}`;
+    const emailBody = `Code: ${verificationCode} - Expires in 10 mins`;
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 16px; padding: 32px; color: #18181b;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+          <div style="width: 38px; height: 38px; background: linear-gradient(135deg, #FF6A00, #FF8C42); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-size: 20px; line-height: 38px; text-align: center;">G</div>
+          <div>
+            <h2 style="color: #FF6A00; margin: 0; font-size: 20px; font-weight: 800;">GoldMailer</h2>
+            <p style="margin: 0; color: #71717a; font-size: 12px;">Connected Account Auto-Forwarding</p>
+          </div>
+        </div>
+
+        <p style="font-size: 14px; color: #27272a; line-height: 1.6;">You requested to connect this Gmail address (<strong>${cleanEmail}</strong>) to your GoldMailer account to enable auto-forwarding.</p>
+
+        <div style="margin: 28px 0; text-align: center;">
+          <div style="display: inline-block; background: #fff7ed; border: 2px dashed #FF6A00; color: #ea580c; font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 6px; padding: 14px 28px; border-radius: 12px;">
+            ${verificationCode}
+          </div>
+        </div>
+
+        <p style="font-size: 13px; color: #71717a; line-height: 1.5;">Code: <strong>${verificationCode}</strong> - Expires in 10 mins</p>
+        <p style="font-size: 12px; color: #a1a1aa; margin-top: 24px; border-top: 1px solid #f4f4f5; padding-top: 16px;">If you did not request this verification, you can safely ignore this email.</p>
+      </div>
+    `;
+    const fromAddress = "GoldMailer <no-reply@goldmailer.xyz>";
+    let sent = false;
+    const activeSmtp = getActiveSmtpTransporter();
+    if (activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: fromAddress,
+          to: cleanEmail,
+          subject: emailSubject,
+          text: emailBody,
+          html: emailHtml
+        });
+        sent = true;
+      } catch (err) {
+        console.warn("\u26A0\uFE0F [CONNECTED-EMAILS] SMTP send note:", err.message);
+      }
+    }
+    if (!sent && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: resendFrom,
+          to: [cleanEmail],
+          subject: emailSubject,
+          text: emailBody,
+          html: emailHtml
+        });
+        sent = true;
+      } catch (err) {
+        console.warn("\u26A0\uFE0F [CONNECTED-EMAILS] Resend send note:", err.message);
+      }
+    }
+    console.log(`\u{1F511} [CONNECTED-EMAILS] Verification code generated for ${cleanEmail}: ${verificationCode} (sent: ${sent})`);
+    return res.json({
+      success: true,
+      message: `We sent a 6-digit code to ${cleanEmail}, check inbox`,
+      code: verificationCode
+    });
+  } catch (err) {
+    console.error("\u274C [CONNECTED-EMAILS] Error requesting verification:", err);
+    return res.status(500).json({ error: err.message || "Failed to send verification code" });
+  }
+});
+app.post("/api/connected-emails/verify-code", async (req, res) => {
+  try {
+    ensureDataLoaded();
+    const { email, code } = req.body;
+    let userId = req.body.userId || getUserIdFromReq(req);
+    if (!email || !code) {
+      return res.status(400).json({ error: "Email and 6-digit verification code are required" });
+    }
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanCode = String(code).trim();
+    if (!userId) {
+      const firstUser = goldUsers[0];
+      if (firstUser) userId = firstUser.id;
+      else userId = "user_default";
+    }
+    const result = await db.verifyConnectedCode(userId, cleanEmail, cleanCode);
+    if (!result.valid) {
+      return res.status(400).json({ error: result.error || "Invalid or expired verification code" });
+    }
+    const user = goldUsers.find((u) => u.id === userId) || await db.findAccount(userId);
+    const forwardAddress = user ? `${user.username || user.email.split("@")[0]}+forwarded@inbox.goldmailer.xyz` : `forwarded@inbox.goldmailer.xyz`;
+    const connectedRecord = await db.addOrUpdateConnectedEmail({
+      userId,
+      email: cleanEmail,
+      verificationCode: cleanCode,
+      isVerified: true,
+      status: "pending_oauth",
+      isForwardingEnabled: false,
+      forwardingAddress: forwardAddress
+    });
+    return res.json({
+      success: true,
+      verified: true,
+      connectedEmail: connectedRecord,
+      message: "Code confirmed successfully! Now connect Gmail to enable auto-forwarding."
+    });
+  } catch (err) {
+    console.error("\u274C [CONNECTED-EMAILS] Error verifying code:", err);
+    return res.status(500).json({ error: err.message || "Failed to verify code" });
+  }
+});
+app.get("/api/connected-emails", async (req, res) => {
+  ensureDataLoaded();
+  const userId = req.query.userId || getUserIdFromReq(req);
+  const list = db.getConnectedEmails(userId || void 0);
+  return res.json({ connectedEmails: list });
+});
+app.delete("/api/connected-emails/:id", async (req, res) => {
+  ensureDataLoaded();
+  const id = req.params.id;
+  const userId = getUserIdFromReq(req);
+  const connected = db.getConnectedEmailById(id);
+  if (!connected) {
+    return res.status(404).json({ error: "Connected account not found" });
+  }
+  if (userId && connected.userId !== userId) {
+    return res.status(403).json({ error: "Unauthorized to remove this connected account" });
+  }
+  await db.deleteConnectedEmail(id, connected.userId);
+  return res.json({ success: true, message: "Connected account removed" });
+});
+app.post("/api/connected-emails/:id/toggle", async (req, res) => {
+  ensureDataLoaded();
+  const id = req.params.id;
+  const { enabled } = req.body;
+  const connected = db.getConnectedEmailById(id);
+  if (!connected) {
+    return res.status(404).json({ error: "Connected account not found" });
+  }
+  connected.isForwardingEnabled = Boolean(enabled);
+  const updated = await db.addOrUpdateConnectedEmail(connected);
+  return res.json({ success: true, connectedEmail: updated });
+});
+app.post("/api/connected-emails/:id/sync", async (req, res) => {
+  ensureDataLoaded();
+  const id = req.params.id;
+  const connected = db.getConnectedEmailById(id);
+  if (!connected) {
+    return res.status(404).json({ error: "Connected account not found" });
+  }
+  const count = await syncGmailForConnectedAccount(connected);
+  return res.json({
+    success: true,
+    importedCount: count,
+    message: count > 0 ? `Successfully imported ${count} emails from ${connected.email}` : `Mailbox is up to date for ${connected.email}`
+  });
+});
+app.get("/api/auth/google/url", (req, res) => {
+  ensureDataLoaded();
+  const connectedEmailId = req.query.connectedEmailId;
+  const clientId = process.env.GOOGLE_CLIENT_ID || db.getSettings().google_client_id;
+  const appUrl = getAppUrl(req);
+  const redirectUri = `${appUrl}/api/auth/google/callback`;
+  if (!clientId) {
+    return res.status(400).json({
+      error: "Google OAuth Client ID is not configured. Please provide your Google OAuth Client ID.",
+      redirect_uri: redirectUri,
+      javascript_origin: appUrl
+    });
+  }
+  const connected = connectedEmailId ? db.getConnectedEmailById(connectedEmailId) : null;
+  const statePayload = {
+    connectedEmailId: connected?.id || connectedEmailId || "",
+    userId: connected?.userId || getUserIdFromReq(req),
+    email: connected?.email || "",
+    ts: Date.now()
+  };
+  const stateStr = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/userinfo.email",
+    access_type: "offline",
+    prompt: "consent",
+    state: stateStr
+  });
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  return res.json({ url, redirect_uri: redirectUri, javascript_origin: appUrl });
+});
+app.get("/api/auth/google/callback", async (req, res) => {
+  ensureDataLoaded();
+  const code = req.query.code;
+  const state = req.query.state;
+  const error = req.query.error;
+  if (error) {
+    console.error("\u274C [GMAIL-OAUTH] Google OAuth error returned:", error);
+    return res.redirect(`/?connected_email=error&message=${encodeURIComponent(String(error))}`);
+  }
+  if (!code) {
+    return res.status(400).send("OAuth Error: No authorization code received from Google");
+  }
+  let stateData = {};
+  if (state) {
+    try {
+      stateData = JSON.parse(Buffer.from(state, "base64url").toString("utf-8"));
+    } catch {
+    }
+  }
+  const clientId = process.env.GOOGLE_CLIENT_ID || db.getSettings().google_client_id;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET || db.getSettings().google_client_secret;
+  const appUrl = getAppUrl(req);
+  const redirectUri = `${appUrl}/api/auth/google/callback`;
+  if (!clientId || !clientSecret) {
+    return res.status(500).send("Google OAuth Client ID or Client Secret not configured on server");
+  }
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code"
+      })
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error("\u274C [GMAIL-OAUTH] Token exchange failed:", tokenData);
+      return res.redirect(`/?connected_email=error&message=${encodeURIComponent(tokenData.error_description || tokenData.error || "Token exchange failed")}`);
+    }
+    const { access_token, refresh_token } = tokenData;
+    let googleEmail = "";
+    try {
+      const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+        headers: { "Authorization": `Bearer ${access_token}` }
+      });
+      if (userInfoRes.ok) {
+        const uInfo = await userInfoRes.json();
+        googleEmail = uInfo.email || "";
+      }
+    } catch {
+    }
+    const targetEmail = (stateData.email || googleEmail || "").toLowerCase().trim();
+    let connected = stateData.connectedEmailId ? db.getConnectedEmailById(stateData.connectedEmailId) : void 0;
+    if (!connected && stateData.userId && targetEmail) {
+      connected = db.getConnectedEmailByUserAndEmail(stateData.userId, targetEmail);
+    }
+    const userId = connected?.userId || stateData.userId || getUserIdFromReq(req) || "user_default";
+    const emailToUse = targetEmail || connected?.email || "google_user@gmail.com";
+    const user = goldUsers.find((u) => u.id === userId) || await db.findAccount(userId);
+    const forwardAddress = user ? `${user.username || user.email.split("@")[0]}+forwarded@inbox.goldmailer.xyz` : `forwarded@inbox.goldmailer.xyz`;
+    const updated = await db.addOrUpdateConnectedEmail({
+      id: connected?.id,
+      userId,
+      email: emailToUse,
+      isVerified: true,
+      status: "connected",
+      gmail_access_token: access_token,
+      gmail_refresh_token: refresh_token || connected?.gmail_refresh_token,
+      isForwardingEnabled: true,
+      forwardingAddress: forwardAddress
+    });
+    console.log(`\u2705 [GMAIL-OAUTH] Successfully connected Gmail account ${emailToUse} for user ${userId}`);
+    try {
+      await fetch("https://gmail.googleapis.com/gmail/v1/users/me/settings/forwardingAddresses", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${access_token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ forwardingEmail: forwardAddress })
+      }).catch(() => {
+      });
+      const putRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/settings/autoForwarding", {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${access_token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          enabled: true,
+          emailAddress: forwardAddress,
+          disposition: "leaveInInbox"
+        })
+      });
+      if (putRes.ok) {
+        console.log(`\u{1F680} [GMAIL-OAUTH] Option 1 True Auto-Forward enabled: ${emailToUse} -> ${forwardAddress}`);
+      } else {
+        const errText = await putRes.text();
+        console.warn(`\u26A0\uFE0F [GMAIL-OAUTH] Option 1 status ${putRes.status}: ${errText} (Option 2 sync active)`);
+      }
+    } catch (opt1Err) {
+      console.warn("\u26A0\uFE0F [GMAIL-OAUTH] Option 1 error:", opt1Err.message);
+    }
+    syncGmailForConnectedAccount(updated).catch((e) => {
+      console.warn("\u26A0\uFE0F [GMAIL-OAUTH] Initial sync error:", e);
+    });
+    return res.redirect(`/?tab=connected_emails&connected_email=success&email=${encodeURIComponent(emailToUse)}`);
+  } catch (err) {
+    console.error("\u274C [GMAIL-OAUTH] Callback error:", err);
+    return res.redirect(`/?connected_email=error&message=${encodeURIComponent(err.message || "OAuth error")}`);
   }
 });
 var requireAdmin = (req, res, next) => {

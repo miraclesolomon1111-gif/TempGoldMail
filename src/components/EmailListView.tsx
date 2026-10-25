@@ -418,6 +418,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
               const isSelected = selectedIds.has(e.id);
               const senderName = e.sender_name || (typeof e.sender === 'string' ? e.sender.split('@')[0] : 'Sender');
               const snippet = (e.body_text || e.text || e.body || '').replace(/<[^>]+>/g, '').trim().slice(0, 120);
+              const forwardedFrom = e.forwarded_from || e.raw?.forwarded_from;
 
               return (
                 <div
@@ -490,7 +491,12 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
                       </span>
                     </div>
 
-                    <div className="flex items-baseline gap-1 text-xs truncate">
+                    <div className="flex items-center flex-wrap gap-1.5 text-xs truncate">
+                      {forwardedFrom && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-500 border border-amber-500/30 flex-shrink-0">
+                          Forwarded from: {forwardedFrom}
+                        </span>
+                      )}
                       <span className={`truncate ${isUnread ? (darkMode ? 'text-white font-bold' : 'text-zinc-950 font-bold') : (darkMode ? 'text-zinc-300' : 'text-zinc-800')}`}>
                         {e.subject || '(No Subject)'}
                       </span>

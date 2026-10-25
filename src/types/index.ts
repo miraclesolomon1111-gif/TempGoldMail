@@ -44,6 +44,32 @@ export interface EmailMessage {
   trashed_at?: string;
   scheduled_for?: string;
   avatar_color?: string;
+  forwarded_from?: string;
+}
+
+export interface ConnectedEmail {
+  id: string;
+  userId: string;
+  email: string;
+  verificationCode?: string;
+  isVerified: boolean;
+  status: 'pending_oauth' | 'connected' | 'error';
+  gmail_access_token?: string;
+  gmail_refresh_token?: string;
+  isForwardingEnabled: boolean;
+  forwardingAddress?: string;
+  createdAt: string;
+  lastSyncedAt?: string;
+}
+
+export interface ConnectedEmailVerification {
+  id: string;
+  userId: string;
+  email: string;
+  code: string;
+  expiresAt: number;
+  verified: boolean;
+  createdAt: string;
 }
 
 export interface TempEmail {

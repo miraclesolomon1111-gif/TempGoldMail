@@ -193,6 +193,33 @@ export interface StoredSettings {
   nowpayments_ipn_secret: string;
   supabase_url: string;
   supabase_anon_key: string;
+  google_client_id?: string;
+  google_client_secret?: string;
+}
+
+export interface StoredConnectedEmail {
+  id: string;
+  userId: string;
+  email: string;
+  verificationCode?: string;
+  isVerified: boolean;
+  status: 'pending_oauth' | 'connected' | 'error';
+  gmail_access_token?: string;
+  gmail_refresh_token?: string;
+  isForwardingEnabled: boolean;
+  forwardingAddress?: string;
+  createdAt: string;
+  lastSyncedAt?: string;
+}
+
+export interface StoredConnectedEmailVerification {
+  id: string;
+  userId: string;
+  email: string;
+  code: string;
+  expiresAt: number;
+  verified: boolean;
+  createdAt: string;
 }
 
 // File persistence paths
@@ -215,6 +242,8 @@ class GoldDatabase {
   private broadcasts: StoredBroadcast[] = [];
   private payments: StoredPayment[] = [];
   private blockedIps: Set<string> = new Set();
+  private connectedEmails: StoredConnectedEmail[] = [];
+  private connectedVerifications: StoredConnectedEmailVerification[] = [];
   private settings: StoredSettings = {
     site_name: 'GoldMailer',
     site_url: 'https://goldmailer.xyz',
@@ -296,6 +325,8 @@ class GoldDatabase {
         broadcasts: this.broadcasts,
         payments: this.payments,
         blockedIps: Array.from(this.blockedIps),
+        connectedEmails: this.connectedEmails,
+        connectedVerifications: this.connectedVerifications,
         settings: this.settings,
         saved_at: new Date().toISOString()
       };
@@ -406,6 +437,12 @@ class GoldDatabase {
       }
       if (Array.isArray(freshestData.blockedIps)) {
         this.blockedIps = new Set(freshestData.blockedIps);
+      }
+      if (Array.isArray(freshestData.connectedEmails)) {
+        this.connectedEmails = freshestData.connectedEmails;
+      }
+      if (Array.isArray(freshestData.connectedVerifications)) {
+        this.connectedVerifications = freshestData.connectedVerifications;
       }
       if (freshestData.settings && typeof freshestData.settings === 'object') {
         this.settings = {
@@ -1912,6 +1949,150 @@ class GoldDatabase {
       usersCount: this.users.length,
       emailsCount: this.emails.length
     };
+  }
+
+  // ================= CONNECTED EMAILS & GOOGLE AUTO-FORWARD =================
+  public getConnectedEmails(userId?: string): StoredConnectedEmail[] {
+    if (!userId) return [...this.connectedEmails];
+    return this.connectedEmails.filter(c => c.userId === userId);
+  }
+
+  public getConnectedEmailById(id: string): StoredConnectedEmail | undefined {
+    return this.connectedEmails.find(c => c.id === id);
+  }
+
+  public getConnectedEmailByUserAndEmail(userId: string, email: string): StoredConnectedEmail | undefined {
+    const cleanEmail = email.toLowerCase().trim();
+    return this.connectedEmails.find(c => c.userId === userId && c.email.toLowerCase().trim() === cleanEmail);
+  }
+
+  public async addOrUpdateConnectedEmail(data: Partial<StoredConnectedEmail> & { userId: string; email: string }): Promise<StoredConnectedEmail> {
+    const cleanEmail = data.email.toLowerCase().trim();
+    const existingIndex = this.connectedEmails.findIndex(c => c.userId === data.userId && c.email.toLowerCase().trim() === cleanEmail);
+
+    let updated: StoredConnectedEmail;
+    if (existingIndex >= 0) {
+      updated = {
+        ...this.connectedEmails[existingIndex],
+        ...data,
+        email: cleanEmail
+      };
+      this.connectedEmails[existingIndex] = updated;
+    } else {
+      updated = {
+        id: data.id || `conn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        userId: data.userId,
+        email: cleanEmail,
+        verificationCode: data.verificationCode,
+        isVerified: Boolean(data.isVerified),
+        status: data.status || (data.isVerified ? 'pending_oauth' : 'pending_oauth'),
+        gmail_access_token: data.gmail_access_token,
+        gmail_refresh_token: data.gmail_refresh_token,
+        isForwardingEnabled: data.isForwardingEnabled !== undefined ? Boolean(data.isForwardingEnabled) : false,
+        forwardingAddress: data.forwardingAddress,
+        createdAt: data.createdAt || new Date().toISOString(),
+        lastSyncedAt: data.lastSyncedAt
+      };
+      this.connectedEmails.unshift(updated);
+    }
+
+    this.saveToDiskSync();
+
+    if (this.supabase) {
+      try {
+        await this.supabase.from('connected_emails').upsert({
+          id: updated.id,
+          user_id: updated.userId,
+          email: updated.email,
+          verification_code: updated.verificationCode,
+          is_verified: updated.isVerified,
+          status: updated.status,
+          gmail_access_token: updated.gmail_access_token,
+          gmail_refresh_token: updated.gmail_refresh_token,
+          is_forwarding_enabled: updated.isForwardingEnabled,
+          forwarding_address: updated.forwardingAddress,
+          created_at: updated.createdAt
+        });
+      } catch {}
+    }
+
+    return updated;
+  }
+
+  public async deleteConnectedEmail(id: string, userId: string): Promise<boolean> {
+    const idx = this.connectedEmails.findIndex(c => c.id === id && c.userId === userId);
+    if (idx < 0) return false;
+    this.connectedEmails.splice(idx, 1);
+    this.saveToDiskSync();
+
+    if (this.supabase) {
+      try {
+        await this.supabase.from('connected_emails').delete().eq('id', id);
+      } catch {}
+    }
+    return true;
+  }
+
+  public async saveConnectedVerification(v: StoredConnectedEmailVerification): Promise<void> {
+    const cleanEmail = v.email.toLowerCase().trim();
+    this.connectedVerifications = this.connectedVerifications.filter(
+      item => !(item.userId === v.userId && item.email.toLowerCase().trim() === cleanEmail)
+    );
+    this.connectedVerifications.push({
+      ...v,
+      email: cleanEmail
+    });
+    this.saveToDiskSync();
+
+    if (this.supabase) {
+      try {
+        await this.supabase.from('connected_email_verifications').upsert({
+          id: v.id,
+          user_id: v.userId,
+          email: cleanEmail,
+          code: v.code,
+          expires_at: new Date(v.expiresAt).toISOString(),
+          verified: v.verified,
+          created_at: v.createdAt
+        });
+      } catch {}
+    }
+  }
+
+  public getConnectedVerification(userId: string, email: string): StoredConnectedEmailVerification | undefined {
+    const cleanEmail = email.toLowerCase().trim();
+    return this.connectedVerifications.find(
+      v => v.userId === userId && v.email.toLowerCase().trim() === cleanEmail
+    );
+  }
+
+  public async verifyConnectedCode(userId: string, email: string, code: string): Promise<{ valid: boolean; error?: string }> {
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanCode = code.trim();
+    const found = this.connectedVerifications.find(
+      v => v.userId === userId && v.email.toLowerCase().trim() === cleanEmail
+    );
+
+    if (!found) {
+      return { valid: false, error: 'No verification code requested for this email' };
+    }
+    if (found.code !== cleanCode) {
+      return { valid: false, error: 'Invalid verification code' };
+    }
+    if (Date.now() > found.expiresAt) {
+      return { valid: false, error: 'Verification code expired (codes expire in 10 minutes)' };
+    }
+
+    found.verified = true;
+    this.saveToDiskSync();
+
+    if (this.supabase) {
+      try {
+        await this.supabase.from('connected_email_verifications').update({ verified: true }).eq('id', found.id);
+      } catch {}
+    }
+
+    return { valid: true };
   }
 }
 

@@ -14,10 +14,15 @@ import {
   Bell,
   HardDrive,
   AlertCircle,
-  Laptop
+  Laptop,
+  Mail,
+  Trash2,
+  ExternalLink,
+  ArrowRight,
+  Link2
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { UserProfile, UserDevice } from '../types';
+import { UserProfile, UserDevice, ConnectedEmail } from '../types';
 import {
   setup2FA,
   enable2FA,
@@ -27,7 +32,15 @@ import {
   revokeAllOtherDevices,
   revokeSession,
   updateUserProfile,
-  fetchCurrentUser
+  fetchCurrentUser,
+  fetchConnectedEmails,
+  requestConnectedEmailVerification,
+  verifyConnectedEmailCode,
+  deleteConnectedEmail,
+  syncConnectedEmail,
+  toggleConnectedEmailForwarding,
+  fetchGoogleOAuthConfig,
+  saveGoogleOAuthConfig
 } from '../lib/api';
 
 interface SettingsModalProps {
@@ -38,7 +51,7 @@ interface SettingsModalProps {
   onUserUpdated: (u: UserProfile) => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
-  initialTab?: 'general' | 'security' | 'devices';
+  initialTab?: 'general' | 'security' | 'devices' | 'connected_emails';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -51,7 +64,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToggleDarkMode,
   initialTab = 'devices'
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices' | 'connected_emails'>(initialTab);
+
+  // Connected Emails state
+  const [connectedEmails, setConnectedEmails] = useState<ConnectedEmail[]>([]);
+  const [isLoadingConnected, setIsLoadingConnected] = useState(false);
+  const [gmailAddressInput, setGmailAddressInput] = useState('');
+  const [verificationCodeInput, setVerificationCodeInput] = useState('');
+  const [verificationStep, setVerificationStep] = useState<'input' | 'code' | 'verified'>('input');
+  const [pendingVerifiedEmail, setPendingVerifiedEmail] = useState<string | null>(null);
+  const [pendingConnectedId, setPendingConnectedId] = useState<string | null>(null);
+  const [isRequestingCode, setIsRequestingCode] = useState(false);
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [isSyncingId, setIsSyncingId] = useState<string | null>(null);
+  const [oauthConfig, setOAuthConfig] = useState<{ redirect_uri: string; javascript_origin: string; is_configured: boolean; client_id?: string } | null>(null);
+  const [customClientId, setCustomClientId] = useState('');
+  const [customClientSecret, setCustomClientSecret] = useState('');
+  const [isSavingOAuth, setIsSavingOAuth] = useState(false);
+  const [copiedOrigin, setCopiedOrigin] = useState(false);
+  const [copiedRedirect, setCopiedRedirect] = useState(false);
+  const [showConfigHelper, setShowConfigHelper] = useState(false);
 
   // 2FA state
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(Boolean(user?.two_factor_enabled));
@@ -93,6 +125,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setActiveTab(initialTab);
       }
       loadDevices();
+      loadConnectedEmails();
+      loadOAuthConfig();
       // Fresh sync of user security & recovery state
       fetchCurrentUser().then((freshUser) => {
         if (freshUser) {
@@ -155,6 +189,137 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setDevices([]);
     } finally {
       setIsLoadingDevices(false);
+    }
+  };
+
+  const loadConnectedEmails = async () => {
+    setIsLoadingConnected(true);
+    try {
+      const list = await fetchConnectedEmails(user?.id);
+      setConnectedEmails(list);
+    } catch {
+      setConnectedEmails([]);
+    } finally {
+      setIsLoadingConnected(false);
+    }
+  };
+
+  const loadOAuthConfig = async () => {
+    try {
+      const cfg = await fetchGoogleOAuthConfig();
+      setOAuthConfig(cfg);
+    } catch {}
+  };
+
+  // Step 1: Request 6-digit verification code sent to Gmail
+  const handleRequestVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!gmailAddressInput.trim()) return;
+    setError(null);
+    setSuccessMsg(null);
+    setIsRequestingCode(true);
+    try {
+      const res = await requestConnectedEmailVerification(gmailAddressInput.trim(), user?.id);
+      setVerificationStep('code');
+      setSuccessMsg(res.message || `We sent a 6-digit code to ${gmailAddressInput.trim()}, check inbox`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to send verification code');
+    } finally {
+      setIsRequestingCode(false);
+    }
+  };
+
+  // Step 2: Confirm 6-digit code
+  const handleConfirmCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!verificationCodeInput.trim()) return;
+    setError(null);
+    setSuccessMsg(null);
+    setIsVerifyingCode(true);
+    try {
+      const res = await verifyConnectedEmailCode(gmailAddressInput.trim(), verificationCodeInput.trim(), user?.id);
+      setPendingVerifiedEmail(res.connectedEmail.email);
+      setPendingConnectedId(res.connectedEmail.id);
+      setVerificationStep('verified');
+      setSuccessMsg(res.message || 'Code confirmed successfully! Now connect Gmail to enable auto-forwarding.');
+      loadConnectedEmails();
+    } catch (err: any) {
+      setError(err.message || 'Failed to verify code');
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
+
+  // Step 3: Google OAuth auto-forward button
+  const handleStartGoogleOAuth = async (connectedId?: string) => {
+    setError(null);
+    try {
+      const targetId = connectedId || pendingConnectedId || '';
+      const res = await fetch(`/api/auth/google/url?connectedEmailId=${encodeURIComponent(targetId)}`);
+      const data = await res.json();
+      if (!res.ok || !data.url) {
+        setShowConfigHelper(true);
+        throw new Error(data.error || 'Please configure Google OAuth Client ID before connecting.');
+      }
+      window.location.href = data.url;
+    } catch (err: any) {
+      setError(err.message || 'Could not initiate Google OAuth');
+    }
+  };
+
+  // Disconnect / Remove account
+  const handleDeleteConnected = async (id: string) => {
+    setError(null);
+    try {
+      await deleteConnectedEmail(id);
+      setConnectedEmails(prev => prev.filter(c => c.id !== id));
+      setSuccessMsg('Gmail connected account disconnected');
+    } catch (err: any) {
+      setError(err.message || 'Failed to disconnect account');
+    }
+  };
+
+  // Toggle Auto-Forwarding
+  const handleToggleForwarding = async (id: string, currentEnabled: boolean) => {
+    try {
+      const updated = await toggleConnectedEmailForwarding(id, !currentEnabled);
+      setConnectedEmails(prev => prev.map(c => c.id === id ? updated : c));
+    } catch (err: any) {
+      setError(err.message || 'Failed to update forwarding state');
+    }
+  };
+
+  // Manual Sync Now
+  const handleSyncConnected = async (id: string) => {
+    setIsSyncingId(id);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await syncConnectedEmail(id);
+      setSuccessMsg(res.message || 'Gmail sync completed');
+      loadConnectedEmails();
+    } catch (err: any) {
+      setError(err.message || 'Sync failed');
+    } finally {
+      setIsSyncingId(null);
+    }
+  };
+
+  // Save Google OAuth Credentials from UI
+  const handleSaveOAuthCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customClientId.trim() || !customClientSecret.trim()) return;
+    setIsSavingOAuth(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      await saveGoogleOAuthConfig(customClientId.trim(), customClientSecret.trim());
+      setSuccessMsg('Google OAuth credentials saved successfully!');
+      loadOAuthConfig();
+    } catch (err: any) {
+      setError(err.message || 'Failed to save Google OAuth configuration');
+    } finally {
+      setIsSavingOAuth(false);
     }
   };
 
@@ -371,6 +536,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <Smartphone className="w-3.5 h-3.5" />
             <span>Your Devices</span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('connected_emails'); setError(null); setSuccessMsg(null); }}
+            className={`px-3 py-1.5 rounded-lg font-semibold transition-colors flex items-center gap-1.5 ${
+              activeTab === 'connected_emails' ? 'bg-[#FF6A00] text-white' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <Mail className="w-3.5 h-3.5" />
+            <span>Connected Emails</span>
           </button>
           <button
             onClick={() => { setActiveTab('general'); setError(null); setSuccessMsg(null); }}
@@ -730,6 +904,391 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   {darkMode ? '🌙 Dark Mode' : '☀️ Light Mode'}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: CONNECTED EMAILS & GMAIL AUTO-FORWARD */}
+          {activeTab === 'connected_emails' && (
+            <div className="space-y-4">
+              {/* Header card */}
+              <div className="p-4 bg-gradient-to-r from-[#FF6A00]/15 via-white/5 to-white/5 border border-[#FF6A00]/30 rounded-2xl">
+                <div className="flex items-center gap-2 text-[#FF8C42] font-bold text-sm">
+                  <Mail className="w-4 h-4 text-[#FF6A00]" />
+                  <span>Gmail to GoldMailer Auto-Forward</span>
+                </div>
+                <p className="text-xs text-zinc-300 mt-1">
+                  Connect your external Gmail account so incoming emails automatically forward directly into your GoldMailer inbox without ever leaving the UI.
+                </p>
+              </div>
+
+              {/* Add Gmail Account Wizard */}
+              <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3">
+                <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <Link2 className="w-3.5 h-3.5 text-[#FF6A00]" />
+                  <span>Add Gmail Account</span>
+                </h4>
+
+                {/* Step 1: Input Gmail address */}
+                {verificationStep === 'input' && (
+                  <form onSubmit={handleRequestVerification} className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Enter your Gmail address to receive forwarding
+                      </label>
+                      <input
+                        type="email"
+                        value={gmailAddressInput}
+                        onChange={(e) => setGmailAddressInput(e.target.value)}
+                        placeholder="example@gmail.com"
+                        required
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00]"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isRequestingCode || !gmailAddressInput.trim()}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center gap-2 cursor-pointer"
+                    >
+                      {isRequestingCode ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Sending code...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Verify Address</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </form>
+                )}
+
+                {/* Step 2: Confirm 6-digit code */}
+                {verificationStep === 'code' && (
+                  <form onSubmit={handleConfirmCode} className="space-y-3">
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs">
+                      We sent a 6-digit code to <strong>{gmailAddressInput}</strong>, check inbox
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Enter 6-digit Verification Code
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={6}
+                        value={verificationCodeInput}
+                        onChange={(e) => setVerificationCodeInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="123456"
+                        required
+                        className="w-48 tracking-widest text-center font-mono text-base font-bold px-3 py-2 bg-white/5 border border-white/15 rounded-xl text-white focus:outline-none focus:border-[#FF6A00]"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="submit"
+                        disabled={isVerifyingCode || verificationCodeInput.length !== 6}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center gap-2 cursor-pointer"
+                      >
+                        {isVerifyingCode ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Confirming...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Confirm Code</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVerificationStep('input');
+                          setVerificationCodeInput('');
+                        }}
+                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 text-xs font-semibold cursor-pointer"
+                      >
+                        Change Email
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Step 3: OAuth Connect */}
+                {verificationStep === 'verified' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs flex items-center gap-2">
+                      <Check className="w-4 h-4 flex-shrink-0" />
+                      <div>
+                        <p className="font-bold">Address verified: {pendingVerifiedEmail || gmailAddressInput}</p>
+                        <p className="text-[11px] text-zinc-400 mt-0.5">
+                          Grant Google permissions so GoldMailer can activate true auto-forwarding and sync incoming messages.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleStartGoogleOAuth(pendingConnectedId || undefined)}
+                        className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow-lg hover:opacity-90 transition-opacity flex items-center gap-2 cursor-pointer"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                        <span>Connect Gmail to Auto-Forward</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVerificationStep('input');
+                          setGmailAddressInput('');
+                          setVerificationCodeInput('');
+                          setPendingVerifiedEmail(null);
+                        }}
+                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-300 text-xs font-semibold cursor-pointer"
+                      >
+                        Add Another
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Connected Accounts List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-zinc-300 uppercase tracking-wider">
+                    Connected Accounts ({connectedEmails.length})
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={loadConnectedEmails}
+                    disabled={isLoadingConnected}
+                    className="text-[11px] text-zinc-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingConnected ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+
+                {connectedEmails.length === 0 ? (
+                  <div className="p-6 bg-white/5 border border-white/10 rounded-2xl text-center space-y-1">
+                    <p className="text-xs font-semibold text-zinc-300">No Gmail accounts connected yet</p>
+                    <p className="text-[11px] text-zinc-500">
+                      Add your Gmail above to have emails appear in GoldMailer tagged with "Forwarded from: example@gmail.com".
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {connectedEmails.map((conn) => {
+                      const isConnected = conn.status === 'connected' && (conn.gmail_access_token || conn.gmail_refresh_token);
+                      const isSyncing = isSyncingId === conn.id;
+
+                      return (
+                        <div
+                          key={conn.id}
+                          className="p-3.5 bg-white/5 border border-white/10 hover:border-white/20 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-white text-xs">{conn.email}</span>
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                                  isConnected && conn.isForwardingEnabled
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                    : conn.isVerified
+                                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                      : 'bg-zinc-700 text-zinc-400'
+                                }`}
+                              >
+                                {isConnected
+                                  ? conn.isForwardingEnabled
+                                    ? 'Auto-Forwarding Active'
+                                    : 'Forwarding Paused'
+                                  : 'OAuth Pending'}
+                              </span>
+                            </div>
+
+                            <div className="text-[11px] text-zinc-400 mt-1 flex flex-wrap items-center gap-3">
+                              <span>Forwarding to: <span className="font-mono text-zinc-300">{conn.forwardingAddress || 'Inbox'}</span></span>
+                              {conn.lastSyncedAt && (
+                                <span>Synced: <span className="font-mono text-zinc-300">{new Date(conn.lastSyncedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span></span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-center">
+                            {isConnected ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSyncConnected(conn.id)}
+                                  disabled={isSyncing}
+                                  title="Sync emails from Gmail now"
+                                  className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                                  <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleForwarding(conn.id, conn.isForwardingEnabled)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                                    conn.isForwardingEnabled
+                                      ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                                      : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
+                                  }`}
+                                >
+                                  {conn.isForwardingEnabled ? 'Enabled' : 'Paused'}
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleStartGoogleOAuth(conn.id)}
+                                className="px-3 py-1 rounded-lg bg-[#FF6A00] text-white text-xs font-bold flex items-center gap-1 shadow cursor-pointer hover:bg-[#FF8C42]"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Connect OAuth</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteConnected(conn.id)}
+                              title="Disconnect account"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Google Cloud Setup Instructions & Credentials */}
+              <div className="p-4 bg-white/5 border border-white/10 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-[#FF6A00]" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Google Cloud Credentials & Redirect URI
+                    </h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfigHelper(!showConfigHelper)}
+                    className="text-[11px] text-[#FF8C42] hover:underline cursor-pointer"
+                  >
+                    {showConfigHelper ? 'Hide Config' : 'View Config'}
+                  </button>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {/* Origin */}
+                  <div>
+                    <label className="text-[10px] font-semibold text-zinc-400 block mb-0.5">
+                      Authorized JavaScript origin
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={oauthConfig?.javascript_origin || (typeof window !== 'undefined' ? window.location.origin : '')}
+                        className="flex-1 px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-lg text-zinc-300 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = oauthConfig?.javascript_origin || window.location.origin;
+                          navigator.clipboard.writeText(val);
+                          setCopiedOrigin(true);
+                          setTimeout(() => setCopiedOrigin(false), 2000);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-zinc-300 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedOrigin ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedOrigin ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Redirect URI */}
+                  <div>
+                    <label className="text-[10px] font-semibold text-zinc-400 block mb-0.5">
+                      Authorized redirect URI
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={oauthConfig?.redirect_uri || (typeof window !== 'undefined' ? `${window.location.origin}/api/auth/google/callback` : '')}
+                        className="flex-1 px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-lg text-zinc-300 font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = oauthConfig?.redirect_uri || `${window.location.origin}/api/auth/google/callback`;
+                          navigator.clipboard.writeText(val);
+                          setCopiedRedirect(true);
+                          setTimeout(() => setCopiedRedirect(false), 2000);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-zinc-300 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedRedirect ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedRedirect ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Optional In-app Credentials configuration */}
+                {showConfigHelper && (
+                  <form onSubmit={handleSaveOAuthCredentials} className="pt-2 border-t border-white/10 space-y-2 animate-in fade-in">
+                    <p className="text-[11px] text-zinc-400">
+                      You can set <code className="text-[#FF8C42]">GOOGLE_CLIENT_ID</code> and <code className="text-[#FF8C42]">GOOGLE_CLIENT_SECRET</code> in your environment, or save them directly here:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-semibold text-zinc-400 block mb-0.5">Client ID</label>
+                        <input
+                          type="text"
+                          value={customClientId}
+                          onChange={(e) => setCustomClientId(e.target.value)}
+                          placeholder="xxxxxxxxxxxx.apps.googleusercontent.com"
+                          className="w-full px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-[#FF6A00]"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-semibold text-zinc-400 block mb-0.5">Client Secret</label>
+                        <input
+                          type="password"
+                          value={customClientSecret}
+                          onChange={(e) => setCustomClientSecret(e.target.value)}
+                          placeholder="GOCSPX-xxxxxxxxxxxxxxxx"
+                          className="w-full px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-[#FF6A00]"
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isSavingOAuth || !customClientId.trim() || !customClientSecret.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSavingOAuth ? 'Saving...' : 'Save Credentials'}
+                    </button>
+                  </form>
+                )}
               </div>
             </div>
           )}

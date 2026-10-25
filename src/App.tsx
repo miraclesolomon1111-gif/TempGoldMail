@@ -272,7 +272,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState<string>('');
   const [resetEmail, setResetEmail] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'security' | 'devices'>('devices');
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'security' | 'devices' | 'connected_emails'>('devices');
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isOAuthDevOpen, setIsOAuthDevOpen] = useState(false);
 
@@ -358,6 +358,17 @@ export default function App() {
         hash === '#devices'
       ) {
         setSettingsInitialTab('devices');
+        setIsSettingsOpen(true);
+      }
+
+      // Connected Emails & Gmail Auto-Forward route
+      if (
+        url.searchParams.get('tab') === 'connected_emails' ||
+        url.searchParams.get('connected_email') ||
+        path === '/settings/connected-emails' ||
+        hash === '#connected-emails'
+      ) {
+        setSettingsInitialTab('connected_emails');
         setIsSettingsOpen(true);
       }
     };
