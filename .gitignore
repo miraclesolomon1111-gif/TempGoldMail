@@ -13,3 +13,5 @@ src/server/.goldmailer_data.json
 node-compile-cache/
 *.hm
 goldmailer_db_backup.json
+bun.lock
+public/assets/aistudio/
