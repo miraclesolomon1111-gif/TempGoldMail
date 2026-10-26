@@ -110,9 +110,31 @@ const upload = multer({
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+// Google Site Verification file handler
+app.get(['/googleaf6d742afb618102.html', '/api/googleaf6d742afb618102.html'], (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.status(200).send('google-site-verification: googleaf6d742afb618102.html');
+});
+
+// Direct Privacy Policy file handler
+app.get(['/privacy.html', '/api/privacy.html'], (_req: Request, res: Response) => {
+  const filePath = path.join(process.cwd(), 'public/privacy.html');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.sendFile(filePath);
+  }
+  return res.redirect('/#privacy');
+});
+
 // Normalize URL for Vercel Serverless Function rewrites
 app.use((req: Request, _res: Response, next) => {
-  if (req.url && !req.url.startsWith('/api') && !req.url.startsWith('/oauth')) {
+  if (
+    req.url &&
+    !req.url.startsWith('/api') &&
+    !req.url.startsWith('/oauth') &&
+    !req.url.startsWith('/googleaf6d742afb618102.html') &&
+    !req.url.startsWith('/privacy.html')
+  ) {
     req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
   }
   next();

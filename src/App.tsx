@@ -178,9 +178,16 @@ export default function App() {
   // Strict Miracle Admin Access Check
   const isMiracleAdmin = (user?.email || activeEmail || '').toLowerCase().trim() === 'miracle@goldmailer.xyz';
 
-  // View Mode: 'app' (Webmail) for authenticated users vs 'hero' (Landing Page) for visitors
+  // View Mode: 'hero' (Public Landing Page) by default so Google & visitors can view without login
   const [viewMode, setViewMode] = useState<'app' | 'hero'>(() => {
-    return getStoredUser() ? 'app' : 'hero';
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+      if ((path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') && getStoredUser()) {
+        return 'app';
+      }
+    }
+    return 'hero';
   });
   const [heroInitialSection, setHeroInitialSection] = useState<'hero' | 'terms' | 'privacy'>('hero');
 
@@ -310,8 +317,8 @@ export default function App() {
         }
       }
 
-      // Landing / Hero route
-      if (path === '/hero' || hash === '#hero') {
+      // Landing / Hero route (Public home page)
+      if (path === '/' || path === '/hero' || path === '/home' || hash === '#hero' || hash === '#home') {
         setViewMode('hero');
         setHeroInitialSection('hero');
       } else if (path === '/terms' || hash === '#terms') {
@@ -320,6 +327,22 @@ export default function App() {
       } else if (path === '/privacy' || hash === '#privacy') {
         setViewMode('hero');
         setHeroInitialSection('privacy');
+      } else if (path === '/login' || path === '/signin' || hash === '#login' || hash === '#signin') {
+        setViewMode('hero');
+        setAuthMode('login');
+        setIsAuthOpen(true);
+      } else if (path === '/signup' || path === '/register' || hash === '#signup' || hash === '#register') {
+        setViewMode('hero');
+        setAuthMode('register');
+        setIsAuthOpen(true);
+      } else if (path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') {
+        if (getStoredUser()) {
+          setViewMode('app');
+        } else {
+          setViewMode('hero');
+          setAuthMode('login');
+          setIsAuthOpen(true);
+        }
       }
 
       // Reset Password route from email link
@@ -387,7 +410,12 @@ export default function App() {
         setStoredActiveEmail(u.email);
         const cached = getCachedEmails(u.email);
         if (cached.length > 0) setAllEmails(cached);
-        setViewMode('app');
+        // Only set app mode if the user explicitly navigated to webmail path/hash
+        const path = window.location.pathname.toLowerCase();
+        const hash = window.location.hash.toLowerCase();
+        if (path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') {
+          setViewMode('app');
+        }
       } else {
         const token = getAuthToken();
         const stored = getStoredUser();
@@ -992,9 +1020,14 @@ export default function App() {
             setAuthMode('register');
             setIsAuthOpen(true);
           }}
+          onGetStarted={() => {
+            setAuthMode('register');
+            setIsAuthOpen(true);
+          }}
           onOpenOAuthDev={() => setIsOAuthDevOpen(true)}
           darkMode={darkMode}
           onToggleDarkMode={toggleDarkMode}
+          user={user}
         />
       ) : (
         /* Permanent Webmail View */
