@@ -2356,7 +2356,7 @@ app.get(["/googleaf6d742afb618102.html", "/api/googleaf6d742afb618102.html"], (_
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   return res.status(200).send("google-site-verification: googleaf6d742afb618102.html");
 });
-app.get(["/privacy.html", "/api/privacy.html"], (_req, res) => {
+app.get(["/privacy", "/privacy.html", "/api/privacy", "/api/privacy.html"], (_req, res) => {
   const filePath = path2.join(process.cwd(), "public/privacy.html");
   if (fs2.existsSync(filePath)) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -2365,7 +2365,7 @@ app.get(["/privacy.html", "/api/privacy.html"], (_req, res) => {
   return res.redirect("/#privacy");
 });
 app.use((req, _res, next) => {
-  if (req.url && !req.url.startsWith("/api") && !req.url.startsWith("/oauth") && !req.url.startsWith("/googleaf6d742afb618102.html") && !req.url.startsWith("/privacy.html")) {
+  if (req.url && !req.url.startsWith("/api") && !req.url.startsWith("/oauth") && !req.url.startsWith("/googleaf6d742afb618102.html") && !req.url.startsWith("/privacy")) {
     req.url = "/api" + (req.url.startsWith("/") ? req.url : "/" + req.url);
   }
   next();

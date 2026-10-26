@@ -13,6 +13,14 @@
   },
   "rewrites": [
     {
+      "source": "/googleaf6d742afb618102.html",
+      "destination": "/googleaf6d742afb618102.html"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api"
     },

@@ -117,7 +117,7 @@ app.get(['/googleaf6d742afb618102.html', '/api/googleaf6d742afb618102.html'], (_
 });
 
 // Direct Privacy Policy file handler
-app.get(['/privacy.html', '/api/privacy.html'], (_req: Request, res: Response) => {
+app.get(['/privacy', '/privacy.html', '/api/privacy', '/api/privacy.html'], (_req: Request, res: Response) => {
   const filePath = path.join(process.cwd(), 'public/privacy.html');
   if (fs.existsSync(filePath)) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -133,7 +133,7 @@ app.use((req: Request, _res: Response, next) => {
     !req.url.startsWith('/api') &&
     !req.url.startsWith('/oauth') &&
     !req.url.startsWith('/googleaf6d742afb618102.html') &&
-    !req.url.startsWith('/privacy.html')
+    !req.url.startsWith('/privacy')
   ) {
     req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
   }
