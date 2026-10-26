@@ -317,16 +317,13 @@ export default function App() {
         }
       }
 
-      // Landing / Hero route (Public home page)
-      if (path === '/' || path === '/hero' || path === '/home' || hash === '#hero' || hash === '#home') {
+      // Specific sub-routes and hashes
+      if (path === '/privacy' || hash === '#privacy') {
         setViewMode('hero');
-        setHeroInitialSection('hero');
+        setHeroInitialSection('privacy');
       } else if (path === '/terms' || hash === '#terms') {
         setViewMode('hero');
         setHeroInitialSection('terms');
-      } else if (path === '/privacy' || hash === '#privacy') {
-        setViewMode('hero');
-        setHeroInitialSection('privacy');
       } else if (path === '/login' || path === '/signin' || hash === '#login' || hash === '#signin') {
         setViewMode('hero');
         setAuthMode('login');
@@ -343,6 +340,10 @@ export default function App() {
           setAuthMode('login');
           setIsAuthOpen(true);
         }
+      } else {
+        // Default: Public home page (never forced behind login)
+        setViewMode('hero');
+        setHeroInitialSection('hero');
       }
 
       // Reset Password route from email link

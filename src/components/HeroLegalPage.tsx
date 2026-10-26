@@ -218,116 +218,20 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
             </p>
 
             {/* Single Standout [Get Started] Call to Action Button */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-2">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
               <button
                 type="button"
                 onClick={handlePrimaryGetStarted}
-                className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-base shadow-xl shadow-[#FF6A00]/35 hover:shadow-[#FF6A00]/50 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5 cursor-pointer"
+                className="w-full sm:w-auto px-10 py-4 rounded-2xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white font-extrabold text-base shadow-xl shadow-[#FF6A00]/35 hover:shadow-[#FF6A00]/50 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5 cursor-pointer"
               >
                 <span>Get Started</span>
                 <ArrowRight className="w-5 h-5 stroke-[2.5]" />
-              </button>
-
-              <button
-                type="button"
-                onClick={onOpenLogin}
-                className={`w-full sm:w-auto px-6 py-4 rounded-2xl border text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                  darkMode
-                    ? 'bg-white/5 hover:bg-white/10 border-white/15 text-zinc-200'
-                    : 'bg-white hover:bg-orange-50 border-orange-200 text-zinc-800 shadow-xs'
-                }`}
-              >
-                <span>Already have an account? Sign In</span>
               </button>
             </div>
 
             <p className="text-xs text-zinc-500 font-medium pt-1">
               No credit card required · Free 15GB permanent mailbox · Instant account activation
             </p>
-          </section>
-
-          {/* Interactive Mailbox Feature Mockup Card */}
-          <section className="mt-12 sm:mt-16 max-w-4xl mx-auto rounded-3xl p-5 sm:p-8 border shadow-2xl relative overflow-hidden backdrop-blur-2xl transition-all ${
-            darkMode
-              ? 'bg-[#18181c]/80 border-white/10 shadow-black/40'
-              : 'bg-white border-orange-200/60 shadow-orange-500/5'
-          }">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-5 border-b border-white/10 gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-[#FF6A00]/15 flex items-center justify-center text-[#FF6A00]">
-                  <Inbox className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm sm:text-base">GoldMailer Webmail Interface Preview</h3>
-                  <p className="text-xs text-zinc-400">Connected to <strong>yourname@goldmailer.xyz</strong></p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 text-xs">
-                <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  Live Sync Active
-                </span>
-                <span className="px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20 font-semibold">
-                  15 GB Mailbox
-                </span>
-              </div>
-            </div>
-
-            {/* Email item sample */}
-            <div className="mt-4 space-y-2">
-              <div className={`p-3.5 sm:p-4 rounded-2xl flex items-center justify-between gap-3 border ${
-                darkMode ? 'bg-white/5 border-white/5' : 'bg-orange-50/50 border-orange-100'
-              }`}>
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-[#FF6A00] text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
-                    G
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-xs sm:text-sm">GoldMailer Team</span>
-                      <span className="text-[10px] text-zinc-500">support@goldmailer.xyz</span>
-                    </div>
-                    <p className="text-xs text-zinc-400 truncate mt-0.5">
-                      Welcome to GoldMailer! Your permanent 15GB cloud mailbox is active and ready.
-                    </p>
-                  </div>
-                </div>
-                <span className="text-[11px] text-zinc-500 flex-shrink-0">Just now</span>
-              </div>
-
-              <div className={`p-3.5 sm:p-4 rounded-2xl flex items-center justify-between gap-3 border opacity-85 ${
-                darkMode ? 'bg-white/5 border-white/5' : 'bg-zinc-50 border-zinc-100'
-              }`}>
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
-                    M
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-xs sm:text-sm">Gmail Synchronization Hub</span>
-                      <span className="text-[10px] text-zinc-500">oauth-sync@goldmailer.xyz</span>
-                    </div>
-                    <p className="text-xs text-zinc-400 truncate mt-0.5">
-                      Unified Inbox: Manage and aggregate external Gmail correspondence under one roof.
-                    </p>
-                  </div>
-                </div>
-                <span className="text-[11px] text-zinc-500 flex-shrink-0">2m ago</span>
-              </div>
-            </div>
-
-            {/* Live stats footer */}
-            <div className="mt-5 pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400">
-              <div className="flex items-center gap-2">
-                <Shield className="w-4 h-4 text-emerald-400" />
-                <span>2-Step Verification: <strong>Supported (TOTP)</strong></span>
-              </div>
-              <div className="flex items-center gap-2">
-                <HardDrive className="w-4 h-4 text-[#FF8C42]" />
-                <span>Storage Quota: <strong>0.12 GB / 15.00 GB Used</strong></span>
-              </div>
-            </div>
           </section>
 
           {/* Detailed "What is GoldMailer?" Long-Form Section */}
