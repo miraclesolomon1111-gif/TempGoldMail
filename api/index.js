@@ -7352,6 +7352,8 @@ app.post("/api/forwarding/test", async (req, res) => {
 This is a live test email sent to verify that GoldMailer email forwarding to ${forwardTo} is working properly.
 Timestamp: ${(/* @__PURE__ */ new Date()).toLocaleString()}`,
       received_at: (/* @__PURE__ */ new Date()).toISOString(),
+      created_at: (/* @__PURE__ */ new Date()).toISOString(),
+      category: "primary",
       folder: "primary",
       status: "inbox",
       is_read: false,

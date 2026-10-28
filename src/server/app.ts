@@ -362,7 +362,7 @@ export interface StoredEmail {
   is_read: boolean;
   is_starred: boolean;
   folder: string; // 'primary' | 'promotions' | 'social' | 'updates' | 'starred' | 'sent' | 'scheduled' | 'outbox' | 'drafts' | 'all_mail' | 'spam' | 'trash'
-  category: 'primary' | 'promotions' | 'social' | 'updates';
+  category?: 'primary' | 'promotions' | 'social' | 'updates';
   status?: 'inbox' | 'trash' | 'deleted' | 'sent' | 'draft' | 'spam';
   trashed_at?: string;
   scheduled_for?: string;
@@ -6208,6 +6208,8 @@ app.post('/api/forwarding/test', async (req: Request, res: Response) => {
       body_html: `<div style="font-family: Arial, sans-serif; padding: 20px;"><h2>GoldMailer Forwarding Test</h2><p>This is a live test email sent to verify that GoldMailer email forwarding to <strong>${forwardTo}</strong> is working properly.</p><p style="color:#888;">Timestamp: ${new Date().toLocaleString()}</p></div>`,
       body_text: `GoldMailer Forwarding Test\nThis is a live test email sent to verify that GoldMailer email forwarding to ${forwardTo} is working properly.\nTimestamp: ${new Date().toLocaleString()}`,
       received_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      category: 'primary',
       folder: 'primary',
       status: 'inbox',
       is_read: false,

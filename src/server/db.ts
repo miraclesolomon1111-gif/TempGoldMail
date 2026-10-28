@@ -72,7 +72,7 @@ export interface StoredEmail {
   is_read: boolean;
   is_starred: boolean;
   folder: string; // 'primary' | 'promotions' | 'social' | 'updates' | 'starred' | 'sent' | 'scheduled' | 'outbox' | 'drafts' | 'all_mail' | 'spam' | 'trash'
-  category: 'primary' | 'promotions' | 'social' | 'updates';
+  category?: 'primary' | 'promotions' | 'social' | 'updates';
   status?: 'inbox' | 'trash' | 'deleted' | 'sent' | 'draft' | 'spam';
   trashed_at?: string;
   scheduled_for?: string;
