@@ -21,7 +21,9 @@ import {
   AdminPaymentItem,
   AdminSystemHealth,
   AdminSiteSettings,
-  ConnectedEmail
+  ConnectedEmail,
+  ForwardingSettings,
+  ForwardingAddress
 } from '../types';
 
 // Helper: Normalize email messages
@@ -1912,4 +1914,93 @@ export async function saveGoogleOAuthConfig(clientId: string, clientSecret: stri
   if (!res.ok) throw new Error(data.error || 'Failed to save Google OAuth configuration');
   return data;
 }
+
+// ================= GOLDMAILER OUTBOUND EMAIL FORWARDING =================
+
+export async function fetchForwardingSettings(): Promise<ForwardingSettings> {
+  const res = await fetch('/api/forwarding', {
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to load forwarding settings');
+  return {
+    forwarding_enabled: Boolean(data.forwarding_enabled),
+    forwarding_email: data.forwarding_email || '',
+    forwarding_action: data.forwarding_action || 'keep',
+    forwarding_addresses: Array.isArray(data.forwarding_addresses) ? data.forwarding_addresses : []
+  };
+}
+
+export async function addForwardingAddress(email: string): Promise<{ success: boolean; message: string; code?: string }> {
+  const res = await fetch('/api/forwarding/addresses/add', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email: email.trim().toLowerCase() })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to add forwarding address');
+  return data;
+}
+
+export async function verifyForwardingAddress(email: string, code: string): Promise<{ success: boolean; message: string; forwarding_addresses: ForwardingAddress[] }> {
+  const res = await fetch('/api/forwarding/addresses/verify', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ email: email.trim().toLowerCase(), code: code.trim() })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to verify forwarding address');
+  return data;
+}
+
+export async function updateForwardingSettings(settings: {
+  enabled: boolean;
+  forwarding_email?: string;
+  action: 'keep' | 'read' | 'archive' | 'delete';
+}): Promise<{ success: boolean; message: string; settings: any }> {
+  const res = await fetch('/api/forwarding/settings', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(settings)
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to update forwarding settings');
+  return data;
+}
+
+export async function deleteForwardingAddress(email: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`/api/forwarding/addresses/${encodeURIComponent(email)}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to delete forwarding address');
+  return data;
+}
+
+export async function testForwardingDelivery(): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/forwarding/test', {
+    method: 'POST',
+    headers: getHeaders()
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to trigger test forward');
+  return data;
+}
+
+export async function forwardEmailDirectly(data: {
+  emailId: string;
+  toEmail: string;
+  note?: string;
+}): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`/api/emails/${encodeURIComponent(data.emailId)}/forward`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ to: data.toEmail, note: data.note })
+  });
+  const parsed = await safeJsonParse(res);
+  if (!res.ok) throw new Error(parsed.error || 'Failed to forward email');
+  return parsed;
+}
+
 

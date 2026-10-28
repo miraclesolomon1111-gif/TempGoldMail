@@ -45,6 +45,21 @@ export interface EmailMessage {
   scheduled_for?: string;
   avatar_color?: string;
   forwarded_from?: string;
+  forwarded_to?: string;
+}
+
+export interface ForwardingAddress {
+  email: string;
+  verified: boolean;
+  verification_code?: string;
+  added_at: string;
+}
+
+export interface ForwardingSettings {
+  forwarding_enabled: boolean;
+  forwarding_email?: string;
+  forwarding_action: 'keep' | 'read' | 'archive' | 'delete';
+  forwarding_addresses: ForwardingAddress[];
 }
 
 export interface ConnectedEmail {
@@ -121,6 +136,10 @@ export interface UserProfile {
   storage_limit_bytes?: number;
   storage_used_gb?: number;
   storage_quota_gb?: number;
+  forwarding_enabled?: boolean;
+  forwarding_email?: string;
+  forwarding_action?: 'keep' | 'read' | 'archive' | 'delete';
+  forwarding_addresses?: ForwardingAddress[];
 }
 
 export interface Draft {

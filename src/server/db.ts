@@ -37,6 +37,15 @@ export interface StoredGoldUser {
   reset_token_expires?: number;
   temp_email_2fa_code?: string;
   temp_email_2fa_expires?: number;
+  forwarding_enabled?: boolean;
+  forwarding_email?: string;
+  forwarding_action?: 'keep' | 'read' | 'archive' | 'delete';
+  forwarding_addresses?: Array<{
+    email: string;
+    verified: boolean;
+    verification_code?: string;
+    added_at: string;
+  }>;
 }
 
 export interface StoredEmail {

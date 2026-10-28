@@ -19,10 +19,14 @@ import {
   Trash2,
   ExternalLink,
   ArrowRight,
-  Link2
+  Link2,
+  CornerUpRight,
+  Send,
+  CheckCircle2,
+  ChevronDown
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { UserProfile, UserDevice, ConnectedEmail } from '../types';
+import { UserProfile, UserDevice, ConnectedEmail, ForwardingSettings, ForwardingAddress } from '../types';
 import {
   setup2FA,
   enable2FA,
@@ -40,7 +44,13 @@ import {
   syncConnectedEmail,
   toggleConnectedEmailForwarding,
   fetchGoogleOAuthConfig,
-  saveGoogleOAuthConfig
+  saveGoogleOAuthConfig,
+  fetchForwardingSettings,
+  addForwardingAddress,
+  verifyForwardingAddress,
+  updateForwardingSettings,
+  deleteForwardingAddress,
+  testForwardingDelivery
 } from '../lib/api';
 
 interface SettingsModalProps {
@@ -51,7 +61,7 @@ interface SettingsModalProps {
   onUserUpdated: (u: UserProfile) => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
-  initialTab?: 'general' | 'security' | 'devices' | 'connected_emails';
+  initialTab?: 'general' | 'security' | 'devices' | 'connected_emails' | 'forwarding';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -64,7 +74,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToggleDarkMode,
   initialTab = 'devices'
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices' | 'connected_emails'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'general' | 'security' | 'devices' | 'connected_emails' | 'forwarding'>(initialTab);
+
+  // Email Forwarding State (Google Gmail style)
+  const [forwardingSettings, setForwardingSettings] = useState<ForwardingSettings>({
+    forwarding_enabled: Boolean(user?.forwarding_enabled),
+    forwarding_email: user?.forwarding_email || '',
+    forwarding_action: user?.forwarding_action || 'keep',
+    forwarding_addresses: user?.forwarding_addresses || []
+  });
+  const [isForwardingEnabled, setIsForwardingEnabled] = useState(Boolean(user?.forwarding_enabled));
+  const [selectedForwardEmail, setSelectedForwardEmail] = useState(user?.forwarding_email || '');
+  const [forwardAction, setForwardAction] = useState<'keep' | 'read' | 'archive' | 'delete'>(user?.forwarding_action || 'keep');
+  const [newForwardEmail, setNewForwardEmail] = useState('');
+  const [forwardCodeInput, setForwardCodeInput] = useState('');
+  const [forwardStep, setForwardStep] = useState<'idle' | 'input' | 'verify'>('idle');
+  const [pendingForwardVerifyEmail, setPendingForwardVerifyEmail] = useState<string | null>(null);
+  const [isAddingForward, setIsAddingForward] = useState(false);
+  const [isVerifyingForward, setIsVerifyingForward] = useState(false);
+  const [isSavingForwardSettings, setIsSavingForwardSettings] = useState(false);
+  const [isTestingForward, setIsTestingForward] = useState(false);
 
   // Connected Emails state
   const [connectedEmails, setConnectedEmails] = useState<ConnectedEmail[]>([]);
@@ -127,6 +156,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       loadDevices();
       loadConnectedEmails();
       loadOAuthConfig();
+      loadForwardingSettings();
       // Fresh sync of user security & recovery state
       fetchCurrentUser().then((freshUser) => {
         if (freshUser) {
@@ -209,6 +239,106 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const cfg = await fetchGoogleOAuthConfig();
       setOAuthConfig(cfg);
     } catch {}
+  };
+
+  const loadForwardingSettings = async () => {
+    try {
+      const data = await fetchForwardingSettings();
+      setForwardingSettings(data);
+      setIsForwardingEnabled(data.forwarding_enabled);
+      const activeOrFirst = data.forwarding_email || (data.forwarding_addresses.find(a => a.verified)?.email || '');
+      setSelectedForwardEmail(activeOrFirst);
+      setForwardAction(data.forwarding_action || 'keep');
+    } catch {}
+  };
+
+  const handleAddForwardAddress = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newForwardEmail.trim()) return;
+    setIsAddingForward(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await addForwardingAddress(newForwardEmail.trim());
+      setPendingForwardVerifyEmail(newForwardEmail.trim().toLowerCase());
+      setForwardStep('verify');
+      if (res.code) {
+        setForwardCodeInput(res.code);
+      }
+      setSuccessMsg(res.message || `Confirmation code sent to ${newForwardEmail.trim()}`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to add forwarding address');
+    } finally {
+      setIsAddingForward(false);
+    }
+  };
+
+  const handleVerifyForwardCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingForwardVerifyEmail || !forwardCodeInput.trim()) return;
+    setIsVerifyingForward(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      await verifyForwardingAddress(pendingForwardVerifyEmail, forwardCodeInput.trim());
+      setForwardStep('idle');
+      setNewForwardEmail('');
+      setForwardCodeInput('');
+      setSelectedForwardEmail(pendingForwardVerifyEmail);
+      setIsForwardingEnabled(true);
+      await loadForwardingSettings();
+      setSuccessMsg(`Verified ${pendingForwardVerifyEmail} successfully! You can now enable forwarding.`);
+    } catch (err: any) {
+      setError(err.message || 'Invalid confirmation code');
+    } finally {
+      setIsVerifyingForward(false);
+    }
+  };
+
+  const handleSaveForwarding = async () => {
+    setIsSavingForwardSettings(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await updateForwardingSettings({
+        enabled: isForwardingEnabled,
+        forwarding_email: selectedForwardEmail,
+        action: forwardAction
+      });
+      await loadForwardingSettings();
+      setSuccessMsg(res.message || 'Forwarding settings saved successfully');
+    } catch (err: any) {
+      setError(err.message || 'Failed to update forwarding settings');
+    } finally {
+      setIsSavingForwardSettings(false);
+    }
+  };
+
+  const handleDeleteForwardAddress = async (emailToDelete: string) => {
+    if (!confirm(`Are you sure you want to remove ${emailToDelete}?`)) return;
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      await deleteForwardingAddress(emailToDelete);
+      await loadForwardingSettings();
+      setSuccessMsg(`Forwarding address ${emailToDelete} removed`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete forwarding address');
+    }
+  };
+
+  const handleTestForwardDelivery = async () => {
+    setIsTestingForward(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await testForwardingDelivery();
+      setSuccessMsg(res.message || 'Test forwarded email dispatched successfully!');
+    } catch (err: any) {
+      setError(err.message || 'Failed to trigger test forward');
+    } finally {
+      setIsTestingForward(false);
+    }
   };
 
   // Step 1: Request 6-digit verification code sent to Gmail
@@ -538,13 +668,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <span>Your Devices</span>
           </button>
           <button
+            onClick={() => { setActiveTab('forwarding'); setError(null); setSuccessMsg(null); }}
+            className={`px-3 py-1.5 rounded-lg font-semibold transition-colors flex items-center gap-1.5 ${
+              activeTab === 'forwarding' ? 'bg-[#FF6A00] text-white' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <CornerUpRight className="w-3.5 h-3.5" />
+            <span>Forwarding</span>
+          </button>
+          <button
             onClick={() => { setActiveTab('connected_emails'); setError(null); setSuccessMsg(null); }}
             className={`px-3 py-1.5 rounded-lg font-semibold transition-colors flex items-center gap-1.5 ${
               activeTab === 'connected_emails' ? 'bg-[#FF6A00] text-white' : 'text-zinc-400 hover:text-white'
             }`}
           >
             <Mail className="w-3.5 h-3.5" />
-            <span>Connected Emails</span>
+            <span>Gmail Sync</span>
           </button>
           <button
             onClick={() => { setActiveTab('general'); setError(null); setSuccessMsg(null); }}
@@ -1288,6 +1427,392 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {isSavingOAuth ? 'Saving...' : 'Save Credentials'}
                     </button>
                   </form>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: EMAIL FORWARDING (GOOGLE GMAIL STYLE) */}
+          {activeTab === 'forwarding' && (
+            <div className="space-y-4">
+              {/* Header card */}
+              <div className="p-4 bg-gradient-to-r from-[#FF6A00]/15 via-white/5 to-white/5 border border-[#FF6A00]/30 rounded-2xl">
+                <div className="flex items-center gap-2 text-[#FF8C42] font-bold text-sm">
+                  <CornerUpRight className="w-4 h-4 text-[#FF6A00]" />
+                  <span>Forwarding and POP/IMAP</span>
+                </div>
+                <p className="text-xs text-zinc-300 mt-1">
+                  Forward a copy of your incoming GoldMailer messages to another email address (e.g., Gmail, Outlook, Yahoo, or your personal inbox).
+                </p>
+              </div>
+
+              {/* Status Banner */}
+              <div className={`p-3.5 rounded-2xl border text-xs flex items-center justify-between gap-3 ${
+                isForwardingEnabled && selectedForwardEmail
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-white/5 border-white/10 text-zinc-400'
+              }`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                    isForwardingEnabled && selectedForwardEmail ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
+                  }`} />
+                  <span className="truncate">
+                    {isForwardingEnabled && selectedForwardEmail
+                      ? `Forwarding is active to: ${selectedForwardEmail}`
+                      : 'Forwarding is currently disabled.'}
+                  </span>
+                </div>
+                {isForwardingEnabled && selectedForwardEmail && (
+                  <button
+                    type="button"
+                    onClick={handleTestForwardDelivery}
+                    disabled={isTestingForward}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 text-[11px] font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 flex-shrink-0"
+                    title="Send a sample email to verify forwarding delivery"
+                  >
+                    <Send className={`w-3 h-3 ${isTestingForward ? 'animate-spin' : ''}`} />
+                    <span>{isTestingForward ? 'Sending...' : 'Test Delivery'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Forwarding Options (Gmail Authenticity) */}
+              <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-4">
+                <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <CornerUpRight className="w-3.5 h-3.5 text-[#FF6A00]" />
+                  <span>Forwarding Rules</span>
+                </h4>
+
+                <div className="space-y-3">
+                  {/* Option 1: Disable Forwarding */}
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="forwarding_toggle"
+                      checked={!isForwardingEnabled}
+                      onChange={() => setIsForwardingEnabled(false)}
+                      className="accent-[#FF6A00] w-4 h-4 cursor-pointer"
+                    />
+                    <span className="text-zinc-300 text-xs font-medium">Disable forwarding</span>
+                  </label>
+
+                  {/* Option 2: Forward a copy to */}
+                  <div className="space-y-2">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="forwarding_toggle"
+                        checked={isForwardingEnabled}
+                        onChange={() => {
+                          if (forwardingSettings.forwarding_addresses.length === 0) {
+                            setForwardStep('input');
+                          }
+                          setIsForwardingEnabled(true);
+                        }}
+                        className="accent-[#FF6A00] w-4 h-4 mt-0.5 cursor-pointer"
+                      />
+                      <div className="flex-1 space-y-2 text-xs">
+                        <span className="text-zinc-200 font-medium">
+                          Forward a copy of incoming mail to:
+                        </span>
+
+                        {forwardingSettings.forwarding_addresses.filter(a => a.verified).length > 0 ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                            <div>
+                              <select
+                                value={selectedForwardEmail}
+                                onChange={(e) => setSelectedForwardEmail(e.target.value)}
+                                disabled={!isForwardingEnabled}
+                                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
+                              >
+                                {forwardingSettings.forwarding_addresses
+                                  .filter(a => a.verified)
+                                  .map(a => (
+                                    <option key={a.email} value={a.email} className="bg-zinc-900 text-white">
+                                      {a.email}
+                                    </option>
+                                  ))}
+                              </select>
+                            </div>
+                            <div>
+                              <select
+                                value={forwardAction}
+                                onChange={(e) => setForwardAction(e.target.value as any)}
+                                disabled={!isForwardingEnabled}
+                                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
+                              >
+                                <option value="keep" className="bg-zinc-900 text-white">
+                                  keep GoldMailer's copy in the Inbox
+                                </option>
+                                <option value="read" className="bg-zinc-900 text-white">
+                                  mark GoldMailer's copy as read
+                                </option>
+                                <option value="archive" className="bg-zinc-900 text-white">
+                                  archive GoldMailer's copy
+                                </option>
+                                <option value="delete" className="bg-zinc-900 text-white">
+                                  delete GoldMailer's copy
+                                </option>
+                              </select>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="pt-1">
+                            <p className="text-[11px] text-zinc-400">
+                              No verified forwarding address added yet. Click &quot;Add a forwarding address&quot; below to configure one.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center justify-between border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={handleSaveForwarding}
+                    disabled={isSavingForwardSettings}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center gap-2 cursor-pointer"
+                  >
+                    {isSavingForwardSettings ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save Changes</span>
+                      </>
+                    )}
+                  </button>
+
+                  {forwardStep === 'idle' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForwardStep('input');
+                        setError(null);
+                        setSuccessMsg(null);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      + Add a forwarding address
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Add Forwarding Address Wizard */}
+              {forwardStep === 'input' && (
+                <div className="p-4 bg-black/40 border border-[#FF6A00]/40 rounded-2xl space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <CornerUpRight className="w-3.5 h-3.5 text-[#FF6A00]" />
+                      <span>Add a forwarding address</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setForwardStep('idle')}
+                      className="text-zinc-400 hover:text-white text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <form onSubmit={handleAddForwardAddress} className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Enter destination email address
+                      </label>
+                      <input
+                        type="email"
+                        value={newForwardEmail}
+                        onChange={(e) => setNewForwardEmail(e.target.value)}
+                        placeholder="recipient@gmail.com"
+                        required
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs placeholder-zinc-500 focus:outline-none focus:border-[#FF6A00]"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={isAddingForward || !newForwardEmail.trim()}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] text-white text-xs font-bold shadow hover:opacity-90 disabled:opacity-50 cursor-pointer flex items-center gap-2"
+                      >
+                        {isAddingForward ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Sending code...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Next &amp; Send Code</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForwardStep('idle')}
+                        className="px-3 py-2 text-zinc-400 hover:text-white text-xs cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Verify Forwarding Address Code */}
+              {forwardStep === 'verify' && (
+                <div className="p-4 bg-black/40 border border-amber-500/40 rounded-2xl space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Verify forwarding address</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setForwardStep('idle')}
+                      className="text-zinc-400 hover:text-white text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs">
+                    A confirmation code was sent to <strong>{pendingForwardVerifyEmail}</strong>. Enter the 6-digit code below to confirm permission.
+                  </div>
+                  <form onSubmit={handleVerifyForwardCode} className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        6-Digit Confirmation Code
+                      </label>
+                      <input
+                        type="text"
+                        value={forwardCodeInput}
+                        onChange={(e) => setForwardCodeInput(e.target.value)}
+                        placeholder="123456"
+                        required
+                        maxLength={8}
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white font-mono text-center tracking-widest text-sm focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={isVerifyingForward || !forwardCodeInput.trim()}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF6A00] text-white text-xs font-bold shadow hover:opacity-90 disabled:opacity-50 cursor-pointer flex items-center gap-2"
+                      >
+                        {isVerifyingForward ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Verifying...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Verify Address</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForwardStep('idle')}
+                        className="px-3 py-2 text-zinc-400 hover:text-white text-xs cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Verified Addresses List */}
+              <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3">
+                <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <Mail className="w-3.5 h-3.5 text-[#FF6A00]" />
+                  <span>Configured Forwarding Addresses</span>
+                </h4>
+
+                {forwardingSettings.forwarding_addresses.length === 0 ? (
+                  <p className="text-xs text-zinc-500 italic py-2">
+                    No forwarding addresses have been configured yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {forwardingSettings.forwarding_addresses.map(addr => (
+                      <div
+                        key={addr.email}
+                        className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Mail className="w-4 h-4 text-[#FF8C42] flex-shrink-0" />
+                          <div className="truncate">
+                            <span className="font-mono text-xs text-white">{addr.email}</span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {addr.verified ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 font-semibold">
+                                  <Check className="w-3 h-3" />
+                                  <span>Verified</span>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPendingForwardVerifyEmail(addr.email);
+                                    if (addr.verification_code) {
+                                      setForwardCodeInput(addr.verification_code);
+                                    }
+                                    setForwardStep('verify');
+                                  }}
+                                  className="text-[10px] text-amber-400 font-semibold underline hover:text-amber-300 cursor-pointer"
+                                >
+                                  Pending verification (click to verify)
+                                </button>
+                              )}
+                              {selectedForwardEmail === addr.email && isForwardingEnabled && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FF6A00]/20 text-[#FF8C42] font-bold">
+                                  Active Target
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {addr.verified && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                setSelectedForwardEmail(addr.email);
+                                setIsForwardingEnabled(true);
+                                await updateForwardingSettings({
+                                  enabled: true,
+                                  forwarding_email: addr.email,
+                                  action: forwardAction
+                                });
+                                await loadForwardingSettings();
+                                setSuccessMsg(`Forwarding enabled to ${addr.email}`);
+                              }}
+                              title="Set as active forwarding destination"
+                              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-zinc-300 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                            >
+                              Use this address
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteForwardAddress(addr.email)}
+                            title="Remove forwarding address"
+                            className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>

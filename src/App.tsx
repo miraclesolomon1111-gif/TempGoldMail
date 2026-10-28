@@ -178,12 +178,24 @@ export default function App() {
   // Strict Miracle Admin Access Check
   const isMiracleAdmin = (user?.email || activeEmail || '').toLowerCase().trim() === 'miracle@goldmailer.xyz';
 
-  // View Mode: 'hero' (Public Landing Page) by default so Google & visitors can view without login
+  // View Mode: 'app' (Webmail) for authenticated users vs 'hero' (Landing Page) for visitors/public routes
   const [viewMode, setViewMode] = useState<'app' | 'hero'>(() => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname.toLowerCase();
       const hash = window.location.hash.toLowerCase();
-      if ((path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') && getStoredUser()) {
+      if (
+        path === '/terms' ||
+        hash === '#terms' ||
+        path === '/privacy' ||
+        hash === '#privacy' ||
+        path === '/hero' ||
+        hash === '#hero' ||
+        path === '/home' ||
+        hash === '#home'
+      ) {
+        return 'hero';
+      }
+      if (getStoredUser()) {
         return 'app';
       }
     }
@@ -279,7 +291,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState<string>('');
   const [resetEmail, setResetEmail] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'security' | 'devices' | 'connected_emails'>('devices');
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'security' | 'devices' | 'connected_emails' | 'forwarding'>('devices');
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isOAuthDevOpen, setIsOAuthDevOpen] = useState(false);
 
@@ -324,15 +336,32 @@ export default function App() {
       } else if (path === '/terms' || hash === '#terms') {
         setViewMode('hero');
         setHeroInitialSection('terms');
+      } else if (path === '/hero' || hash === '#hero' || path === '/home' || hash === '#home') {
+        setViewMode('hero');
+        setHeroInitialSection('hero');
       } else if (path === '/login' || path === '/signin' || hash === '#login' || hash === '#signin') {
-        setViewMode('hero');
-        setAuthMode('login');
-        setIsAuthOpen(true);
+        if (!getStoredUser()) {
+          setViewMode('hero');
+          setAuthMode('login');
+          setIsAuthOpen(true);
+        }
       } else if (path === '/signup' || path === '/register' || hash === '#signup' || hash === '#register') {
-        setViewMode('hero');
-        setAuthMode('register');
-        setIsAuthOpen(true);
-      } else if (path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') {
+        if (!getStoredUser()) {
+          setViewMode('hero');
+          setAuthMode('register');
+          setIsAuthOpen(true);
+        }
+      } else if (
+        path === '/app' ||
+        hash === '#app' ||
+        hash === '#mail' ||
+        hash === '#inbox' ||
+        hash === '#email' ||
+        hash === '#phone' ||
+        hash.startsWith('#email') ||
+        hash.startsWith('#inbox') ||
+        hash.startsWith('#phone')
+      ) {
         if (getStoredUser()) {
           setViewMode('app');
         } else {
@@ -341,9 +370,13 @@ export default function App() {
           setIsAuthOpen(true);
         }
       } else {
-        // Default: Public home page (never forced behind login)
-        setViewMode('hero');
-        setHeroInitialSection('hero');
+        // Authenticated users stay in app dashboard (never bounce back to hero)
+        if (getStoredUser()) {
+          setViewMode('app');
+        } else {
+          setViewMode('hero');
+          setHeroInitialSection('hero');
+        }
       }
 
       // Reset Password route from email link
@@ -395,6 +428,16 @@ export default function App() {
         setSettingsInitialTab('connected_emails');
         setIsSettingsOpen(true);
       }
+
+      // Email Forwarding route (Google Gmail-style forwarding)
+      if (
+        url.searchParams.get('tab') === 'forwarding' ||
+        path === '/settings/forwarding' ||
+        hash === '#forwarding'
+      ) {
+        setSettingsInitialTab('forwarding');
+        setIsSettingsOpen(true);
+      }
     };
 
     handleRouteCheck();
@@ -411,10 +454,19 @@ export default function App() {
         setStoredActiveEmail(u.email);
         const cached = getCachedEmails(u.email);
         if (cached.length > 0) setAllEmails(cached);
-        // Only set app mode if the user explicitly navigated to webmail path/hash
+        // Only show hero if explicitly navigating to public static routes
         const path = window.location.pathname.toLowerCase();
         const hash = window.location.hash.toLowerCase();
-        if (path === '/app' || hash === '#app' || hash === '#mail' || hash === '#inbox') {
+        if (
+          path !== '/terms' &&
+          hash !== '#terms' &&
+          path !== '/privacy' &&
+          hash !== '#privacy' &&
+          path !== '/hero' &&
+          hash !== '#hero' &&
+          path !== '/home' &&
+          hash !== '#home'
+        ) {
           setViewMode('app');
         }
       } else {

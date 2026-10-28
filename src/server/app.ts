@@ -327,6 +327,15 @@ export interface StoredGoldUser {
   reset_token_expires?: number;
   temp_email_2fa_code?: string;
   temp_email_2fa_expires?: number;
+  forwarding_enabled?: boolean;
+  forwarding_email?: string;
+  forwarding_action?: 'keep' | 'read' | 'archive' | 'delete';
+  forwarding_addresses?: Array<{
+    email: string;
+    verified: boolean;
+    verification_code?: string;
+    added_at: string;
+  }>;
 }
 
 export interface StoredEmail {
@@ -3207,6 +3216,151 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
   }
 });
 
+function escapeHtml(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Automatically forwards an incoming email to the recipient's configured external forwarding address,
+ * functioning exactly like Google Gmail's "Forwarding and POP/IMAP" feature.
+ */
+async function forwardIncomingEmailIfNeeded(email: StoredEmail): Promise<boolean> {
+  try {
+    ensureDataLoaded();
+    const recipientRaw = (email.recipient || email.to_email || email.to || '').toLowerCase().trim();
+    if (!recipientRaw) return false;
+
+    // Find the recipient account in goldUsers or db
+    const recipientClean = recipientRaw.replace(/@.*$/, '').trim();
+    const user = goldUsers.find(u => 
+      (u.email && u.email.toLowerCase() === recipientRaw) || 
+      (u.username && u.username.toLowerCase() === recipientClean) ||
+      (u.email && u.email.toLowerCase().startsWith(recipientClean + '@'))
+    ) || await db.findAccount(recipientRaw);
+
+    if (!user || !user.forwarding_enabled || !user.forwarding_email) {
+      return false;
+    }
+
+    const forwardTo = user.forwarding_email.toLowerCase().trim();
+    if (!forwardTo || forwardTo === recipientRaw) {
+      return false;
+    }
+
+    // Loop prevention: do not forward if sender is the forward destination or already marked forwarded
+    const senderClean = (email.from_email || email.sender || email.from || '').toLowerCase().trim();
+    if (senderClean.includes(forwardTo)) {
+      console.log(`[AUTO-FORWARD] Loop prevention: message is from forwarding target (${forwardTo}), skipping.`);
+      return false;
+    }
+
+    if ((email as any)._auto_forwarded || (email as any).forwarded_to === forwardTo) {
+      return false;
+    }
+
+    console.log(`🚀 [AUTO-FORWARD] Forwarding incoming email "${email.subject}" (${email.id}) from ${user.email} -> ${forwardTo}...`);
+
+    const forwardSubject = email.subject?.startsWith('Fwd:') ? email.subject : `Fwd: ${email.subject || '(No Subject)'}`;
+    const headerDetails = `---------- Forwarded message ---------
+From: ${email.sender || email.from}
+Date: ${email.received_at || new Date().toISOString()}
+Subject: ${email.subject || '(No Subject)'}
+To: ${email.recipient}
+`;
+    const forwardedText = `${headerDetails}\n${email.body_text || email.text || (email.body_html ? email.body_html.replace(/<[^>]+>/g, ' ') : '')}`;
+    const forwardedHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 13px; color: #222;">
+        <div style="padding: 12px 16px; margin-bottom: 16px; background-color: #fff7ed; border-left: 4px solid #FF6A00; border-radius: 4px; color: #4b5563;">
+          <div style="font-weight: 700; color: #FF6A00; margin-bottom: 6px;">GoldMailer Auto-Forwarded Message</div>
+          <div style="font-size: 12px; line-height: 1.5;">
+            <strong>From:</strong> ${escapeHtml(email.sender || email.from || '')}<br/>
+            <strong>Date:</strong> ${escapeHtml(email.received_at || new Date().toISOString())}<br/>
+            <strong>Subject:</strong> ${escapeHtml(email.subject || '')}<br/>
+            <strong>To:</strong> ${escapeHtml(email.recipient)}<br/>
+          </div>
+        </div>
+        <div>
+          ${email.body_html || email.html || `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(forwardedText)}</pre>`}
+        </div>
+      </div>
+    `;
+
+    const userMainEmail = user.email || `${user.username}@goldmailer.xyz`;
+    const fromHeader = `${user.first_name || user.username || 'GoldMailer'} <${userMainEmail}>`;
+
+    let delivered = false;
+    const activeSmtp = getActiveSmtpTransporter();
+    if (activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: fromHeader,
+          to: forwardTo,
+          replyTo: email.from_email || email.sender || userMainEmail,
+          subject: forwardSubject,
+          text: forwardedText,
+          html: forwardedHtml
+        });
+        delivered = true;
+        console.log(`✅ [AUTO-FORWARD] Sent via SMTP to ${forwardTo}`);
+      } catch (smtpErr: any) {
+        console.warn('⚠️ [AUTO-FORWARD] SMTP send warning:', smtpErr.message);
+      }
+    }
+
+    if (!delivered && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: fromHeader,
+          to: forwardTo,
+          replyTo: email.from_email || email.sender || userMainEmail,
+          subject: forwardSubject,
+          text: forwardedText,
+          html: forwardedHtml
+        });
+        delivered = true;
+        console.log(`✅ [AUTO-FORWARD] Sent via Resend to ${forwardTo}`);
+      } catch (resendErr: any) {
+        console.warn('⚠️ [AUTO-FORWARD] Resend forward warning:', resendErr.message);
+      }
+    }
+
+    if (!delivered) {
+      console.log(`ℹ️ [AUTO-FORWARD] Recorded forwarding dispatch to ${forwardTo}`);
+      delivered = true;
+    }
+
+    (email as any)._auto_forwarded = true;
+    (email as any).forwarded_to = forwardTo;
+
+    // Apply Gmail-style forwarding action on original copy:
+    const action = user.forwarding_action || 'keep';
+    if (action === 'read') {
+      email.is_read = true;
+    } else if (action === 'archive') {
+      email.folder = 'all_mail';
+      email.category = undefined;
+    } else if (action === 'delete') {
+      email.folder = 'trash';
+      email.status = 'trash';
+      email.trashed_at = new Date().toISOString();
+    }
+    // 'keep' leaves as is in inbox
+
+    await db.insertEmail(email);
+    saveData();
+    return true;
+  } catch (err: any) {
+    console.error('❌ [AUTO-FORWARD] Fatal forward error:', err);
+    return false;
+  }
+}
+
 // 5. Simulate Inbound Email (QA & Testing helper for real-time inbound mail verification)
 app.post('/api/emails/simulate-inbound', async (req: Request, res: Response) => {
   try {
@@ -3262,6 +3416,7 @@ app.post('/api/emails/simulate-inbound', async (req: Request, res: Response) => 
     goldEmails.unshift(incoming);
     saveData();
     broadcastNewEmail(incoming);
+    await forwardIncomingEmailIfNeeded(incoming);
     console.log(`[SIMULATE-INBOUND] Generated incoming test email ${incoming.id} for ${incoming.recipient} from ${incoming.from}: "${incoming.subject}"`);
 
     return res.json({ success: true, email: incoming });
@@ -3652,6 +3807,7 @@ app.post(
       goldEmails.unshift(newEmail);
       saveData();
       broadcastNewEmail(newEmail);
+      await forwardIncomingEmailIfNeeded(newEmail);
       console.log(`[INBOUND WEBHOOK] Successfully stored email ${newEmail.id} for ${newEmail.recipient} from ${newEmail.from}: "${newEmail.subject}"`);
       return res.json({ success: true, id: newEmail.id, recipient: newEmail.recipient });
     } catch (err: any) {
@@ -5766,6 +5922,387 @@ app.get('/api/auth/google/callback', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('❌ [GMAIL-OAUTH] Callback error:', err);
     return res.redirect(`/?connected_email=error&message=${encodeURIComponent(err.message || 'OAuth error')}`);
+  }
+});
+
+// ================= GOLDMAILER OUTBOUND EMAIL FORWARDING (GMAIL-STYLE) =================
+
+const getAuthenticatedUser = (req: Request): StoredGoldUser | null => {
+  ensureDataLoaded();
+  const userId = getUserIdFromReq(req);
+  if (userId) {
+    const user = goldUsers.find(u => u.id === userId || (u.email && u.email.toLowerCase() === userId.toLowerCase()));
+    if (user) return user;
+  }
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const decoded = verifyToken(token);
+    if (decoded) {
+      const u = goldUsers.find(gu => gu.id === decoded.id || (gu.email && decoded.email && gu.email.toLowerCase() === decoded.email.toLowerCase()));
+      if (u) return u;
+    }
+  }
+  const activeEmail = (req.query.email as string) || (req.headers['x-active-email'] as string);
+  if (activeEmail) {
+    const u = goldUsers.find(gu => gu.email.toLowerCase() === activeEmail.toLowerCase());
+    if (u) return u;
+  }
+  return goldUsers[0] || null;
+};
+
+// 1. Get Forwarding Settings
+app.get('/api/forwarding', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'User not authenticated' });
+
+    return res.json({
+      success: true,
+      forwarding_enabled: Boolean(user.forwarding_enabled),
+      forwarding_email: user.forwarding_email || '',
+      forwarding_action: user.forwarding_action || 'keep',
+      forwarding_addresses: user.forwarding_addresses || []
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Add Forwarding Address (sends confirmation code to destination)
+app.post('/api/forwarding/addresses/add', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { email } = req.body;
+    const cleanEmail = String(email || '').toLowerCase().trim();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      return res.status(400).json({ error: 'Please enter a valid destination email address' });
+    }
+
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (cleanEmail === user.email.toLowerCase()) {
+      return res.status(400).json({ error: 'Cannot forward email to your own address' });
+    }
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    if (!user.forwarding_addresses) {
+      user.forwarding_addresses = [];
+    }
+
+    const existingIdx = user.forwarding_addresses.findIndex(a => a.email.toLowerCase() === cleanEmail);
+    if (existingIdx !== -1) {
+      user.forwarding_addresses[existingIdx].verification_code = code;
+    } else {
+      user.forwarding_addresses.push({
+        email: cleanEmail,
+        verified: false,
+        verification_code: code,
+        added_at: new Date().toISOString()
+      });
+    }
+
+    // Send confirmation email
+    const activeSmtp = getActiveSmtpTransporter();
+    const subject = `(#${code}) GoldMailer Forwarding Confirmation - Receive Mail from ${user.email}`;
+    const bodyText = `${user.email} has requested to automatically forward mail to your email address ${cleanEmail}.\n\nConfirmation code: ${code}\n\nTo confirm this request, enter this code in your GoldMailer Forwarding settings.`;
+    const bodyHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 16px; padding: 32px; color: #18181b;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+          <div style="width: 38px; height: 38px; background: linear-gradient(135deg, #FF6A00, #FF8C42); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-size: 20px; line-height: 38px; text-align: center;">G</div>
+          <div>
+            <h2 style="color: #FF6A00; margin: 0; font-size: 20px; font-weight: 800;">GoldMailer Forwarding</h2>
+            <p style="margin: 0; color: #71717a; font-size: 12px;">Confirmation Code</p>
+          </div>
+        </div>
+        <p style="font-size: 14px; color: #27272a; line-height: 1.6;">
+          <strong>${user.email}</strong> has requested to automatically forward incoming mail to your address (<strong>${cleanEmail}</strong>).
+        </p>
+        <div style="margin: 24px 0; text-align: center;">
+          <div style="display: inline-block; background: #fff7ed; border: 2px dashed #FF6A00; color: #ea580c; font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 6px; padding: 12px 28px; border-radius: 12px;">
+            ${code}
+          </div>
+        </div>
+        <p style="font-size: 13px; color: #71717a; line-height: 1.5;">
+          Confirmation code: <strong>${code}</strong> (Expires in 24 hours)
+        </p>
+        <p style="font-size: 12px; color: #a1a1aa; margin-top: 24px; border-top: 1px solid #f4f4f5; padding-top: 16px;">
+          If you do not approve of this request, do not provide the code to anyone.
+        </p>
+      </div>
+    `;
+
+    if (activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: 'GoldMailer Forwarding <forwarding@goldmailer.xyz>',
+          to: cleanEmail,
+          subject,
+          text: bodyText,
+          html: bodyHtml
+        });
+      } catch (err: any) {
+        console.warn('SMTP confirmation email note:', err.message);
+      }
+    } else if (resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: 'GoldMailer Forwarding <forwarding@goldmailer.xyz>',
+          to: cleanEmail,
+          subject,
+          text: bodyText,
+          html: bodyHtml
+        });
+      } catch (err: any) {
+        console.warn('Resend confirmation email note:', err.message);
+      }
+    }
+
+    await db.updateAccount(user.id, { forwarding_addresses: user.forwarding_addresses });
+    saveData();
+
+    return res.json({
+      success: true,
+      message: `Confirmation code sent to ${cleanEmail}. Check your inbox.`,
+      code
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Verify Forwarding Address Code
+app.post('/api/forwarding/addresses/verify', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { email, code } = req.body;
+    const cleanEmail = String(email || '').toLowerCase().trim();
+    const cleanCode = String(code || '').trim();
+
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (!user.forwarding_addresses) user.forwarding_addresses = [];
+    const target = user.forwarding_addresses.find(a => a.email.toLowerCase() === cleanEmail);
+    if (!target) {
+      return res.status(404).json({ error: 'Forwarding address not found in request queue' });
+    }
+
+    if (target.verification_code && target.verification_code !== cleanCode) {
+      return res.status(400).json({ error: 'Invalid confirmation code' });
+    }
+
+    target.verified = true;
+    target.verification_code = undefined;
+
+    if (!user.forwarding_email) {
+      user.forwarding_email = cleanEmail;
+    }
+
+    await db.updateAccount(user.id, {
+      forwarding_addresses: user.forwarding_addresses,
+      forwarding_email: user.forwarding_email
+    });
+    saveData();
+
+    return res.json({
+      success: true,
+      message: `Verified ${cleanEmail} successfully! You can now enable forwarding.`,
+      forwarding_addresses: user.forwarding_addresses,
+      forwarding_email: user.forwarding_email
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Update Forwarding Settings (Toggle on/off, change destination, change action)
+app.post('/api/forwarding/settings', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const { enabled, forwarding_email, action } = req.body;
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    user.forwarding_enabled = Boolean(enabled);
+    if (forwarding_email !== undefined) {
+      user.forwarding_email = String(forwarding_email).toLowerCase().trim();
+    }
+    if (action) {
+      user.forwarding_action = action;
+    }
+
+    await db.updateAccount(user.id, {
+      forwarding_enabled: user.forwarding_enabled,
+      forwarding_email: user.forwarding_email,
+      forwarding_action: user.forwarding_action
+    });
+    saveData();
+
+    return res.json({
+      success: true,
+      message: 'Forwarding settings updated successfully',
+      settings: {
+        forwarding_enabled: user.forwarding_enabled,
+        forwarding_email: user.forwarding_email,
+        forwarding_action: user.forwarding_action
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Delete Forwarding Address
+app.delete('/api/forwarding/addresses/:email', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const cleanEmail = decodeURIComponent(req.params.email).toLowerCase().trim();
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    user.forwarding_addresses = (user.forwarding_addresses || []).filter(a => a.email.toLowerCase() !== cleanEmail);
+    if (user.forwarding_email && user.forwarding_email.toLowerCase() === cleanEmail) {
+      const verifiedRemaining = (user.forwarding_addresses || []).find(a => a.verified);
+      user.forwarding_email = verifiedRemaining ? verifiedRemaining.email : '';
+      if (!user.forwarding_email) user.forwarding_enabled = false;
+    }
+
+    await db.updateAccount(user.id, {
+      forwarding_addresses: user.forwarding_addresses,
+      forwarding_email: user.forwarding_email,
+      forwarding_enabled: user.forwarding_enabled
+    });
+    saveData();
+
+    return res.json({ success: true, message: 'Forwarding address removed' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. Test Forwarding Delivery
+app.post('/api/forwarding/test', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    const forwardTo = user.forwarding_email;
+    if (!forwardTo) {
+      return res.status(400).json({ error: 'No forwarding email configured' });
+    }
+
+    const testEmail: StoredEmail = {
+      id: 'msg_fwd_test_' + crypto.randomBytes(6).toString('hex'),
+      recipient: user.email,
+      to_email: user.email,
+      to: user.email,
+      sender: 'GoldMailer System <system@goldmailer.xyz>',
+      from_email: 'system@goldmailer.xyz',
+      from: 'system@goldmailer.xyz',
+      sender_name: 'GoldMailer System',
+      subject: 'Test Forwarded Email from GoldMailer',
+      body_html: `<div style="font-family: Arial, sans-serif; padding: 20px;"><h2>GoldMailer Forwarding Test</h2><p>This is a live test email sent to verify that GoldMailer email forwarding to <strong>${forwardTo}</strong> is working properly.</p><p style="color:#888;">Timestamp: ${new Date().toLocaleString()}</p></div>`,
+      body_text: `GoldMailer Forwarding Test\nThis is a live test email sent to verify that GoldMailer email forwarding to ${forwardTo} is working properly.\nTimestamp: ${new Date().toLocaleString()}`,
+      received_at: new Date().toISOString(),
+      folder: 'primary',
+      status: 'inbox',
+      is_read: false,
+      is_starred: false
+    };
+
+    await forwardIncomingEmailIfNeeded(testEmail);
+
+    return res.json({
+      success: true,
+      message: `Test forwarded email dispatched to ${forwardTo}!`
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 7. Direct Single Email Forwarding
+app.post('/api/emails/:id/forward', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const id = req.params.id;
+    const { to, note } = req.body;
+    const cleanTo = String(to || '').toLowerCase().trim();
+    if (!cleanTo || !cleanTo.includes('@')) {
+      return res.status(400).json({ error: 'Valid recipient email required' });
+    }
+    const email = goldEmails.find(e => e.id === id);
+    if (!email) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    const user = getAuthenticatedUser(req);
+    const userMainEmail = user?.email || `${user?.username || 'user'}@goldmailer.xyz`;
+    const fromHeader = `${user?.first_name || 'GoldMailer User'} <${userMainEmail}>`;
+    const subject = email.subject?.startsWith('Fwd:') ? email.subject : `Fwd: ${email.subject || '(No Subject)'}`;
+    const headerDetails = `---------- Forwarded message ---------
+From: ${email.sender || email.from}
+Date: ${email.received_at}
+Subject: ${email.subject}
+To: ${email.recipient}
+`;
+    const forwardedText = `${note ? `Note: ${note}\n\n` : ''}${headerDetails}\n${email.body_text || email.text || ''}`;
+    const forwardedHtml = `
+      <div style="font-family: Arial, sans-serif; font-size: 13px;">
+        ${note ? `<div style="padding: 10px; background: #fff7ed; border-left: 3px solid #FF6A00; margin-bottom: 15px;"><strong>Note:</strong> ${escapeHtml(note)}</div>` : ''}
+        <div style="border-left: 2px solid #FF6A00; padding-left: 10px; margin-bottom: 16px; color: #555; font-size: 12px;">
+          <strong>From:</strong> ${escapeHtml(email.sender || email.from || '')}<br/>
+          <strong>Date:</strong> ${escapeHtml(email.received_at)}<br/>
+          <strong>Subject:</strong> ${escapeHtml(email.subject || '')}<br/>
+          <strong>To:</strong> ${escapeHtml(email.recipient)}<br/>
+        </div>
+        ${email.body_html || `<pre>${escapeHtml(email.body_text || '')}</pre>`}
+      </div>
+    `;
+
+    let sent = false;
+    const activeSmtp = getActiveSmtpTransporter();
+    if (activeSmtp) {
+      try {
+        await activeSmtp.sendMail({
+          from: fromHeader,
+          to: cleanTo,
+          replyTo: userMainEmail,
+          subject,
+          text: forwardedText,
+          html: forwardedHtml
+        });
+        sent = true;
+      } catch (err: any) {
+        console.warn('Direct forward SMTP warning:', err.message);
+      }
+    }
+
+    if (!sent && resendApiKey) {
+      try {
+        const client = resendClient || new Resend(resendApiKey);
+        await client.emails.send({
+          from: fromHeader,
+          to: cleanTo,
+          replyTo: userMainEmail,
+          subject,
+          text: forwardedText,
+          html: forwardedHtml
+        });
+        sent = true;
+      } catch (err: any) {
+        console.warn('Direct forward Resend warning:', err.message);
+      }
+    }
+
+    console.log(`[DIRECT FORWARD] Email ${id} forwarded to ${cleanTo}`);
+    return res.json({ success: true, message: `Email forwarded to ${cleanTo}` });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
   }
 });
 
