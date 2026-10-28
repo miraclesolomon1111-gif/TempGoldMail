@@ -26,6 +26,18 @@ import {
   getHeaders
 } from './lib/api';
 
+import { useAuth } from './context/AuthContext.tsx';
+import {
+  db,
+  collection,
+  query,
+  where,
+  onSnapshot,
+  deleteEmailInFirestore,
+  updateEmailInFirestore,
+  sendEmailToFirestore
+} from './lib/firebase.ts';
+
 import { GmailHeader } from './components/GmailHeader';
 import { GmailSidebar } from './components/GmailSidebar';
 import { GmailDrawer } from './components/GmailDrawer';
@@ -157,13 +169,11 @@ export default function App() {
 
   const toggleDarkMode = () => setDarkMode(!darkMode);
 
-  // User State
-  const [user, setUser] = useState<UserProfile | null>(() => getStoredUser());
+  // User & Auth State (Firebase as Single Source of Truth)
+  const { user: authUser, firebaseUser, loading: authLoading, logout: authLogout } = useAuth();
+  const [user, setUser] = useState<UserProfile | null>(() => authUser || getStoredUser());
   const [activeEmail, setActiveEmail] = useState<string>(() => {
-    const stored = getStoredActiveEmail();
-    if (stored) return stored;
-    const u = getStoredUser();
-    return u?.email || '';
+    return authUser?.email || getStoredActiveEmail() || '';
   });
 
   // Current IP & Geo-Location Activity (Requirement 5)
@@ -445,118 +455,115 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleRouteCheck);
   }, []);
 
-  // Restore authenticated session on mount if valid token exists
+  // Synchronize authenticated session from Firebase Auth (single source of truth)
   useEffect(() => {
-    initDefaultSession().then((u) => {
-      if (u) {
-        setUser(u);
-        setActiveEmail(u.email);
-        setStoredActiveEmail(u.email);
-        const cached = getCachedEmails(u.email);
-        if (cached.length > 0) setAllEmails(cached);
-        // Only show hero if explicitly navigating to public static routes
-        const path = window.location.pathname.toLowerCase();
-        const hash = window.location.hash.toLowerCase();
-        if (
-          path !== '/terms' &&
-          hash !== '#terms' &&
-          path !== '/privacy' &&
-          hash !== '#privacy' &&
-          path !== '/hero' &&
-          hash !== '#hero' &&
-          path !== '/home' &&
-          hash !== '#home'
-        ) {
-          setViewMode('app');
-        }
-      } else {
-        const token = getAuthToken();
-        const stored = getStoredUser();
-        if (!token && !stored) {
-          clearAuthToken();
-          setUser(null);
-          setViewMode('hero');
-        }
-      }
-    }).catch(() => {});
-  }, []);
+    if (authUser) {
+      setUser(authUser);
+      setActiveEmail(authUser.email);
+      setStoredActiveEmail(authUser.email);
+      setStoredUser(authUser);
 
-  // Periodic session validity check (detects if device was logged out from another device)
+      const path = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+      if (
+        path !== '/terms' &&
+        hash !== '#terms' &&
+        path !== '/privacy' &&
+        hash !== '#privacy' &&
+        path !== '/hero' &&
+        hash !== '#hero' &&
+        path !== '/home' &&
+        hash !== '#home'
+      ) {
+        setViewMode('app');
+      }
+    } else if (!authLoading && !firebaseUser) {
+      const stored = getStoredUser();
+      if (!stored) {
+        setUser(null);
+        setViewMode('hero');
+      }
+    }
+  }, [authUser, firebaseUser, authLoading]);
+
+  // Real-time Firestore Emails Subscription (Requirement 1)
+  // onSnapshot(query(collection(db, "emails"), where("userId", "==", uid)))
+  // Shows loading spinner while fetching, never empty inbox, emails stay permanently until deleted
   useEffect(() => {
-    if (!user) return;
-    const interval = setInterval(async () => {
-      try {
-        const token = getAuthToken();
-        if (!token) return;
-        const res = await fetch('/api/auth/me', { headers: getHeaders() });
-        if (res.status === 401) {
-          const errData = await res.json().catch(() => ({}));
-          // Strictly only kick out if session was explicitly revoked or token invalid
-          if (errData?.session_revoked || errData?.error === 'Session has been logged out or revoked' || errData?.error === 'Invalid token') {
-            clearAuthToken();
-            setUser(null);
-            setViewMode('hero');
-          }
-          return;
-        }
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (data?.user) {
-            const fresh = data.user;
-            setStoredUser(fresh);
-            setUser(prev => {
-              if (!prev) return fresh;
-              if (
-                prev.two_factor_enabled !== fresh.two_factor_enabled ||
-                prev.recovery_phone !== fresh.recovery_phone ||
-                prev.backup_email !== fresh.backup_email ||
-                (prev as any).recovery_email !== (fresh as any).recovery_email ||
-                JSON.stringify(prev.backup_codes) !== JSON.stringify(fresh.backup_codes)
-              ) {
-                return { ...prev, ...fresh };
-              }
-              return prev;
-            });
-          }
-        }
-      } catch {
-        // Network glitch / offline - do not log out
-      }
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [user]);
-
-  // Load emails and drafts for active email (fetches all_mail and drafts)
-  const loadMailData = useCallback(async (targetEmail?: string, silent = false) => {
-    const emailToFetch = targetEmail || activeEmail;
-    if (!emailToFetch) {
-      if (!silent) setIsLoadingEmails(false);
+    const currentUid = firebaseUser?.uid || user?.id || (user as any)?.uid;
+    if (!currentUid) {
+      setIsLoadingEmails(false);
       return;
     }
-    // Instant display: Render cached emails immediately without waiting for network
-    const cached = getCachedEmails(emailToFetch);
-    if (cached.length > 0) {
-      setAllEmails(cached);
-    }
-    if (!silent) setIsLoadingEmails(cached.length === 0);
-    try {
-      const emailPromise = fetchEmails(emailToFetch, 'all');
-      const draftPromise = fetchDrafts().catch(() => []);
-      const [emailList, draftList] = await Promise.all([emailPromise, draftPromise]);
-      if (Array.isArray(emailList)) {
-        const cleanList = deduplicateEmailList(emailList);
-        setAllEmails(cleanList);
-        setCachedEmails(emailToFetch, cleanList);
+
+    setIsLoadingEmails(true);
+
+    const emailsQuery = query(
+      collection(db, "emails"),
+      where("userId", "==", currentUid)
+    );
+
+    const unsubscribe = onSnapshot(
+      emailsQuery,
+      (snapshot) => {
+        const list: EmailMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data();
+          const dateStr = d.date || d.received_at || d.created_at || new Date().toISOString();
+          const toEmail = d.to || d.recipient || activeEmail;
+          const fromEmail = d.from || d.sender || 'unknown@goldmailer.xyz';
+          const senderName = d.sender_name || (fromEmail ? fromEmail.split('@')[0] : 'Sender');
+
+          list.push({
+            id: docSnap.id,
+            to: toEmail,
+            recipient: toEmail,
+            to_email: toEmail,
+            from: fromEmail,
+            sender: fromEmail,
+            from_email: fromEmail,
+            sender_name: senderName,
+            subject: d.subject || '(No Subject)',
+            body: d.body || d.body_html || d.body_text || '',
+            body_html: d.body_html || d.body || '',
+            body_text: d.body_text || (typeof d.body === 'string' ? d.body.replace(/<[^>]+>/g, '') : ''),
+            date: dateStr,
+            received_at: dateStr,
+            created_at: dateStr,
+            read: Boolean(d.read ?? d.is_read),
+            is_read: Boolean(d.read ?? d.is_read),
+            starred: Boolean(d.starred ?? d.is_starred),
+            is_starred: Boolean(d.starred ?? d.is_starred),
+            folder: (d.folder as MailFolder) || 'primary',
+            category: d.category || 'primary',
+            status: d.status || 'inbox',
+            forwarded_from: d.forwarded_from,
+            forwarded_to: d.forwarded_to
+          });
+        });
+
+        list.sort((a, b) => new Date(b.date || b.received_at || 0).getTime() - new Date(a.date || a.received_at || 0).getTime());
+        setAllEmails(list);
+        setIsLoadingEmails(false);
+      },
+      (err) => {
+        console.warn("Firestore emails snapshot error:", err);
+        setIsLoadingEmails(false);
       }
+    );
+
+    return () => unsubscribe();
+  }, [firebaseUser?.uid, user?.id, activeEmail]);
+
+  // Load drafts
+  const loadMailData = useCallback(async (_targetEmail?: string, _silent = false) => {
+    try {
+      const draftList = await fetchDrafts().catch(() => []);
       if (Array.isArray(draftList)) {
         setDrafts(draftList);
       }
-    } catch {
-      // safe fallback - never wipe existing emails on transient errors
-    } finally {
-      if (!silent) setIsLoadingEmails(false);
-    }
-  }, [activeEmail]);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     loadMailData(activeEmail);
@@ -694,6 +701,20 @@ export default function App() {
     try {
       await updateEmailStatus(emailId, { is_starred: !currentStarred });
     } catch {}
+  };
+
+  // Select email and mark as read in Firestore
+  const handleSelectEmail = async (m: EmailMessage) => {
+    setSelectedEmail(m);
+    if (!m.is_read) {
+      setAllEmails((prev) =>
+        prev.map((e) => (e.id === m.id ? { ...e, is_read: true, read: true } : e))
+      );
+      try {
+        await updateEmailInFirestore(m.id, { is_read: true, read: true });
+        await updateEmailStatus(m.id, { is_read: true });
+      } catch {}
+    }
   };
 
   // Open Compose for new email
@@ -918,8 +939,11 @@ export default function App() {
     loadMailData(targetEmail, false);
   };
 
-  // Logout active account
-  const handleLogout = () => {
+  // Logout active account via Firebase
+  const handleLogout = async () => {
+    try {
+      await authLogout();
+    } catch {}
     try {
       const token = getAuthToken();
       if (token) {
@@ -1190,7 +1214,7 @@ export default function App() {
                     isLoading={isLoadingEmails}
                     isRefreshing={isSyncing}
                     onRefresh={handleSyncEmails}
-                    onSelectEmail={(m) => setSelectedEmail(m)}
+                    onSelectEmail={handleSelectEmail}
                     onSelectDraft={handleSelectDraft}
                     onDeleteDraft={handleDeleteDraft}
                     onToggleStar={handleToggleStar}

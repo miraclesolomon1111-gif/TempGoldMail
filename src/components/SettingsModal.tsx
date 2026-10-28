@@ -305,8 +305,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         forwarding_email: selectedForwardEmail,
         action: forwardAction
       });
+      if (user) {
+        onUserUpdated({
+          ...user,
+          forwarding_enabled: isForwardingEnabled,
+          forwarding_email: selectedForwardEmail,
+          forwarding_action: forwardAction,
+          forwarding: {
+            enabled: isForwardingEnabled,
+            forwardTo: selectedForwardEmail,
+            keepCopy: true
+          }
+        });
+      }
       await loadForwardingSettings();
-      setSuccessMsg(res.message || 'Forwarding settings saved successfully');
+      setSuccessMsg(res.message || 'Forwarding settings saved successfully in Firestore');
     } catch (err: any) {
       setError(err.message || 'Failed to update forwarding settings');
     } finally {

@@ -36,8 +36,12 @@ export interface EmailMessage {
   raw?: any;
   received_at: string;
   created_at?: string;
+  date?: string;
   is_read?: boolean;
+  read?: boolean;
   is_starred?: boolean;
+  starred?: boolean;
+  userId?: string;
   folder?: MailFolder;
   category?: 'primary' | 'promotions' | 'social' | 'updates';
   status?: 'inbox' | 'trash' | 'deleted' | 'sent' | 'draft' | 'spam';
@@ -140,6 +144,12 @@ export interface UserProfile {
   forwarding_email?: string;
   forwarding_action?: 'keep' | 'read' | 'archive' | 'delete';
   forwarding_addresses?: ForwardingAddress[];
+  uid?: string;
+  forwarding?: {
+    enabled: boolean;
+    forwardTo: string;
+    keepCopy?: boolean;
+  };
 }
 
 export interface Draft {
