@@ -574,6 +574,34 @@ export async function sendEmailToFirestore(payload: {
         category: 'primary',
         status: 'inbox'
       });
+
+      // Forward to recipient's configured forwarding address if active
+      const recData = recipientDoc.data();
+      const recForwarding = recData?.forwarding || {};
+      const isFwd = Boolean(recData?.forwarding_enabled || recForwarding.enabled);
+      const fwdTarget = (recData?.forwarding_email || recForwarding.forwardTo || recData?.forwardingAddress || '').trim().toLowerCase();
+
+      if (isFwd && fwdTarget && fwdTarget !== cleanTo) {
+        try {
+          fetch('/api/forwarding/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              forwardTo: fwdTarget,
+              email: {
+                id: recipientEmailId,
+                recipient: cleanTo,
+                sender: payload.senderEmail.trim().toLowerCase(),
+                from: payload.senderEmail.trim().toLowerCase(),
+                subject: payload.subject.trim() || '(No Subject)',
+                body_html: payload.body,
+                body_text: payload.body.replace(/<[^>]+>/g, ''),
+                _auto_forward_target: fwdTarget
+              }
+            })
+          }).catch(() => {});
+        } catch {}
+      }
     }
   } catch (deliveryErr) {
     console.debug("Internal recipient delivery note:", deliveryErr);

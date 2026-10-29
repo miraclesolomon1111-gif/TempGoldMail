@@ -263,14 +263,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           };
           const isEnabled = Boolean(f.enabled);
           const forwardToEmail = f.forwardTo || userData.forwarding_email || '';
+          const savedAddresses: ForwardingAddress[] = (Array.isArray(userData.forwarding_addresses) && userData.forwarding_addresses.length > 0)
+            ? [...userData.forwarding_addresses]
+            : (forwardToEmail ? [{ email: forwardToEmail, verified: true, added_at: new Date().toISOString() }] : []);
+          if (forwardToEmail && !savedAddresses.some((a: any) => a.email.toLowerCase() === forwardToEmail.toLowerCase())) {
+            savedAddresses.push({ email: forwardToEmail, verified: true, added_at: new Date().toISOString() });
+          }
           setIsForwardingEnabled(isEnabled);
           setSelectedForwardEmail(forwardToEmail);
           setForwardAction(f.keepCopy !== false ? 'keep' : (userData.forwarding_action || 'keep'));
           setForwardingSettings({
             forwarding_enabled: isEnabled,
             forwarding_email: forwardToEmail,
-            forwarding_action: f.keepCopy !== false ? 'keep' : 'read',
-            forwarding_addresses: forwardToEmail ? [{ email: forwardToEmail, verified: true, added_at: new Date().toISOString() }] : []
+            forwarding_action: f.keepCopy !== false ? 'keep' : (userData.forwarding_action || 'keep'),
+            forwarding_addresses: savedAddresses
           });
           return;
         }

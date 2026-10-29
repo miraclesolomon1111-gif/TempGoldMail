@@ -16,6 +16,8 @@ import {
   getFirestore,
   doc,
   setDoc,
+  getDoc,
+  updateDoc,
   collection,
   query,
   where,
@@ -126,6 +128,7 @@ export async function persistEmailToFirestore(email: StoredEmail): Promise<void>
     const cleanUsername = rawTo.replace(/@.*$/, '').trim();
     let targetUid = '';
     let targetForwarding: any = null;
+    let targetUserData: any = null;
 
     if (rawTo) {
       try {
@@ -134,7 +137,8 @@ export async function persistEmailToFirestore(email: StoredEmail): Promise<void>
         if (!uSnap.empty) {
           const userDoc = uSnap.docs[0];
           targetUid = userDoc.id;
-          targetForwarding = userDoc.data()?.forwarding;
+          targetUserData = userDoc.data();
+          targetForwarding = targetUserData?.forwarding;
         }
       } catch (err) {
         console.warn('[FIRESTORE] User email query warning:', err);
@@ -148,7 +152,8 @@ export async function persistEmailToFirestore(email: StoredEmail): Promise<void>
         if (!uSnap2.empty) {
           const userDoc = uSnap2.docs[0];
           targetUid = userDoc.id;
-          targetForwarding = userDoc.data()?.forwarding;
+          targetUserData = userDoc.data();
+          targetForwarding = targetUserData?.forwarding;
         }
       } catch (err) {
         console.warn('[FIRESTORE] User username query warning:', err);
@@ -192,11 +197,15 @@ export async function persistEmailToFirestore(email: StoredEmail): Promise<void>
     await setDoc(doc(serverFirestore, "emails", email.id), emailDocData);
     console.log(`✅ [FIRESTORE PERSIST] Stored email ${email.id} into Firestore for user ${targetUid} (${rawTo})`);
 
-    if (targetForwarding?.enabled && targetForwarding?.forwardTo) {
-      console.log(`🚀 [FIRESTORE AUTO-FORWARD] Target user has active forwarding to ${targetForwarding.forwardTo}`);
+    const isOutbound = email.folder === 'sent' || email.folder === 'drafts' || email.folder === 'scheduled' || email.status === 'sent';
+    const forwardDest = (targetForwarding?.forwardTo || targetUserData?.forwarding_email || targetUserData?.forwardingAddress || '').toLowerCase().trim();
+    const isForwardEnabled = Boolean(targetForwarding?.enabled || targetUserData?.forwarding_enabled || targetUserData?.isForwardingEnabled);
+
+    if (!isOutbound && isForwardEnabled && forwardDest) {
+      console.log(`🚀 [FIRESTORE AUTO-FORWARD] Target user has active forwarding to ${forwardDest}`);
       void forwardIncomingEmailIfNeeded({
         ...email,
-        _auto_forward_target: targetForwarding.forwardTo
+        _auto_forward_target: forwardDest
       } as any);
     }
   } catch (err) {
@@ -526,6 +535,8 @@ export interface StoredEmail {
   status?: 'inbox' | 'trash' | 'deleted' | 'sent' | 'draft' | 'spam';
   trashed_at?: string;
   scheduled_for?: string;
+  forwarded_from?: string;
+  forwarded_to?: string;
   raw?: any;
 }
 
@@ -3385,6 +3396,7 @@ app.post('/api/emails/send', async (req: Request, res: Response) => {
         await db.insertEmail(recvEmail);
         goldEmails.unshift(recvEmail);
         broadcastNewEmail(recvEmail);
+        await forwardIncomingEmailIfNeeded(recvEmail);
       }
     }
 
@@ -3422,23 +3434,71 @@ function escapeHtml(str: string): string {
 async function forwardIncomingEmailIfNeeded(email: StoredEmail): Promise<boolean> {
   try {
     ensureDataLoaded();
+    const isOutbound = email.folder === 'sent' || email.folder === 'drafts' || email.folder === 'scheduled' || email.status === 'sent';
+    if (isOutbound) {
+      return false;
+    }
+
     const recipientRaw = (email.recipient || email.to_email || email.to || '').toLowerCase().trim();
     if (!recipientRaw) return false;
-
-    // Find the recipient account in goldUsers or db
     const recipientClean = recipientRaw.replace(/@.*$/, '').trim();
-    const user = goldUsers.find(u => 
+
+    // 1. Resolve recipient account in goldUsers or db
+    let user = goldUsers.find(u => 
       (u.email && u.email.toLowerCase() === recipientRaw) || 
       (u.username && u.username.toLowerCase() === recipientClean) ||
       (u.email && u.email.toLowerCase().startsWith(recipientClean + '@'))
     ) || await db.findAccount(recipientRaw);
 
+    // 2. Resolve recipient in Firestore users collection
+    let firestoreUserData: any = null;
+    let recipientUid = user?.id || '';
+    if (serverFirestore) {
+      try {
+        const uQuery = query(collection(serverFirestore, "users"), where("email", "==", recipientRaw));
+        const uSnap = await getDocs(uQuery);
+        if (!uSnap.empty) {
+          const uDoc = uSnap.docs[0];
+          firestoreUserData = uDoc.data();
+          if (!recipientUid) recipientUid = uDoc.id;
+        } else if (recipientClean) {
+          const uQuery2 = query(collection(serverFirestore, "users"), where("username", "==", recipientClean));
+          const uSnap2 = await getDocs(uQuery2);
+          if (!uSnap2.empty) {
+            const uDoc = uSnap2.docs[0];
+            firestoreUserData = uDoc.data();
+            if (!recipientUid) recipientUid = uDoc.id;
+          }
+        }
+      } catch (fErr) {
+        console.warn('[AUTO-FORWARD] Firestore user lookup note:', fErr);
+      }
+    }
+
+    // 3. Determine forward destination and forward action
     let forwardTo = ((email as any)._auto_forward_target || '').toLowerCase().trim();
+    let forwardAction: 'keep' | 'read' | 'archive' | 'delete' = 'keep';
+
     if (!forwardTo) {
-      if (!user || !user.forwarding_enabled || !user.forwarding_email) {
+      const fsForwarding = firestoreUserData?.forwarding;
+      const isFsEnabled = Boolean(fsForwarding?.enabled || firestoreUserData?.forwarding_enabled || firestoreUserData?.isForwardingEnabled);
+      const fsTarget = (fsForwarding?.forwardTo || firestoreUserData?.forwarding_email || firestoreUserData?.forwardingAddress || '').toLowerCase().trim();
+
+      const isDbEnabled = Boolean(user?.forwarding_enabled || (user as any)?.isForwardingEnabled);
+      const dbTarget = (user?.forwarding_email || (user as any)?.forwardingAddress || '').toLowerCase().trim();
+
+      if (isFsEnabled && fsTarget) {
+        forwardTo = fsTarget;
+        forwardAction = firestoreUserData?.forwarding_action || (fsForwarding?.keepCopy === false ? 'read' : 'keep') || 'keep';
+      } else if (isDbEnabled && dbTarget) {
+        forwardTo = dbTarget;
+        forwardAction = user?.forwarding_action || 'keep';
+      } else {
         return false;
       }
-      forwardTo = user.forwarding_email.toLowerCase().trim();
+    } else {
+      const fsForwarding = firestoreUserData?.forwarding;
+      forwardAction = firestoreUserData?.forwarding_action || (fsForwarding?.keepCopy === false ? 'read' : undefined) || user?.forwarding_action || 'keep';
     }
 
     if (!forwardTo || forwardTo === recipientRaw) {
@@ -3463,7 +3523,7 @@ async function forwardIncomingEmailIfNeeded(email: StoredEmail): Promise<boolean
 From: ${email.sender || email.from}
 Date: ${email.received_at || new Date().toISOString()}
 Subject: ${email.subject || '(No Subject)'}
-To: ${email.recipient}
+To: ${email.recipient || recipientRaw}
 `;
     const forwardedText = `${headerDetails}\n${email.body_text || email.text || (email.body_html ? email.body_html.replace(/<[^>]+>/g, ' ') : '')}`;
     const forwardedHtml = `
@@ -3474,7 +3534,7 @@ To: ${email.recipient}
             <strong>From:</strong> ${escapeHtml(email.sender || email.from || '')}<br/>
             <strong>Date:</strong> ${escapeHtml(email.received_at || new Date().toISOString())}<br/>
             <strong>Subject:</strong> ${escapeHtml(email.subject || '')}<br/>
-            <strong>To:</strong> ${escapeHtml(email.recipient)}<br/>
+            <strong>To:</strong> ${escapeHtml(email.recipient || recipientRaw)}<br/>
           </div>
         </div>
         <div>
@@ -3487,6 +3547,72 @@ To: ${email.recipient}
     const fromHeader = user ? `${user.first_name || user.username || 'GoldMailer'} <${userMainEmail}>` : `GoldMailer Forwarder <${userMainEmail}>`;
 
     let delivered = false;
+
+    // Delivery 1: If forward target is an internal GoldMailer user or registered user in Firestore/DB
+    const targetClean = forwardTo.replace(/@.*$/, '').trim();
+    const internalTarget = goldUsers.find(u => 
+      (u.email && u.email.toLowerCase() === forwardTo) || 
+      (u.username && u.username.toLowerCase() === targetClean)
+    ) || await db.findAccount(forwardTo);
+
+    let targetFirestoreUid = internalTarget?.id || '';
+    if (serverFirestore && !targetFirestoreUid) {
+      try {
+        const uQ = query(collection(serverFirestore, "users"), where("email", "==", forwardTo));
+        const uS = await getDocs(uQ);
+        if (!uS.empty) {
+          targetFirestoreUid = uS.docs[0].id;
+        }
+      } catch {}
+    }
+
+    if (internalTarget || targetFirestoreUid || forwardTo.endsWith('@goldmailer.xyz')) {
+      const forwardedCopy: StoredEmail = {
+        id: 'msg_fwd_' + crypto.randomBytes(8).toString('hex'),
+        recipient: forwardTo,
+        to_email: forwardTo,
+        to: forwardTo,
+        sender: fromHeader,
+        from_email: userMainEmail,
+        from: userMainEmail,
+        sender_name: user ? (user.first_name || user.username || 'GoldMailer Forwarder') : 'GoldMailer Forwarder',
+        subject: forwardSubject,
+        body_html: forwardedHtml,
+        body_text: forwardedText,
+        html: forwardedHtml,
+        text: forwardedText,
+        body: forwardedHtml || forwardedText,
+        received_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        is_read: false,
+        is_starred: false,
+        folder: 'primary',
+        category: 'primary',
+        status: 'inbox',
+        forwarded_from: recipientRaw,
+        forwarded_to: forwardTo
+      };
+
+      await db.insertEmail(forwardedCopy);
+      goldEmails.unshift(forwardedCopy);
+      saveData();
+      broadcastNewEmail(forwardedCopy);
+
+      if (serverFirestore && targetFirestoreUid) {
+        try {
+          await setDoc(doc(serverFirestore, "emails", forwardedCopy.id), {
+            ...forwardedCopy,
+            userId: targetFirestoreUid
+          });
+        } catch (fErr) {
+          console.warn('Firestore forward copy error:', fErr);
+        }
+      }
+      delivered = true;
+      console.log(`✅ [AUTO-FORWARD] Delivered internal forwarded copy to ${forwardTo}`);
+    }
+
+    // Delivery 2: Outbound via SMTP
     const activeSmtp = getActiveSmtpTransporter();
     if (activeSmtp) {
       try {
@@ -3505,19 +3631,35 @@ To: ${email.recipient}
       }
     }
 
-    if (!delivered && resendApiKey) {
+    // Delivery 3: Outbound via Resend
+    if (resendApiKey) {
       try {
         const client = resendClient || new Resend(resendApiKey);
-        await client.emails.send({
-          from: fromHeader,
-          to: forwardTo,
-          replyTo: email.from_email || email.sender || userMainEmail,
-          subject: forwardSubject,
-          text: forwardedText,
-          html: forwardedHtml
-        });
-        delivered = true;
-        console.log(`✅ [AUTO-FORWARD] Sent via Resend to ${forwardTo}`);
+        try {
+          await client.emails.send({
+            from: fromHeader,
+            to: forwardTo,
+            replyTo: email.from_email || email.sender || userMainEmail,
+            subject: forwardSubject,
+            text: forwardedText,
+            html: forwardedHtml
+          });
+          delivered = true;
+          console.log(`✅ [AUTO-FORWARD] Sent via Resend to ${forwardTo}`);
+        } catch (resendDomainErr: any) {
+          console.warn('⚠️ [AUTO-FORWARD] Resend custom from domain failed, falling back to verified sender:', resendDomainErr.message);
+          const fallbackFrom = resendFrom || 'GoldMailer Forwarder <forwarding@goldmailer.xyz>';
+          await client.emails.send({
+            from: fallbackFrom,
+            to: forwardTo,
+            replyTo: email.from_email || email.sender || userMainEmail,
+            subject: forwardSubject,
+            text: forwardedText,
+            html: forwardedHtml
+          });
+          delivered = true;
+          console.log(`✅ [AUTO-FORWARD] Sent via Resend fallback to ${forwardTo}`);
+        }
       } catch (resendErr: any) {
         console.warn('⚠️ [AUTO-FORWARD] Resend forward warning:', resendErr.message);
       }
@@ -3532,9 +3674,10 @@ To: ${email.recipient}
     (email as any).forwarded_to = forwardTo;
 
     // Apply Gmail-style forwarding action on original copy:
-    const action = user?.forwarding_action || 'keep';
+    const action = forwardAction || 'keep';
     if (action === 'read') {
       email.is_read = true;
+      (email as any).read = true;
     } else if (action === 'archive') {
       email.folder = 'all_mail';
       email.category = undefined;
@@ -3547,6 +3690,19 @@ To: ${email.recipient}
 
     await db.insertEmail(email);
     saveData();
+
+    if (serverFirestore && email.id) {
+      try {
+        await updateDoc(doc(serverFirestore, "emails", email.id), {
+          is_read: Boolean(email.is_read),
+          read: Boolean(email.is_read),
+          folder: email.folder || 'primary',
+          status: email.status || 'inbox',
+          ...(email.trashed_at ? { trashed_at: email.trashed_at } : {})
+        });
+      } catch {}
+    }
+
     return true;
   } catch (err: any) {
     console.error('❌ [AUTO-FORWARD] Fatal forward error:', err);
@@ -6466,6 +6622,23 @@ app.post('/api/forwarding/settings', async (req: Request, res: Response) => {
     });
     saveData();
 
+    if (serverFirestore && user.id) {
+      try {
+        await setDoc(doc(serverFirestore, "users", user.id), {
+          forwarding_enabled: user.forwarding_enabled,
+          forwarding_email: user.forwarding_email,
+          forwarding_action: user.forwarding_action,
+          forwarding: {
+            enabled: user.forwarding_enabled,
+            forwardTo: user.forwarding_email,
+            keepCopy: user.forwarding_action === 'keep'
+          }
+        }, { merge: true });
+      } catch (fsSyncErr) {
+        console.warn('Firestore server sync forwarding error:', fsSyncErr);
+      }
+    }
+
     return res.json({
       success: true,
       message: 'Forwarding settings updated successfully',
@@ -6502,6 +6675,21 @@ app.delete('/api/forwarding/addresses/:email', async (req: Request, res: Respons
     });
     saveData();
 
+    if (serverFirestore && user.id) {
+      try {
+        await setDoc(doc(serverFirestore, "users", user.id), {
+          forwarding_addresses: user.forwarding_addresses,
+          forwarding_email: user.forwarding_email,
+          forwarding_enabled: user.forwarding_enabled,
+          forwarding: {
+            enabled: user.forwarding_enabled,
+            forwardTo: user.forwarding_email,
+            keepCopy: true
+          }
+        }, { merge: true });
+      } catch {}
+    }
+
     return res.json({ success: true, message: 'Forwarding address removed' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -6513,17 +6701,31 @@ app.post('/api/forwarding/test', async (req: Request, res: Response) => {
   try {
     ensureDataLoaded();
     const user = getAuthenticatedUser(req);
-    if (!user) return res.status(401).json({ error: 'Unauthorized' });
-    const forwardTo = user.forwarding_email;
+    let forwardTo = (req.body?.forwardTo || user?.forwarding_email || '').toLowerCase().trim();
+
+    if (!forwardTo && user?.id && serverFirestore) {
+      try {
+        const uSnap = await getDoc(doc(serverFirestore, "users", user.id));
+        if (uSnap.exists()) {
+          const d = uSnap.data();
+          forwardTo = (d.forwarding?.forwardTo || d.forwarding_email || d.forwardingAddress || '').toLowerCase().trim();
+        }
+      } catch {}
+    }
+
+    if (!forwardTo && req.body?.email?._auto_forward_target) {
+      forwardTo = String(req.body.email._auto_forward_target).toLowerCase().trim();
+    }
+
     if (!forwardTo) {
       return res.status(400).json({ error: 'No forwarding email configured' });
     }
 
-    const testEmail: StoredEmail = {
+    const testEmail: StoredEmail = req.body?.email || {
       id: 'msg_fwd_test_' + crypto.randomBytes(6).toString('hex'),
-      recipient: user.email,
-      to_email: user.email,
-      to: user.email,
+      recipient: user?.email || 'user@goldmailer.xyz',
+      to_email: user?.email || 'user@goldmailer.xyz',
+      to: user?.email || 'user@goldmailer.xyz',
       sender: 'GoldMailer System <system@goldmailer.xyz>',
       from_email: 'system@goldmailer.xyz',
       from: 'system@goldmailer.xyz',
@@ -6537,10 +6739,14 @@ app.post('/api/forwarding/test', async (req: Request, res: Response) => {
       folder: 'primary',
       status: 'inbox',
       is_read: false,
-      is_starred: false
+      is_starred: false,
+      _auto_forward_target: forwardTo
     };
 
-    await forwardIncomingEmailIfNeeded(testEmail);
+    await forwardIncomingEmailIfNeeded({
+      ...testEmail,
+      _auto_forward_target: forwardTo
+    } as any);
 
     return res.json({
       success: true,
@@ -6561,7 +6767,19 @@ app.post('/api/emails/:id/forward', async (req: Request, res: Response) => {
     if (!cleanTo || !cleanTo.includes('@')) {
       return res.status(400).json({ error: 'Valid recipient email required' });
     }
-    const email = goldEmails.find(e => e.id === id);
+
+    let email = goldEmails.find(e => e.id === id);
+    if (!email) {
+      const fromDb = await db.getEmailById(id);
+      if (fromDb) email = fromDb;
+    }
+    if (!email && serverFirestore) {
+      try {
+        const snap = await getDoc(doc(serverFirestore, "emails", id));
+        if (snap.exists()) email = snap.data() as StoredEmail;
+      } catch {}
+    }
+
     if (!email) {
       return res.status(404).json({ error: 'Email not found' });
     }
@@ -6572,8 +6790,8 @@ app.post('/api/emails/:id/forward', async (req: Request, res: Response) => {
     const subject = email.subject?.startsWith('Fwd:') ? email.subject : `Fwd: ${email.subject || '(No Subject)'}`;
     const headerDetails = `---------- Forwarded message ---------
 From: ${email.sender || email.from}
-Date: ${email.received_at}
-Subject: ${email.subject}
+Date: ${email.received_at || new Date().toISOString()}
+Subject: ${email.subject || '(No Subject)'}
 To: ${email.recipient}
 `;
     const forwardedText = `${note ? `Note: ${note}\n\n` : ''}${headerDetails}\n${email.body_text || email.text || ''}`;
@@ -6582,7 +6800,7 @@ To: ${email.recipient}
         ${note ? `<div style="padding: 10px; background: #fff7ed; border-left: 3px solid #FF6A00; margin-bottom: 15px;"><strong>Note:</strong> ${escapeHtml(note)}</div>` : ''}
         <div style="border-left: 2px solid #FF6A00; padding-left: 10px; margin-bottom: 16px; color: #555; font-size: 12px;">
           <strong>From:</strong> ${escapeHtml(email.sender || email.from || '')}<br/>
-          <strong>Date:</strong> ${escapeHtml(email.received_at)}<br/>
+          <strong>Date:</strong> ${escapeHtml(email.received_at || new Date().toISOString())}<br/>
           <strong>Subject:</strong> ${escapeHtml(email.subject || '')}<br/>
           <strong>To:</strong> ${escapeHtml(email.recipient)}<br/>
         </div>
@@ -6591,6 +6809,108 @@ To: ${email.recipient}
     `;
 
     let sent = false;
+
+    // Delivery 1: If recipient is internal GoldMailer account or in DB/Firestore
+    const cleanTargetUser = cleanTo.replace(/@.*$/, '').trim();
+    const internalRecipient = goldUsers.find(u =>
+      (u.email && u.email.toLowerCase() === cleanTo) ||
+      (u.username && u.username.toLowerCase() === cleanTargetUser)
+    ) || await db.findAccount(cleanTo);
+
+    let recipientUid = internalRecipient?.id || '';
+    if (serverFirestore && !recipientUid) {
+      try {
+        const uQ = query(collection(serverFirestore, "users"), where("email", "==", cleanTo));
+        const uS = await getDocs(uQ);
+        if (!uS.empty) recipientUid = uS.docs[0].id;
+      } catch {}
+    }
+
+    const forwardedEmailId = 'msg_fwd_' + crypto.randomBytes(8).toString('hex');
+    const forwardedEmailDoc: StoredEmail = {
+      id: forwardedEmailId,
+      recipient: cleanTo,
+      to_email: cleanTo,
+      to: cleanTo,
+      sender: fromHeader,
+      from_email: userMainEmail,
+      from: userMainEmail,
+      sender_name: user?.first_name || 'GoldMailer User',
+      subject,
+      body_html: forwardedHtml,
+      body_text: forwardedText,
+      html: forwardedHtml,
+      text: forwardedText,
+      body: forwardedHtml || forwardedText,
+      received_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      is_read: false,
+      is_starred: false,
+      folder: 'primary',
+      category: 'primary',
+      status: 'inbox',
+      forwarded_from: userMainEmail,
+      forwarded_to: cleanTo
+    };
+
+    if (internalRecipient || recipientUid || cleanTo.endsWith('@goldmailer.xyz')) {
+      await db.insertEmail(forwardedEmailDoc);
+      goldEmails.unshift(forwardedEmailDoc);
+      saveData();
+      broadcastNewEmail(forwardedEmailDoc);
+
+      if (serverFirestore && recipientUid) {
+        try {
+          await setDoc(doc(serverFirestore, "emails", forwardedEmailDoc.id), {
+            ...forwardedEmailDoc,
+            userId: recipientUid
+          });
+        } catch {}
+      }
+      sent = true;
+      console.log(`[DIRECT FORWARD] Delivered internally to ${cleanTo}`);
+    }
+
+    // Save a copy in Sent folder for sender
+    const senderSentDoc: StoredEmail = {
+      id: 'msg_fwd_sent_' + crypto.randomBytes(8).toString('hex'),
+      user_id: user?.id,
+      recipient: cleanTo,
+      to_email: cleanTo,
+      to: cleanTo,
+      sender: fromHeader,
+      from_email: userMainEmail,
+      from: userMainEmail,
+      sender_name: user?.first_name || 'GoldMailer User',
+      subject,
+      body_html: forwardedHtml,
+      body_text: forwardedText,
+      html: forwardedHtml,
+      text: forwardedText,
+      body: forwardedHtml || forwardedText,
+      received_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      is_read: true,
+      is_starred: false,
+      folder: 'sent',
+      category: 'primary',
+      status: 'sent',
+      forwarded_to: cleanTo
+    };
+    await db.insertEmail(senderSentDoc);
+    goldEmails.unshift(senderSentDoc);
+    saveData();
+    broadcastNewEmail(senderSentDoc);
+    if (serverFirestore && user?.id) {
+      try {
+        await setDoc(doc(serverFirestore, "emails", senderSentDoc.id), {
+          ...senderSentDoc,
+          userId: user.id
+        });
+      } catch {}
+    }
+
+    // Delivery 2: SMTP Outbound
     const activeSmtp = getActiveSmtpTransporter();
     if (activeSmtp) {
       try {
@@ -6608,18 +6928,33 @@ To: ${email.recipient}
       }
     }
 
-    if (!sent && resendApiKey) {
+    // Delivery 3: Resend Outbound
+    if (resendApiKey) {
       try {
         const client = resendClient || new Resend(resendApiKey);
-        await client.emails.send({
-          from: fromHeader,
-          to: cleanTo,
-          replyTo: userMainEmail,
-          subject,
-          text: forwardedText,
-          html: forwardedHtml
-        });
-        sent = true;
+        try {
+          await client.emails.send({
+            from: fromHeader,
+            to: cleanTo,
+            replyTo: userMainEmail,
+            subject,
+            text: forwardedText,
+            html: forwardedHtml
+          });
+          sent = true;
+        } catch (resendDomainErr: any) {
+          console.warn('Direct forward custom from domain warning, falling back to verified sender:', resendDomainErr.message);
+          const fallbackFrom = resendFrom || 'GoldMailer Forwarder <forwarding@goldmailer.xyz>';
+          await client.emails.send({
+            from: fallbackFrom,
+            to: cleanTo,
+            replyTo: userMainEmail,
+            subject,
+            text: forwardedText,
+            html: forwardedHtml
+          });
+          sent = true;
+        }
       } catch (err: any) {
         console.warn('Direct forward Resend warning:', err.message);
       }
