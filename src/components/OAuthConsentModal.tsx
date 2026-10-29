@@ -11,7 +11,7 @@ import {
   Check,
   UserPlus
 } from 'lucide-react';
-import { authorizeOAuthConsent, getStoredAccounts, getAuthToken, StoredAccount } from '../lib/api';
+import { authorizeOAuthConsent, getStoredAccounts, getAuthToken, getStoredUser, StoredAccount } from '../lib/api';
 import { UserProfile } from '../types';
 
 interface OAuthConsentModalProps {
@@ -85,13 +85,14 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
       const localAccs = getStoredAccounts();
       const combinedMap = new Map<string, StoredAccount>();
 
-      // Seed from currently logged in user prop
-      if (user) {
-        combinedMap.set(user.email.toLowerCase(), {
-          id: user.id,
-          email: user.email,
-          username: user.username,
-          name: user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : (user.name || user.username),
+      // Seed from currently logged in user prop or getStoredUser()
+      const activeUser = user || getStoredUser();
+      if (activeUser && activeUser.email) {
+        combinedMap.set(activeUser.email.toLowerCase(), {
+          id: activeUser.id,
+          email: activeUser.email,
+          username: activeUser.username,
+          name: activeUser.first_name ? `${activeUser.first_name} ${activeUser.last_name || ''}`.trim() : (activeUser.name || activeUser.username),
           token: ''
         });
       }
@@ -110,6 +111,8 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
         const headers: Record<string, string> = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
         if (localEmails.length > 0) headers['X-Device-Accounts'] = JSON.stringify(localEmails);
+        if (activeUser?.id) headers['X-User-Id'] = activeUser.id;
+        if (activeUser?.email) headers['X-User-Email'] = activeUser.email;
 
         const res = await fetch(`/api/oauth/accounts${localEmails.length > 0 ? `?emails=${encodeURIComponent(localEmails.join(','))}` : ''}`, { headers });
         const data = await res.json();
@@ -142,7 +145,7 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
         setAccounts(allAccounts);
         if (allAccounts.length > 0) {
           // Select matching active email or default to first
-          const currentEmail = user?.email?.toLowerCase();
+          const currentEmail = (user?.email || activeUser?.email)?.toLowerCase();
           const found = allAccounts.find(a => a.email.toLowerCase() === currentEmail);
           setSelectedAccount(found || allAccounts[0]);
         } else {
@@ -162,7 +165,19 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
   if (!isOpen) return null;
 
   const handleAllow = async () => {
-    if (!isClientValid || !selectedAccount) return;
+    const activeUser = user || getStoredUser();
+    const targetAccount = selectedAccount || (activeUser ? {
+      id: activeUser.id,
+      email: activeUser.email,
+      username: activeUser.username,
+      name: activeUser.first_name ? `${activeUser.first_name} ${activeUser.last_name || ''}`.trim() : (activeUser.name || activeUser.username),
+      token: ''
+    } : null);
+
+    if (!isClientValid || !targetAccount) {
+      setError('Please choose an active logged-in account to authorize.');
+      return;
+    }
     setIsApproving(true);
     setError(null);
     try {
@@ -171,8 +186,8 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
         redirect_uri: redirectUri,
         scope,
         state,
-        user_id: selectedAccount.id,
-        email: selectedAccount.email
+        user_id: targetAccount.id,
+        email: targetAccount.email
       });
 
       if (res.redirect_url) {
