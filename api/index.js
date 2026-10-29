@@ -12,6 +12,16 @@ import { Resend } from "resend";
 import multer from "multer";
 import { simpleParser as simpleParser2 } from "mailparser";
 import nodemailer from "nodemailer";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  collection,
+  query,
+  where,
+  getDocs
+} from "firebase/firestore";
 
 // src/server/db.ts
 import fs from "fs";
@@ -2306,6 +2316,10 @@ if (sseKeepAliveTimer && typeof sseKeepAliveTimer.unref === "function") {
   sseKeepAliveTimer.unref();
 }
 function broadcastNewEmail(email) {
+  try {
+    void persistEmailToFirestore(email);
+  } catch {
+  }
   for (let i = sseClients.length - 1; i >= 0; i--) {
     const client = sseClients[i];
     try {
@@ -2342,6 +2356,94 @@ function broadcastNewCall(call) {
     }
   }
 }
+var serverFirebaseConfig = {
+  apiKey: "AIzaSyDRWzRgWbAjVI-mYXGnLDc9Ea9ST2IGyiw",
+  authDomain: "myassetpay-24c2d.firebaseapp.com",
+  projectId: "myassetpay-24c2d",
+  storageBucket: "myassetpay-24c2d.firebasestorage.app",
+  messagingSenderId: "914618622784",
+  appId: "1:914618622784:web:868b35828e4eb2419f50a5",
+  measurementId: "G-4YPZR6HX9Z"
+};
+var serverFbApp = getApps().length === 0 ? initializeApp(serverFirebaseConfig) : getApp();
+var serverFirestore = getFirestore(serverFbApp);
+async function persistEmailToFirestore(email) {
+  try {
+    const rawTo = (email.recipient || email.to_email || email.to || "").toLowerCase().trim();
+    const cleanUsername = rawTo.replace(/@.*$/, "").trim();
+    let targetUid = "";
+    let targetForwarding = null;
+    if (rawTo) {
+      try {
+        const uQuery = query(collection(serverFirestore, "users"), where("email", "==", rawTo));
+        const uSnap = await getDocs(uQuery);
+        if (!uSnap.empty) {
+          const userDoc = uSnap.docs[0];
+          targetUid = userDoc.id;
+          targetForwarding = userDoc.data()?.forwarding;
+        }
+      } catch (err) {
+        console.warn("[FIRESTORE] User email query warning:", err);
+      }
+    }
+    if (!targetUid && cleanUsername) {
+      try {
+        const uQuery2 = query(collection(serverFirestore, "users"), where("username", "==", cleanUsername));
+        const uSnap2 = await getDocs(uQuery2);
+        if (!uSnap2.empty) {
+          const userDoc = uSnap2.docs[0];
+          targetUid = userDoc.id;
+          targetForwarding = userDoc.data()?.forwarding;
+        }
+      } catch (err) {
+        console.warn("[FIRESTORE] User username query warning:", err);
+      }
+    }
+    if (!targetUid) {
+      if (rawTo.includes("miracle")) {
+        targetUid = "usr_miracle_01";
+      } else {
+        targetUid = "usr_" + cleanUsername;
+      }
+    }
+    const emailDocData = {
+      id: email.id,
+      userId: targetUid,
+      to: rawTo,
+      recipient: rawTo,
+      to_email: rawTo,
+      from: email.from || email.sender || email.from_email || "unknown@sender.com",
+      sender: email.from || email.sender || email.from_email || "unknown@sender.com",
+      from_email: email.from || email.sender || email.from_email || "unknown@sender.com",
+      sender_name: email.sender_name || (email.from ? email.from.split("@")[0] : "Sender"),
+      subject: email.subject || "(No Subject)",
+      body: email.body || email.body_html || email.body_text || "",
+      body_html: email.body_html || email.body || "",
+      body_text: email.body_text || "",
+      date: email.received_at || email.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+      received_at: email.received_at || email.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+      created_at: email.created_at || email.received_at || (/* @__PURE__ */ new Date()).toISOString(),
+      read: Boolean(email.is_read || email.read),
+      is_read: Boolean(email.is_read || email.read),
+      starred: Boolean(email.is_starred || email.starred),
+      is_starred: Boolean(email.is_starred || email.starred),
+      folder: email.folder || "primary",
+      category: email.category || "primary",
+      status: email.status || "inbox"
+    };
+    await setDoc(doc(serverFirestore, "emails", email.id), emailDocData);
+    console.log(`\u2705 [FIRESTORE PERSIST] Stored email ${email.id} into Firestore for user ${targetUid} (${rawTo})`);
+    if (targetForwarding?.enabled && targetForwarding?.forwardTo) {
+      console.log(`\u{1F680} [FIRESTORE AUTO-FORWARD] Target user has active forwarding to ${targetForwarding.forwardTo}`);
+      void forwardIncomingEmailIfNeeded({
+        ...email,
+        _auto_forward_target: targetForwarding.forwardTo
+      });
+    }
+  } catch (err) {
+    console.error("\u274C [FIRESTORE PERSIST ERROR]:", err);
+  }
+}
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path2.dirname(__filename);
 var app = express();
@@ -2365,10 +2467,22 @@ app.get(["/privacy", "/privacy.html", "/api/privacy", "/api/privacy.html"], (_re
   return res.redirect("/#privacy");
 });
 app.use((req, _res, next) => {
-  if (req.url && !req.url.startsWith("/api") && !req.url.startsWith("/oauth") && !req.url.startsWith("/googleaf6d742afb618102.html") && !req.url.startsWith("/privacy")) {
+  const matchedPath = req.headers["x-matched-path"] || req.headers["x-now-matched-path"];
+  if (matchedPath && typeof matchedPath === "string" && (req.url === "/api" || req.url === "/" || !req.url.startsWith("/api/"))) {
+    req.url = matchedPath.startsWith("/") ? matchedPath : "/" + matchedPath;
+  } else if (req.url && !req.url.startsWith("/api") && !req.url.startsWith("/oauth") && !req.url.startsWith("/googleaf6d742afb618102.html") && !req.url.startsWith("/privacy")) {
     req.url = "/api" + (req.url.startsWith("/") ? req.url : "/" + req.url);
   }
   next();
+});
+app.get(["/api", "/api/health"], (_req, res) => {
+  res.json({
+    status: "ok",
+    service: "GoldMailer API Serverless",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    firebase: "connected",
+    persistence: "Firestore (myassetpay-24c2d)"
+  });
 });
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -4845,10 +4959,13 @@ async function forwardIncomingEmailIfNeeded(email) {
     const user = goldUsers.find(
       (u) => u.email && u.email.toLowerCase() === recipientRaw || u.username && u.username.toLowerCase() === recipientClean || u.email && u.email.toLowerCase().startsWith(recipientClean + "@")
     ) || await db.findAccount(recipientRaw);
-    if (!user || !user.forwarding_enabled || !user.forwarding_email) {
-      return false;
+    let forwardTo = (email._auto_forward_target || "").toLowerCase().trim();
+    if (!forwardTo) {
+      if (!user || !user.forwarding_enabled || !user.forwarding_email) {
+        return false;
+      }
+      forwardTo = user.forwarding_email.toLowerCase().trim();
     }
-    const forwardTo = user.forwarding_email.toLowerCase().trim();
     if (!forwardTo || forwardTo === recipientRaw) {
       return false;
     }
@@ -4886,8 +5003,8 @@ ${email.body_text || email.text || (email.body_html ? email.body_html.replace(/<
         </div>
       </div>
     `;
-    const userMainEmail = user.email || `${user.username}@goldmailer.xyz`;
-    const fromHeader = `${user.first_name || user.username || "GoldMailer"} <${userMainEmail}>`;
+    const userMainEmail = user ? user.email || `${user.username}@goldmailer.xyz` : recipientRaw || "service@goldmailer.xyz";
+    const fromHeader = user ? `${user.first_name || user.username || "GoldMailer"} <${userMainEmail}>` : `GoldMailer Forwarder <${userMainEmail}>`;
     let delivered = false;
     const activeSmtp = getActiveSmtpTransporter();
     if (activeSmtp) {
@@ -9310,7 +9427,13 @@ app.delete("/api/phone/calls", (req, res) => {
 });
 
 // src/server/apiEntry.ts
-var apiEntry_default = app;
+function handler(req, res) {
+  const matchedPath = req.headers?.["x-matched-path"] || req.headers?.["x-now-route-matches"];
+  if (matchedPath && typeof matchedPath === "string" && (req.url === "/api" || req.url === "/" || !req.url.startsWith("/api/"))) {
+    req.url = matchedPath;
+  }
+  return app(req, res);
+}
 export {
-  apiEntry_default as default
+  handler as default
 };

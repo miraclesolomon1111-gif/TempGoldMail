@@ -764,104 +764,93 @@ export default function App() {
     setIsComposeOpen(true);
   };
 
-  // Email Move to trash (instant optimistic update + permanent cache)
+  // Email Move to trash (instant optimistic update + permanent Firestore update)
   const handleMoveToTrash = async (id: string) => {
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(
+    setAllEmails((prev) =>
+      deduplicateEmailList(
         prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
-      );
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+      )
+    );
     setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'trash', status: 'trash' } : prev));
     try {
-      await updateEmailStatus(id, { folder: 'trash' });
+      await deleteEmailInFirestore(id, false);
+      await updateEmailStatus(id, { folder: 'trash' }).catch(() => {});
     } catch {}
   };
 
   // Restore email from trash back to Inbox
   const handleRestoreEmail = async (id: string) => {
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(
+    setAllEmails((prev) =>
+      deduplicateEmailList(
         prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
-      );
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+      )
+    );
     setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'primary', status: 'inbox' } : prev));
     try {
-      await restoreEmail(id);
+      await updateEmailInFirestore(id, { folder: 'primary' });
+      await restoreEmail(id).catch(() => {});
     } catch {}
   };
 
   // Email Move to spam
   const handleMoveToSpam = async (id: string) => {
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(
+    setAllEmails((prev) =>
+      deduplicateEmailList(
         prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
-      );
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+      )
+    );
     setSelectedEmail(null);
     try {
-      await updateEmailStatus(id, { folder: 'spam' });
+      await updateEmailInFirestore(id, { folder: 'spam' });
+      await updateEmailStatus(id, { folder: 'spam' }).catch(() => {});
     } catch {}
   };
 
   // Delete email permanently
   const handleDeleteEmail = async (id: string) => {
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(prev.filter((m) => m.id !== id));
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+    setAllEmails((prev) => deduplicateEmailList(prev.filter((m) => m.id !== id)));
     setSelectedEmail(null);
     try {
-      await deleteEmail(id, true);
+      await deleteEmailInFirestore(id, true);
+      await deleteEmail(id, true).catch(() => {});
     } catch {}
   };
 
   // Batch move to trash
   const handleBatchMoveToTrash = async (ids: string[]) => {
     const idSet = new Set(ids);
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(
+    setAllEmails((prev) =>
+      deduplicateEmailList(
         prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
-      );
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+      )
+    );
     try {
-      await batchEmailAction(ids, 'trash');
+      await Promise.all(ids.map(id => deleteEmailInFirestore(id, false)));
+      await batchEmailAction(ids, 'trash').catch(() => {});
     } catch {}
   };
 
   // Batch delete permanently
   const handleBatchDeletePermanently = async (ids: string[]) => {
     const idSet = new Set(ids);
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(prev.filter((m) => !idSet.has(m.id)));
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+    setAllEmails((prev) => deduplicateEmailList(prev.filter((m) => !idSet.has(m.id))));
     try {
-      await batchEmailAction(ids, 'delete_permanent');
+      await Promise.all(ids.map(id => deleteEmailInFirestore(id, true)));
+      await batchEmailAction(ids, 'delete_permanent').catch(() => {});
     } catch {}
   };
 
   // Batch restore
   const handleBatchRestore = async (ids: string[]) => {
     const idSet = new Set(ids);
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(
+    setAllEmails((prev) =>
+      deduplicateEmailList(
         prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
-      );
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+      )
+    );
     try {
-      await batchEmailAction(ids, 'restore');
+      await Promise.all(ids.map(id => updateEmailInFirestore(id, { folder: 'primary' })));
+      await batchEmailAction(ids, 'restore').catch(() => {});
     } catch {}
   };
 
@@ -872,13 +861,12 @@ export default function App() {
     const confirmEmpty = window.confirm ? window.confirm('Empty Trash? All messages in Trash will be permanently deleted.') : true;
     if (!confirmEmpty) return;
 
-    setAllEmails((prev) => {
-      const updated = deduplicateEmailList(prev.filter((m) => m.folder !== 'trash' && (m as any).status !== 'trash'));
-      setCachedEmails(activeEmail, updated);
-      return updated;
-    });
+    setAllEmails((prev) =>
+      deduplicateEmailList(prev.filter((m) => m.folder !== 'trash' && (m as any).status !== 'trash'))
+    );
     try {
-      await emptyTrash(activeEmail);
+      await Promise.all(trashEmails.map(e => deleteEmailInFirestore(e.id, true)));
+      await emptyTrash(activeEmail).catch(() => {});
     } catch {}
   };
 
@@ -1076,6 +1064,20 @@ export default function App() {
       (e.body_text && e.body_text.toLowerCase().includes(q))
     );
   });
+
+  if (authLoading) {
+    return (
+      <div className={`min-h-screen flex flex-col items-center justify-center font-sans ${darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'}`}>
+        <div className="flex flex-col items-center space-y-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#FF6A00] to-[#FF8C42] flex items-center justify-center shadow-lg shadow-orange-500/20 text-white font-black text-xl">
+            G
+          </div>
+          <div className="w-7 h-7 border-2 border-[#FF6A00]/25 border-t-[#FF6A00] rounded-full animate-spin" />
+          <p className="text-xs text-zinc-400 font-medium tracking-wide">Loading GoldMailer...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors ${

@@ -318,17 +318,10 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
       {/* Main Mail List / Drafts List */}
       <div className="flex-1 overflow-y-auto pb-24">
         {isLoading && emails.length === 0 ? (
-          /* Skeleton Loader only when no emails loaded yet */
-          <div className="divide-y divide-white/5 animate-pulse">
-            {[1, 2, 3, 4, 5, 6].map((n) => (
-              <div key={n} className="flex items-center gap-3.5 px-4 py-3.5">
-                <div className="w-10 h-10 rounded-full bg-white/5 flex-shrink-0" />
-                <div className="flex-1 space-y-2">
-                  <div className="h-3 w-32 bg-white/10 rounded" />
-                  <div className="h-3 w-48 bg-white/5 rounded" />
-                </div>
-              </div>
-            ))}
+          /* Loading Spinner while fetching from Firestore */
+          <div className="flex-1 flex flex-col items-center justify-center py-28 space-y-3.5">
+            <div className="w-9 h-9 border-3 border-[#FF6A00]/25 border-t-[#FF6A00] rounded-full animate-spin" />
+            <p className="text-xs text-zinc-400 font-medium tracking-wide">Loading messages from Firestore...</p>
           </div>
         ) : isDraftFolder ? (
           /* Drafts List View */

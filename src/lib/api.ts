@@ -469,70 +469,36 @@ export async function registerGoldUser(formData: {
   phone: string;
   country: string;
 }): Promise<{ success: boolean; token: string; user: UserProfile; backup_codes: string[] }> {
-  try {
-    const fbRes = await firebaseRegister({
-      firstName: formData.firstName,
-      lastName: formData.lastName,
-      dob: formData.dob,
-      gender: formData.gender,
-      username: formData.username,
-      password: formData.password,
-      phone: formData.phone,
-      country: formData.country
-    });
+  const fbRes = await firebaseRegister({
+    firstName: formData.firstName,
+    lastName: formData.lastName,
+    dob: formData.dob,
+    gender: formData.gender,
+    username: formData.username,
+    password: formData.password,
+    phone: formData.phone,
+    country: formData.country
+  });
 
-    setAuthToken(fbRes.firebaseUser.uid);
-    setStoredUser(fbRes.user);
-    setStoredActiveEmail(fbRes.user.email);
-    addStoredAccount({
-      id: fbRes.user.id,
-      email: fbRes.user.email,
-      username: fbRes.user.username,
-      name: fbRes.user.first_name ? `${fbRes.user.first_name} ${fbRes.user.last_name || ''}`.trim() : fbRes.user.username,
-      token: fbRes.firebaseUser.uid,
-      avatar_url: fbRes.user.avatar_url,
-      role: fbRes.user.role
-    });
+  setAuthToken(fbRes.firebaseUser.uid);
+  setStoredUser(fbRes.user);
+  setStoredActiveEmail(fbRes.user.email);
+  addStoredAccount({
+    id: fbRes.user.id,
+    email: fbRes.user.email,
+    username: fbRes.user.username,
+    name: fbRes.user.first_name ? `${fbRes.user.first_name} ${fbRes.user.last_name || ''}`.trim() : fbRes.user.username,
+    token: fbRes.firebaseUser.uid,
+    avatar_url: fbRes.user.avatar_url,
+    role: fbRes.user.role
+  });
 
-    fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
-    }).catch(() => {});
-
-    return {
-      success: true,
-      token: fbRes.firebaseUser.uid,
-      user: fbRes.user,
-      backup_codes: []
-    };
-  } catch (fbErr: any) {
-    // If Firebase offline, fallback to server registration
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
-    });
-    const data = await safeJsonParse(res);
-    if (!res.ok) {
-      throw new Error(data.error || fbErr.message || 'Registration failed');
-    }
-    if (data.token && data.user) {
-      setAuthToken(data.token);
-      setStoredUser(data.user);
-      setStoredActiveEmail(data.user.email);
-      addStoredAccount({
-        id: data.user.id,
-        email: data.user.email,
-        username: data.user.username,
-        name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
-        token: data.token,
-        avatar_url: data.user.avatar_url,
-        role: data.user.role
-      });
-    }
-    return data;
-  }
+  return {
+    success: true,
+    token: fbRes.firebaseUser.uid,
+    user: fbRes.user,
+    backup_codes: []
+  };
 }
 
 export async function registerUser(formData: any): Promise<any> {
@@ -585,67 +551,25 @@ export async function loginGoldUser(credentials: {
   totp_code?: string;
   backup_code?: string;
 }): Promise<any> {
-  try {
-    const fbRes = await firebaseLogin(credentials.identifier, credentials.password);
-    setAuthToken(fbRes.firebaseUser.uid);
-    setStoredUser(fbRes.user);
-    setStoredActiveEmail(fbRes.user.email);
-    addStoredAccount({
-      id: fbRes.user.id,
-      email: fbRes.user.email,
-      username: fbRes.user.username,
-      name: fbRes.user.first_name ? `${fbRes.user.first_name} ${fbRes.user.last_name || ''}`.trim() : fbRes.user.username,
-      token: fbRes.firebaseUser.uid,
-      avatar_url: fbRes.user.avatar_url,
-      role: fbRes.user.role
-    });
+  const fbRes = await firebaseLogin(credentials.identifier, credentials.password);
+  setAuthToken(fbRes.firebaseUser.uid);
+  setStoredUser(fbRes.user);
+  setStoredActiveEmail(fbRes.user.email);
+  addStoredAccount({
+    id: fbRes.user.id,
+    email: fbRes.user.email,
+    username: fbRes.user.username,
+    name: fbRes.user.first_name ? `${fbRes.user.first_name} ${fbRes.user.last_name || ''}`.trim() : fbRes.user.username,
+    token: fbRes.firebaseUser.uid,
+    avatar_url: fbRes.user.avatar_url,
+    role: fbRes.user.role
+  });
 
-    fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(credentials)
-    }).catch(() => {});
-
-    return {
-      success: true,
-      token: fbRes.firebaseUser.uid,
-      user: fbRes.user
-    };
-  } catch (fbErr: any) {
-    // If not in Firebase yet, try server for existing legacy users
-    try {
-      const clientAccounts = getStoredAccounts();
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...credentials,
-          client_accounts: clientAccounts
-        })
-      });
-      const data = await safeJsonParse(res);
-      if (res.ok && data.user) {
-        setAuthToken(data.token);
-        setStoredUser(data.user);
-        setStoredActiveEmail(data.user.email);
-        addStoredAccount({
-          id: data.user.id,
-          email: data.user.email,
-          username: data.user.username,
-          name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
-          token: data.token,
-          avatar_url: data.user.avatar_url,
-          role: data.user.role
-        });
-        return data;
-      }
-      if (data && data.requires_2fa) {
-        return data;
-      }
-    } catch {}
-
-    throw new Error(fbErr.message || 'Invalid credentials');
-  }
+  return {
+    success: true,
+    token: fbRes.firebaseUser.uid,
+    user: fbRes.user
+  };
 }
 
 export async function loginUser(emailOrIdentifier: string, password: string): Promise<any> {

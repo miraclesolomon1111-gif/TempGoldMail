@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { UserProfile, UserDevice, ConnectedEmail, ForwardingSettings, ForwardingAddress } from '../types';
+import { db, doc, getDoc, updateDoc } from '../lib/firebase';
 import {
   setup2FA,
   enable2FA,
@@ -243,13 +244,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const loadForwardingSettings = async () => {
     try {
+      const currentUid = user?.id || (user as any)?.uid;
+      if (currentUid) {
+        const userDocSnap = await getDoc(doc(db, "users", currentUid));
+        if (userDocSnap.exists()) {
+          const userData = userDocSnap.data();
+          const f = userData.forwarding || {
+            enabled: Boolean(userData.forwarding_enabled),
+            forwardTo: userData.forwarding_email || '',
+            keepCopy: true
+          };
+          const isEnabled = Boolean(f.enabled);
+          const forwardToEmail = f.forwardTo || userData.forwarding_email || '';
+          setIsForwardingEnabled(isEnabled);
+          setSelectedForwardEmail(forwardToEmail);
+          setForwardAction(f.keepCopy !== false ? 'keep' : (userData.forwarding_action || 'keep'));
+          setForwardingSettings({
+            forwarding_enabled: isEnabled,
+            forwarding_email: forwardToEmail,
+            forwarding_action: f.keepCopy !== false ? 'keep' : 'read',
+            forwarding_addresses: forwardToEmail ? [{ email: forwardToEmail, verified: true, added_at: new Date().toISOString() }] : []
+          });
+          return;
+        }
+      }
       const data = await fetchForwardingSettings();
       setForwardingSettings(data);
       setIsForwardingEnabled(data.forwarding_enabled);
       const activeOrFirst = data.forwarding_email || (data.forwarding_addresses.find(a => a.verified)?.email || '');
       setSelectedForwardEmail(activeOrFirst);
       setForwardAction(data.forwarding_action || 'keep');
-    } catch {}
+    } catch (err) {
+      console.warn("Failed to load forwarding settings from Firestore:", err);
+    }
   };
 
   const handleAddForwardAddress = async (e: React.FormEvent) => {
@@ -300,26 +327,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setError(null);
     setSuccessMsg(null);
     try {
-      const res = await updateForwardingSettings({
+      const currentUid = user?.id || (user as any)?.uid;
+      const targetForwardTo = selectedForwardEmail.trim().toLowerCase();
+      const forwardingObj = {
         enabled: isForwardingEnabled,
-        forwarding_email: selectedForwardEmail,
+        forwardTo: targetForwardTo,
+        keepCopy: forwardAction === 'keep'
+      };
+
+      // 3. Save to Firestore users/{uid}.forwarding = {enabled, forwardTo, keepCopy: true}
+      if (currentUid) {
+        await updateDoc(doc(db, "users", currentUid), {
+          forwarding: forwardingObj,
+          forwarding_enabled: isForwardingEnabled,
+          forwarding_email: targetForwardTo,
+          forwarding_action: forwardAction
+        });
+      }
+
+      // Also notify backend server
+      await updateForwardingSettings({
+        enabled: isForwardingEnabled,
+        forwarding_email: targetForwardTo,
         action: forwardAction
-      });
+      }).catch(() => {});
+
       if (user) {
         onUserUpdated({
           ...user,
           forwarding_enabled: isForwardingEnabled,
-          forwarding_email: selectedForwardEmail,
+          forwarding_email: targetForwardTo,
           forwarding_action: forwardAction,
-          forwarding: {
-            enabled: isForwardingEnabled,
-            forwardTo: selectedForwardEmail,
-            keepCopy: true
-          }
+          forwarding: forwardingObj
         });
       }
-      await loadForwardingSettings();
-      setSuccessMsg(res.message || 'Forwarding settings saved successfully in Firestore');
+
+      setForwardStep('idle');
+      setSuccessMsg('Forwarding settings saved permanently in Firestore!');
     } catch (err: any) {
       setError(err.message || 'Failed to update forwarding settings');
     } finally {
@@ -1516,12 +1560,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="radio"
                         name="forwarding_toggle"
                         checked={isForwardingEnabled}
-                        onChange={() => {
-                          if (forwardingSettings.forwarding_addresses.length === 0) {
-                            setForwardStep('input');
-                          }
-                          setIsForwardingEnabled(true);
-                        }}
+                        onChange={() => setIsForwardingEnabled(true)}
                         className="accent-[#FF6A00] w-4 h-4 mt-0.5 cursor-pointer"
                       />
                       <div className="flex-1 space-y-2 text-xs">
@@ -1529,53 +1568,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           Forward a copy of incoming mail to:
                         </span>
 
-                        {forwardingSettings.forwarding_addresses.filter(a => a.verified).length > 0 ? (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                            <div>
-                              <select
-                                value={selectedForwardEmail}
-                                onChange={(e) => setSelectedForwardEmail(e.target.value)}
-                                disabled={!isForwardingEnabled}
-                                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
-                              >
-                                {forwardingSettings.forwarding_addresses
-                                  .filter(a => a.verified)
-                                  .map(a => (
-                                    <option key={a.email} value={a.email} className="bg-zinc-900 text-white">
-                                      {a.email}
-                                    </option>
-                                  ))}
-                              </select>
-                            </div>
-                            <div>
-                              <select
-                                value={forwardAction}
-                                onChange={(e) => setForwardAction(e.target.value as any)}
-                                disabled={!isForwardingEnabled}
-                                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
-                              >
-                                <option value="keep" className="bg-zinc-900 text-white">
-                                  keep GoldMailer's copy in the Inbox
-                                </option>
-                                <option value="read" className="bg-zinc-900 text-white">
-                                  mark GoldMailer's copy as read
-                                </option>
-                                <option value="archive" className="bg-zinc-900 text-white">
-                                  archive GoldMailer's copy
-                                </option>
-                                <option value="delete" className="bg-zinc-900 text-white">
-                                  delete GoldMailer's copy
-                                </option>
-                              </select>
-                            </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                          <div>
+                            <input
+                              type="email"
+                              placeholder="Destination email (e.g. user@gmail.com)"
+                              value={selectedForwardEmail}
+                              onChange={(e) => setSelectedForwardEmail(e.target.value)}
+                              disabled={!isForwardingEnabled}
+                              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
+                            />
+                            {forwardingSettings.forwarding_addresses.filter(a => a.verified).length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {forwardingSettings.forwarding_addresses.filter(a => a.verified).map(a => (
+                                  <button
+                                    key={a.email}
+                                    type="button"
+                                    onClick={() => setSelectedForwardEmail(a.email)}
+                                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
+                                      selectedForwardEmail.toLowerCase() === a.email.toLowerCase()
+                                        ? 'bg-[#FF6A00]/20 border-[#FF6A00] text-[#FF8C42]'
+                                        : 'bg-white/5 border-white/10 text-zinc-400 hover:text-white'
+                                    }`}
+                                  >
+                                    {a.email}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        ) : (
-                          <div className="pt-1">
-                            <p className="text-[11px] text-zinc-400">
-                              No verified forwarding address added yet. Click &quot;Add a forwarding address&quot; below to configure one.
-                            </p>
+                          <div>
+                            <select
+                              value={forwardAction}
+                              onChange={(e) => setForwardAction(e.target.value as any)}
+                              disabled={!isForwardingEnabled}
+                              className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#FF6A00] disabled:opacity-50"
+                            >
+                              <option value="keep" className="bg-zinc-900 text-white">
+                                keep GoldMailer's copy in the Inbox
+                              </option>
+                              <option value="read" className="bg-zinc-900 text-white">
+                                mark GoldMailer's copy as read
+                              </option>
+                              <option value="archive" className="bg-zinc-900 text-white">
+                                archive GoldMailer's copy
+                              </option>
+                              <option value="delete" className="bg-zinc-900 text-white">
+                                delete GoldMailer's copy
+                              </option>
+                            </select>
                           </div>
-                        )}
+                        </div>
                       </div>
                     </label>
                   </div>

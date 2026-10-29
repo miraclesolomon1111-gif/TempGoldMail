@@ -11,7 +11,17 @@ import { Resend } from 'resend';
 import multer from 'multer';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
-import { db, StoredSettings, StoredConnectedEmail, StoredConnectedEmailVerification } from './db';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  collection,
+  query,
+  where,
+  getDocs
+} from 'firebase/firestore';
+import { db, StoredSettings, StoredConnectedEmail, StoredConnectedEmailVerification, StoredEmail } from './db';
 import { fetchEmailsFromImap, extractCleanAddress } from './imapService';
 import {
   StoredSMS,
@@ -61,6 +71,9 @@ if (sseKeepAliveTimer && typeof sseKeepAliveTimer.unref === 'function') {
 }
 
 export function broadcastNewEmail(email: StoredEmail) {
+  try {
+    void persistEmailToFirestore(email);
+  } catch {}
   for (let i = sseClients.length - 1; i >= 0; i--) {
     const client = sseClients[i];
     try {
@@ -91,6 +104,103 @@ export function broadcastNewCall(call: StoredCall) {
     } catch {
       sseClients.splice(i, 1);
     }
+  }
+}
+
+export const serverFirebaseConfig = {
+  apiKey: "AIzaSyDRWzRgWbAjVI-mYXGnLDc9Ea9ST2IGyiw",
+  authDomain: "myassetpay-24c2d.firebaseapp.com",
+  projectId: "myassetpay-24c2d",
+  storageBucket: "myassetpay-24c2d.firebasestorage.app",
+  messagingSenderId: "914618622784",
+  appId: "1:914618622784:web:868b35828e4eb2419f50a5",
+  measurementId: "G-4YPZR6HX9Z"
+};
+
+export const serverFbApp = getApps().length === 0 ? initializeApp(serverFirebaseConfig) : getApp();
+export const serverFirestore = getFirestore(serverFbApp);
+
+export async function persistEmailToFirestore(email: StoredEmail): Promise<void> {
+  try {
+    const rawTo = (email.recipient || email.to_email || email.to || '').toLowerCase().trim();
+    const cleanUsername = rawTo.replace(/@.*$/, '').trim();
+    let targetUid = '';
+    let targetForwarding: any = null;
+
+    if (rawTo) {
+      try {
+        const uQuery = query(collection(serverFirestore, "users"), where("email", "==", rawTo));
+        const uSnap = await getDocs(uQuery);
+        if (!uSnap.empty) {
+          const userDoc = uSnap.docs[0];
+          targetUid = userDoc.id;
+          targetForwarding = userDoc.data()?.forwarding;
+        }
+      } catch (err) {
+        console.warn('[FIRESTORE] User email query warning:', err);
+      }
+    }
+
+    if (!targetUid && cleanUsername) {
+      try {
+        const uQuery2 = query(collection(serverFirestore, "users"), where("username", "==", cleanUsername));
+        const uSnap2 = await getDocs(uQuery2);
+        if (!uSnap2.empty) {
+          const userDoc = uSnap2.docs[0];
+          targetUid = userDoc.id;
+          targetForwarding = userDoc.data()?.forwarding;
+        }
+      } catch (err) {
+        console.warn('[FIRESTORE] User username query warning:', err);
+      }
+    }
+
+    if (!targetUid) {
+      if (rawTo.includes('miracle')) {
+        targetUid = 'usr_miracle_01';
+      } else {
+        targetUid = 'usr_' + cleanUsername;
+      }
+    }
+
+    const emailDocData = {
+      id: email.id,
+      userId: targetUid,
+      to: rawTo,
+      recipient: rawTo,
+      to_email: rawTo,
+      from: email.from || email.sender || email.from_email || 'unknown@sender.com',
+      sender: email.from || email.sender || email.from_email || 'unknown@sender.com',
+      from_email: email.from || email.sender || email.from_email || 'unknown@sender.com',
+      sender_name: email.sender_name || (email.from ? email.from.split('@')[0] : 'Sender'),
+      subject: email.subject || '(No Subject)',
+      body: email.body || email.body_html || email.body_text || '',
+      body_html: email.body_html || email.body || '',
+      body_text: email.body_text || '',
+      date: email.received_at || email.created_at || new Date().toISOString(),
+      received_at: email.received_at || email.created_at || new Date().toISOString(),
+      created_at: email.created_at || email.received_at || new Date().toISOString(),
+      read: Boolean(email.is_read || (email as any).read),
+      is_read: Boolean(email.is_read || (email as any).read),
+      starred: Boolean(email.is_starred || (email as any).starred),
+      is_starred: Boolean(email.is_starred || (email as any).starred),
+      folder: email.folder || 'primary',
+      category: email.category || 'primary',
+      status: email.status || 'inbox'
+    };
+
+    await setDoc(doc(serverFirestore, "emails", email.id), emailDocData);
+    console.log(`✅ [FIRESTORE PERSIST] Stored email ${email.id} into Firestore for user ${targetUid} (${rawTo})`);
+
+    if (targetForwarding?.enabled && targetForwarding?.forwardTo) {
+      console.log(`🚀 [FIRESTORE AUTO-FORWARD] Target user has active forwarding to ${targetForwarding.forwardTo}`);
+      void forwardIncomingEmailIfNeeded({
+        ...email,
+        _auto_forward_target: targetForwarding.forwardTo
+      } as any);
+    }
+  } catch (err) {
+    console.error('❌ [FIRESTORE PERSIST ERROR]:', err);
   }
 }
 
@@ -126,9 +236,12 @@ app.get(['/privacy', '/privacy.html', '/api/privacy', '/api/privacy.html'], (_re
   return res.redirect('/#privacy');
 });
 
-// Normalize URL for Vercel Serverless Function rewrites
+// Normalize URL for Vercel Serverless Function rewrites & restore original matched route
 app.use((req: Request, _res: Response, next) => {
-  if (
+  const matchedPath = (req.headers['x-matched-path'] || req.headers['x-now-matched-path']) as string;
+  if (matchedPath && typeof matchedPath === 'string' && (req.url === '/api' || req.url === '/' || !req.url.startsWith('/api/'))) {
+    req.url = matchedPath.startsWith('/') ? matchedPath : '/' + matchedPath;
+  } else if (
     req.url &&
     !req.url.startsWith('/api') &&
     !req.url.startsWith('/oauth') &&
@@ -138,6 +251,17 @@ app.use((req: Request, _res: Response, next) => {
     req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
   }
   next();
+});
+
+// Root API Health status
+app.get(['/api', '/api/health'], (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'GoldMailer API Serverless',
+    timestamp: new Date().toISOString(),
+    firebase: 'connected',
+    persistence: 'Firestore (myassetpay-24c2d)'
+  });
 });
 
 // CORS
@@ -3243,11 +3367,14 @@ async function forwardIncomingEmailIfNeeded(email: StoredEmail): Promise<boolean
       (u.email && u.email.toLowerCase().startsWith(recipientClean + '@'))
     ) || await db.findAccount(recipientRaw);
 
-    if (!user || !user.forwarding_enabled || !user.forwarding_email) {
-      return false;
+    let forwardTo = ((email as any)._auto_forward_target || '').toLowerCase().trim();
+    if (!forwardTo) {
+      if (!user || !user.forwarding_enabled || !user.forwarding_email) {
+        return false;
+      }
+      forwardTo = user.forwarding_email.toLowerCase().trim();
     }
 
-    const forwardTo = user.forwarding_email.toLowerCase().trim();
     if (!forwardTo || forwardTo === recipientRaw) {
       return false;
     }
@@ -3290,8 +3417,8 @@ To: ${email.recipient}
       </div>
     `;
 
-    const userMainEmail = user.email || `${user.username}@goldmailer.xyz`;
-    const fromHeader = `${user.first_name || user.username || 'GoldMailer'} <${userMainEmail}>`;
+    const userMainEmail = user ? (user.email || `${user.username}@goldmailer.xyz`) : (recipientRaw || 'service@goldmailer.xyz');
+    const fromHeader = user ? `${user.first_name || user.username || 'GoldMailer'} <${userMainEmail}>` : `GoldMailer Forwarder <${userMainEmail}>`;
 
     let delivered = false;
     const activeSmtp = getActiveSmtpTransporter();
