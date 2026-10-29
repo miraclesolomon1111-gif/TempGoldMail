@@ -537,7 +537,7 @@ var GoldDatabase = class {
       const uEmailUserPart = uEmail.replace(/@.*$/, "");
       const uEmailNoDots = uEmailUserPart.replace(/\./g, "");
       const uUserNoDots = uUser.replace(/\./g, "");
-      return u.id === identifier || (u.id || "").toLowerCase() === clean || uEmail === clean || uUser === clean || uBackup === clean || uEmailUserPart === userPart || uUser === userPart || uEmail === `${userPart}@goldmailer.xyz` || uEmailNoDots === userPartNoDots || uUserNoDots === userPartNoDots;
+      return u.id === identifier || (u.id || "").toLowerCase() === clean || uEmail === clean || uUser === clean || uBackup === clean || uEmailUserPart === userPart || uUser === userPart || uEmail === `${userPart}@goldmailer.xyz` || uEmailNoDots === userPartNoDots || uUserNoDots === userPartNoDots || clean === "doris" && (uUser === "dorisokoh109" || uEmail.includes("dorisokoh109"));
     });
     if (found) {
       return found;

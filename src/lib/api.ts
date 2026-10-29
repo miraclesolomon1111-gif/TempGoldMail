@@ -30,6 +30,7 @@ import {
   auth,
   doc,
   getDoc,
+  setDoc,
   updateDoc,
   collection,
   query,
@@ -37,10 +38,15 @@ import {
   getDocs,
   firebaseRegister,
   firebaseLogin,
+  normalizeGoldEmail,
   sendEmailToFirestore,
   updateEmailInFirestore,
   deleteEmailInFirestore
 } from './firebase';
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword
+} from 'firebase/auth';
 
 // Helper: Normalize email messages
 export function normalizeEmail(raw: any): EmailMessage {
@@ -526,6 +532,26 @@ export async function registerGoldUser(formData: {
     country: formData.country
   });
 
+  // Background sync into backend database goldmailer_accounts table
+  try {
+    await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        dob: formData.dob,
+        gender: formData.gender,
+        username: formData.username,
+        password: formData.password,
+        phone: formData.phone,
+        country: formData.country
+      })
+    });
+  } catch (err) {
+    console.warn("Backend registration sync notice:", err);
+  }
+
   setAuthToken(fbRes.firebaseUser.uid);
   setStoredUser(fbRes.user);
   setStoredActiveEmail(fbRes.user.email);
@@ -590,32 +616,141 @@ export async function createEmailAccount(data: {
   return resData;
 }
 
-// Login via Firebase signInWithEmailAndPassword only (Single Source of Truth)
+// Login via Firebase with seamless Backend DB fallback for existing accounts & 2FA
 export async function loginGoldUser(credentials: {
   identifier: string;
   password: string;
   totp_code?: string;
   backup_code?: string;
 }): Promise<any> {
-  const fbRes = await firebaseLogin(credentials.identifier, credentials.password);
-  setAuthToken(fbRes.firebaseUser.uid);
-  setStoredUser(fbRes.user);
-  setStoredActiveEmail(fbRes.user.email);
-  addStoredAccount({
-    id: fbRes.user.id,
-    email: fbRes.user.email,
-    username: fbRes.user.username,
-    name: fbRes.user.first_name ? `${fbRes.user.first_name} ${fbRes.user.last_name || ''}`.trim() : fbRes.user.username,
-    token: fbRes.firebaseUser.uid,
-    avatar_url: fbRes.user.avatar_url,
-    role: fbRes.user.role
-  });
+  const cleanId = (credentials.identifier || '').trim();
+  const pass = credentials.password || '';
 
-  return {
-    success: true,
-    token: fbRes.firebaseUser.uid,
-    user: fbRes.user
-  };
+  // 1. If 2FA code is provided, verify directly against backend
+  if (credentials.totp_code || credentials.backup_code) {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        identifier: cleanId,
+        password: pass,
+        totp_code: credentials.totp_code,
+        backup_code: credentials.backup_code,
+        client_accounts: getStoredAccounts()
+      })
+    });
+    const data = await safeJsonParse(res);
+    if (!res.ok) {
+      throw new Error(data.error || 'Verification failed');
+    }
+    if (data.user) {
+      const token = data.token || data.user.id;
+      setAuthToken(token);
+      setStoredUser(data.user);
+      setStoredActiveEmail(data.user.email);
+      addStoredAccount({
+        id: data.user.id,
+        email: data.user.email,
+        username: data.user.username,
+        name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+        token,
+        avatar_url: data.user.avatar_url,
+        role: data.user.role
+      });
+      return { success: true, token, user: data.user };
+    }
+    return data;
+  }
+
+  // 2. Try firebaseLogin (which includes backend DB auto-sync)
+  try {
+    const fbRes = await firebaseLogin(cleanId, pass);
+
+    // If backend 2FA or suspicious login detection is returned
+    if (fbRes.requires_2fa || fbRes.suspicious_login) {
+      return fbRes;
+    }
+
+    const token = fbRes.firebaseUser?.uid || fbRes.user?.id || getAuthToken() || 'auth_' + Date.now();
+    const user = fbRes.user;
+
+    setAuthToken(token);
+    setStoredUser(user);
+    setStoredActiveEmail(user.email);
+    addStoredAccount({
+      id: user.id || token,
+      email: user.email,
+      username: user.username || cleanId,
+      name: user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : (user.name || user.username || cleanId),
+      token,
+      avatar_url: user.avatar_url,
+      role: user.role
+    });
+
+    return {
+      success: true,
+      token,
+      user
+    };
+  } catch (err: any) {
+    // 3. Fallback: Query backend directly if firebaseLogin threw an error
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: cleanId,
+          password: pass,
+          client_accounts: getStoredAccounts()
+        })
+      });
+      const data = await safeJsonParse(res);
+
+      if (data.requires_2fa || data.suspicious_login) {
+        return data;
+      }
+
+      if (res.ok && data.user) {
+        const token = data.token || data.user.id;
+        setAuthToken(token);
+        setStoredUser(data.user);
+        setStoredActiveEmail(data.user.email);
+        addStoredAccount({
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.username,
+          name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || data.user.username),
+          token,
+          avatar_url: data.user.avatar_url,
+          role: data.user.role
+        });
+        return { success: true, token, user: data.user };
+      }
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+    } catch (backendErr: any) {
+      if (backendErr.message && !backendErr.message.includes('fetch') && !backendErr.message.includes('invalid-credential')) {
+        throw backendErr;
+      }
+    }
+
+    // Sanitize any remaining Firebase auth errors
+    const rawMsg = err.message || '';
+    if (
+      rawMsg.includes('invalid-credential') ||
+      rawMsg.includes('user-not-found') ||
+      rawMsg.includes('wrong-password')
+    ) {
+      throw new Error('Invalid email or password. Please verify your credentials or click "Create Account".');
+    } else if (rawMsg.includes('too-many-requests')) {
+      throw new Error('Too many failed attempts. Please reset your password or try again later.');
+    } else if (rawMsg.includes('user-disabled')) {
+      throw new Error('This account has been disabled by an administrator.');
+    }
+    throw new Error(rawMsg || 'Login failed. Please check your credentials.');
+  }
 }
 
 export async function loginUser(emailOrIdentifier: string, password: string): Promise<any> {

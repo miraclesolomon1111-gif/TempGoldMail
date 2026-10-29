@@ -212,8 +212,9 @@ export async function firebaseRegister(data: {
 /**
  * Login user via Firebase Auth signInWithEmailAndPassword with seamless backend DB sync
  */
-export async function firebaseLogin(identifier: string, password: string): Promise<{ user: UserProfile; firebaseUser: FirebaseUser }> {
-  const email = normalizeGoldEmail(identifier);
+export async function firebaseLogin(identifier: string, password: string): Promise<any> {
+  const cleanId = (identifier || '').trim();
+  const email = normalizeGoldEmail(cleanId);
   try {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const fbUser = userCredential.user;
@@ -243,28 +244,35 @@ export async function firebaseLogin(identifier: string, password: string): Promi
     return { user: profile as UserProfile, firebaseUser: fbUser };
   } catch (err: any) {
     const errorCode = err.code || '';
+    const errMessage = err.message || '';
     if (
       errorCode === 'auth/invalid-credential' ||
       errorCode === 'auth/user-not-found' ||
       errorCode === 'auth/wrong-password' ||
-      err.message?.includes('invalid-credential')
+      errMessage.includes('invalid-credential')
     ) {
       // Check if user account exists in backend database (e.g. seed accounts or existing users)
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifier: email, password })
+          body: JSON.stringify({ identifier: cleanId || email, password })
         });
         const data = await res.json();
+        
+        // Handle 2FA requirement from backend
+        if (data.requires_2fa || data.suspicious_login) {
+          return data;
+        }
+
         if (res.ok && data.user) {
           // Credentials match in DB! Seamlessly auto-register in Firebase Auth
           try {
-            const newCred = await createUserWithEmailAndPassword(auth, email, password);
+            const newCred = await createUserWithEmailAndPassword(auth, data.user.email || email, password);
             const fbUser = newCred.user;
             const profile: UserProfile = {
               id: fbUser.uid,
-              email,
+              email: data.user.email || email,
               username: data.user.username || getUsernameFromEmail(email),
               name: data.user.first_name ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() : (data.user.name || getUsernameFromEmail(email)),
               role: data.user.role || (email === 'miracle@goldmailer.xyz' ? 'admin' : 'user'),
@@ -281,14 +289,45 @@ export async function firebaseLogin(identifier: string, password: string): Promi
             return { user: profile, firebaseUser: fbUser };
           } catch (createErr: any) {
             if (createErr.code === 'auth/email-already-in-use') {
-              throw new Error('Incorrect password. Please try again or click "Forgot Password".');
+              try {
+                const retryCred = await signInWithEmailAndPassword(auth, data.user.email || email, password);
+                const fbUser = retryCred.user;
+                let profile = await fetchFirestoreUserProfile(fbUser.uid);
+                if (!profile) {
+                  profile = {
+                    id: fbUser.uid,
+                    email: data.user.email || email,
+                    username: data.user.username || getUsernameFromEmail(email),
+                    name: data.user.name || data.user.username,
+                    role: data.user.role || (email === 'miracle@goldmailer.xyz' ? 'admin' : 'user'),
+                    created_at: new Date().toISOString()
+                  } as any;
+                  await setDoc(doc(db, "users", fbUser.uid), profile, { merge: true });
+                }
+                return { user: profile as UserProfile, firebaseUser: fbUser };
+              } catch {
+                // Return synthetic FirebaseUser with the authenticated DB user
+                const fallbackFbUser = {
+                  uid: data.user.id || 'usr_' + data.user.username,
+                  email: data.user.email,
+                  displayName: data.user.name || data.user.username
+                } as any;
+                return { user: data.user as UserProfile, firebaseUser: fallbackFbUser };
+              }
             }
+            // Fallback to authenticated DB user
+            const fallbackFbUser = {
+              uid: data.user.id || 'usr_' + data.user.username,
+              email: data.user.email,
+              displayName: data.user.name || data.user.username
+            } as any;
+            return { user: data.user as UserProfile, firebaseUser: fallbackFbUser };
           }
         } else if (data.error) {
           throw new Error(data.error);
         }
       } catch (backendErr: any) {
-        if (backendErr.message && !backendErr.message.includes('fetch')) {
+        if (backendErr.message && !backendErr.message.includes('fetch') && !backendErr.message.includes('invalid-credential')) {
           throw backendErr;
         }
       }
@@ -297,6 +336,11 @@ export async function firebaseLogin(identifier: string, password: string): Promi
       throw new Error('Too many failed attempts. Please reset your password or try again later.');
     } else if (errorCode === 'auth/user-disabled') {
       throw new Error('This account has been disabled by an administrator.');
+    }
+    
+    // Fallback error sanitization - never leak raw Firebase error
+    if (errMessage.includes('invalid-credential')) {
+      throw new Error('Invalid email or password. Please verify your credentials or click "Create Account".');
     }
     throw new Error(err.message || 'Login failed. Please check your credentials.');
   }

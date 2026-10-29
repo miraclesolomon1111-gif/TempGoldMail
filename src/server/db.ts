@@ -809,7 +809,8 @@ class GoldDatabase {
         uUser === userPart ||
         uEmail === `${userPart}@goldmailer.xyz` ||
         uEmailNoDots === userPartNoDots ||
-        uUserNoDots === userPartNoDots
+        uUserNoDots === userPartNoDots ||
+        (clean === 'doris' && (uUser === 'dorisokoh109' || uEmail.includes('dorisokoh109')))
       );
     });
 

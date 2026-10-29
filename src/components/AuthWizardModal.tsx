@@ -302,11 +302,16 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
       onClose();
     } catch (err: any) {
       let msg = err.message || 'Invalid credentials';
-      if (msg.includes('auth/invalid-credential') || msg.includes('auth/user-not-found') || msg.includes('auth/wrong-password')) {
+      if (
+        msg.includes('invalid-credential') ||
+        msg.includes('auth/invalid-credential') ||
+        msg.includes('auth/user-not-found') ||
+        msg.includes('auth/wrong-password')
+      ) {
         msg = 'Invalid email or password. Please verify your credentials or click "Create Account".';
-      } else if (msg.includes('auth/too-many-requests')) {
+      } else if (msg.includes('auth/too-many-requests') || msg.includes('too-many-requests')) {
         msg = 'Too many failed login attempts. Please reset your password or try again later.';
-      } else if (msg.includes('auth/user-disabled')) {
+      } else if (msg.includes('auth/user-disabled') || msg.includes('user-disabled')) {
         msg = 'This account has been disabled by an administrator.';
       }
       setError(msg);
