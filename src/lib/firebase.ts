@@ -3,11 +3,14 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getAuth,
   setPersistence,
+  indexedDBLocalPersistence,
   browserLocalPersistence,
   onAuthStateChanged,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
+  updatePassword,
+  sendPasswordResetEmail,
   User as FirebaseUser
 } from "firebase/auth";
 import {
@@ -28,16 +31,30 @@ import {
 import { getAnalytics, isSupported, Analytics } from "firebase/analytics";
 import { EmailMessage, UserProfile, MailFolder } from "../types";
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+// Safe dynamic environment variable resolver
+const getEnvVal = (key: string, fallback: string): string => {
+  try {
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env[key]) {
+      return String((import.meta as any).env[key]);
+    }
+  } catch {}
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      return String(process.env[key]);
+    }
+  } catch {}
+  return fallback;
+};
+
+// Your web app's Firebase configuration with env var fallbacks
 export const firebaseConfig = {
-  apiKey: "AIzaSyDRWzRgWbAjVI-mYXGnLDc9Ea9ST2IGyiw",
-  authDomain: "myassetpay-24c2d.firebaseapp.com",
-  projectId: "myassetpay-24c2d",
-  storageBucket: "myassetpay-24c2d.firebasestorage.app",
-  messagingSenderId: "914618622784",
-  appId: "1:914618622784:web:868b35828e4eb2419f50a5",
-  measurementId: "G-4YPZR6HX9Z"
+  apiKey: getEnvVal("VITE_FIREBASE_API_KEY", "AIzaSyDRWzRgWbAjVI-mYXGnLDc9Ea9ST2IGyiw"),
+  authDomain: getEnvVal("VITE_FIREBASE_AUTH_DOMAIN", "myassetpay-24c2d.firebaseapp.com"),
+  projectId: getEnvVal("VITE_FIREBASE_PROJECT_ID", "myassetpay-24c2d"),
+  storageBucket: getEnvVal("VITE_FIREBASE_STORAGE_BUCKET", "myassetpay-24c2d.firebasestorage.app"),
+  messagingSenderId: getEnvVal("VITE_FIREBASE_MESSAGING_SENDER_ID", "914618622784"),
+  appId: getEnvVal("VITE_FIREBASE_APP_ID", "1:914618622784:web:868b35828e4eb2419f50a5"),
+  measurementId: getEnvVal("VITE_FIREBASE_MEASUREMENT_ID", "G-4YPZR6HX9Z")
 };
 
 // Initialize Firebase
@@ -59,10 +76,23 @@ export {
   getDocs
 };
 
-// 2. Set Firebase Auth Persistence to browserLocalPersistence
+// 2. Set Firebase Auth Persistence: prune any old oversized localStorage cache first, then use IndexedDB
 if (typeof window !== "undefined") {
-  setPersistence(auth, browserLocalPersistence).catch((err) => {
-    console.warn("Firebase Auth persistence error:", err);
+  try {
+    // Purge any bloated legacy email cache keys from localStorage to prevent quota exhaustion
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('goldmail_cached_emails_') || k.startsWith('cached_emails_'))) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch {}
+
+  // Prefer indexedDBLocalPersistence (does not hit the 5MB localStorage quota)
+  setPersistence(auth, indexedDBLocalPersistence).catch(() => {
+    setPersistence(auth, browserLocalPersistence).catch((err) => {
+      console.warn("Firebase Auth persistence error:", err);
+    });
   });
 }
 
@@ -267,7 +297,7 @@ export async function fetchFirestoreUserProfile(uid: string): Promise<UserProfil
  */
 export async function saveFirestoreForwarding(
   uid: string,
-  forwarding: { enabled: boolean; forwardTo: string; keepCopy?: boolean }
+  forwarding: { enabled: boolean; forwardTo: string; keepCopy?: boolean; action?: string }
 ): Promise<void> {
   const forwardingData = {
     enabled: Boolean(forwarding.enabled),
@@ -275,11 +305,24 @@ export async function saveFirestoreForwarding(
     keepCopy: forwarding.keepCopy !== false
   };
 
-  await updateDoc(doc(db, "users", uid), {
+  await setDoc(doc(db, "users", uid), {
     forwarding: forwardingData,
     forwarding_enabled: forwardingData.enabled,
-    forwarding_email: forwardingData.forwardTo
-  });
+    forwarding_email: forwardingData.forwardTo,
+    ...(forwarding.action ? { forwarding_action: forwarding.action } : {})
+  }, { merge: true });
+}
+
+/**
+ * Save / Update verified forwarding addresses queue in Firestore users/{uid}.forwarding_addresses
+ */
+export async function saveFirestoreForwardingAddresses(
+  uid: string,
+  addresses: any[]
+): Promise<void> {
+  await setDoc(doc(db, "users", uid), {
+    forwarding_addresses: addresses
+  }, { merge: true });
 }
 
 /**
@@ -458,22 +501,48 @@ export async function updateEmailInFirestore(emailId: string, updates: Partial<E
     }
   }
 
-  await updateDoc(doc(db, "emails", emailId), firestoreUpdates);
+  try {
+    await setDoc(doc(db, "emails", emailId), firestoreUpdates, { merge: true });
+  } catch (err) {
+    console.warn("updateEmailInFirestore note:", err);
+  }
 }
 
 /**
  * Permanently delete or move email to trash in Firestore
  */
 export async function deleteEmailInFirestore(emailId: string, permanent: boolean = false): Promise<void> {
-  if (permanent) {
-    await deleteDoc(doc(db, "emails", emailId));
-  } else {
-    await updateDoc(doc(db, "emails", emailId), {
-      folder: 'trash',
-      status: 'trash',
-      trashed_at: new Date().toISOString()
-    });
+  try {
+    if (permanent) {
+      await deleteDoc(doc(db, "emails", emailId));
+    } else {
+      await setDoc(doc(db, "emails", emailId), {
+        folder: 'trash',
+        status: 'trash',
+        trashed_at: new Date().toISOString()
+      }, { merge: true });
+    }
+  } catch (err) {
+    console.warn("deleteEmailInFirestore note:", err);
   }
+}
+
+/**
+ * Change authenticated user's password securely in Firebase Auth
+ */
+export async function firebaseChangePassword(newPassword: string): Promise<void> {
+  if (!auth.currentUser) {
+    throw new Error("No active Firebase session found. Please sign in to change your password.");
+  }
+  await updatePassword(auth.currentUser, newPassword);
+}
+
+/**
+ * Send password reset email via Firebase Auth
+ */
+export async function firebaseSendPasswordReset(email: string): Promise<void> {
+  const clean = normalizeGoldEmail(email);
+  await sendPasswordResetEmail(auth, clean);
 }
 
 export default app;

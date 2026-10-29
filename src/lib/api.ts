@@ -178,10 +178,35 @@ export function setCachedEmails(email: string, emails: EmailMessage[]): void {
   try {
     const deletedIds = getDeletedEmailIds();
     const trashedIds = getTrashedEmailIds();
+    // Cap to maximum 25 lightweight items and truncate huge HTML bodies to keep localStorage safely below quota
     const clean = emails
       .filter(e => !deletedIds.has(e.id))
-      .map(e => (trashedIds.has(e.id) ? { ...e, folder: 'trash' as MailFolder } : e));
-    localStorage.setItem(`goldmail_cached_emails_${email.toLowerCase().trim()}`, JSON.stringify(clean.slice(0, 300)));
+      .slice(0, 25)
+      .map(e => {
+        const item = trashedIds.has(e.id) ? { ...e, folder: 'trash' as MailFolder } : { ...e };
+        if (item.body_html && item.body_html.length > 5000) {
+          item.body_html = item.body_html.slice(0, 5000);
+        }
+        if (item.body && typeof item.body === 'string' && item.body.length > 5000) {
+          item.body = item.body.slice(0, 5000);
+        }
+        return item;
+      });
+    const key = `goldmail_cached_emails_${email.toLowerCase().trim()}`;
+    try {
+      localStorage.setItem(key, JSON.stringify(clean));
+    } catch (quotaErr) {
+      // Purge old cached emails to free quota
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('goldmail_cached_emails_')) {
+          localStorage.removeItem(k);
+        }
+      }
+      try {
+        localStorage.setItem(key, JSON.stringify(clean.slice(0, 5)));
+      } catch {}
+    }
   } catch {}
 }
 
@@ -384,11 +409,32 @@ export function setStoredUser(user: UserProfile | null): void {
 
 export function getHeaders(extra: HeadersInit = {}): HeadersInit {
   const token = getAuthToken();
+  const user = getStoredUser();
+  const activeEmail = getStoredActiveEmail();
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(user?.id ? { 'x-user-id': user.id } : {}),
+    ...(activeEmail ? { 'x-active-email': activeEmail, 'x-user-email': activeEmail } : {}),
     ...extra
   };
+}
+
+export async function changeUserPassword(payload: {
+  currentPassword?: string;
+  newPassword: string;
+}): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/auth/change-password', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      current_password: payload.currentPassword,
+      new_password: payload.newPassword
+    })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok) throw new Error(data.error || 'Failed to update password');
+  return data;
 }
 
 async function safeJsonParse(res: Response, defaultError = 'Request failed'): Promise<any> {

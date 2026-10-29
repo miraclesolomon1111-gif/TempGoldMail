@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { UserProfile, UserDevice, ConnectedEmail, ForwardingSettings, ForwardingAddress } from '../types';
-import { db, doc, getDoc, updateDoc } from '../lib/firebase';
+import { db, doc, getDoc, setDoc, updateDoc, firebaseChangePassword } from '../lib/firebase';
 import {
   setup2FA,
   enable2FA,
@@ -51,7 +51,8 @@ import {
   verifyForwardingAddress,
   updateForwardingSettings,
   deleteForwardingAddress,
-  testForwardingDelivery
+  testForwardingDelivery,
+  changeUserPassword
 } from '../lib/api';
 
 interface SettingsModalProps {
@@ -139,6 +140,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Change Password state
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -281,18 +288,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleAddForwardAddress = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newForwardEmail.trim()) return;
+    const cleanEmail = newForwardEmail.trim().toLowerCase();
+    if (!cleanEmail) return;
     setIsAddingForward(true);
     setError(null);
     setSuccessMsg(null);
     try {
-      const res = await addForwardingAddress(newForwardEmail.trim());
-      setPendingForwardVerifyEmail(newForwardEmail.trim().toLowerCase());
+      const res = await addForwardingAddress(cleanEmail);
+      setPendingForwardVerifyEmail(cleanEmail);
       setForwardStep('verify');
+      const generatedCode = res.code || String(Math.floor(100000 + Math.random() * 900000));
       if (res.code) {
         setForwardCodeInput(res.code);
       }
-      setSuccessMsg(res.message || `Confirmation code sent to ${newForwardEmail.trim()}`);
+
+      // Also persist to Firestore users/{uid}.forwarding_addresses
+      const currentUid = user?.id || (user as any)?.uid;
+      if (currentUid) {
+        try {
+          const userSnap = await getDoc(doc(db, "users", currentUid));
+          const existingList: ForwardingAddress[] = userSnap.exists() ? (userSnap.data().forwarding_addresses || []) : [];
+          const idx = existingList.findIndex(a => a.email.toLowerCase() === cleanEmail);
+          if (idx !== -1) {
+            existingList[idx].verification_code = generatedCode;
+          } else {
+            existingList.push({
+              email: cleanEmail,
+              verified: false,
+              verification_code: generatedCode,
+              added_at: new Date().toISOString()
+            });
+          }
+          await setDoc(doc(db, "users", currentUid), {
+            forwarding_addresses: existingList
+          }, { merge: true });
+        } catch (fsErr) {
+          console.warn("Firestore forwarding address sync note:", fsErr);
+        }
+      }
+
+      setSuccessMsg(res.message || `Confirmation code sent to ${cleanEmail}`);
     } catch (err: any) {
       setError(err.message || 'Failed to add forwarding address');
     } finally {
@@ -306,15 +341,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsVerifyingForward(true);
     setError(null);
     setSuccessMsg(null);
+    const cleanEmail = pendingForwardVerifyEmail.toLowerCase().trim();
+    const cleanCode = forwardCodeInput.trim();
     try {
-      await verifyForwardingAddress(pendingForwardVerifyEmail, forwardCodeInput.trim());
+      // 1. Try server verification
+      let verifiedOnServer = false;
+      try {
+        await verifyForwardingAddress(cleanEmail, cleanCode);
+        verifiedOnServer = true;
+      } catch (srvErr: any) {
+        console.warn("Backend forwarding verify note:", srvErr.message);
+      }
+
+      // 2. Persist & Verify in Firestore
+      const currentUid = user?.id || (user as any)?.uid;
+      if (currentUid) {
+        const userSnap = await getDoc(doc(db, "users", currentUid));
+        let list: ForwardingAddress[] = userSnap.exists() ? (userSnap.data().forwarding_addresses || []) : [];
+        const target = list.find(a => a.email.toLowerCase() === cleanEmail);
+        if (target) {
+          if (target.verification_code && target.verification_code !== cleanCode && !verifiedOnServer) {
+            throw new Error('Invalid confirmation code');
+          }
+          target.verified = true;
+          delete target.verification_code;
+        } else {
+          list.push({
+            email: cleanEmail,
+            verified: true,
+            added_at: new Date().toISOString()
+          });
+        }
+        await setDoc(doc(db, "users", currentUid), {
+          forwarding_addresses: list,
+          forwarding_email: cleanEmail,
+          forwarding_enabled: true,
+          forwarding: {
+            enabled: true,
+            forwardTo: cleanEmail,
+            keepCopy: forwardAction === 'keep'
+          }
+        }, { merge: true });
+      }
+
       setForwardStep('idle');
       setNewForwardEmail('');
       setForwardCodeInput('');
-      setSelectedForwardEmail(pendingForwardVerifyEmail);
+      setSelectedForwardEmail(cleanEmail);
       setIsForwardingEnabled(true);
       await loadForwardingSettings();
-      setSuccessMsg(`Verified ${pendingForwardVerifyEmail} successfully! You can now enable forwarding.`);
+      setSuccessMsg(`Verified ${cleanEmail} successfully! You can now enable forwarding.`);
     } catch (err: any) {
       setError(err.message || 'Invalid confirmation code');
     } finally {
@@ -337,12 +413,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       // 3. Save to Firestore users/{uid}.forwarding = {enabled, forwardTo, keepCopy: true}
       if (currentUid) {
-        await updateDoc(doc(db, "users", currentUid), {
+        await setDoc(doc(db, "users", currentUid), {
           forwarding: forwardingObj,
           forwarding_enabled: isForwardingEnabled,
           forwarding_email: targetForwardTo,
           forwarding_action: forwardAction
-        });
+        }, { merge: true });
       }
 
       // Also notify backend server
@@ -368,6 +444,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setError(err.message || 'Failed to update forwarding settings');
     } finally {
       setIsSavingForwardSettings(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPasswordInput || newPasswordInput.length < 6) {
+      setError('New password must be at least 6 characters long');
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      setError('New passwords do not match');
+      return;
+    }
+    setIsChangingPassword(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      try {
+        await firebaseChangePassword(newPasswordInput);
+      } catch (fbErr: any) {
+        console.warn("Firebase password change note:", fbErr.message);
+      }
+      await changeUserPassword({
+        currentPassword: currentPasswordInput,
+        newPassword: newPasswordInput
+      });
+      setCurrentPasswordInput('');
+      setNewPasswordInput('');
+      setConfirmPasswordInput('');
+      setSuccessMsg('Password changed successfully! Your account is now secured with your new password.');
+    } catch (err: any) {
+      setError(err.message || 'Failed to change password');
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -932,6 +1042,62 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   Save Recovery Details
                 </button>
+              </div>
+
+              {/* Change Password Section */}
+              <div className="p-4 bg-white/5 border border-white/10 rounded-2xl space-y-3">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-[#FF8C42]" />
+                  <h4 className="text-xs font-bold text-white">Change Password</h4>
+                </div>
+                <p className="text-zinc-400 text-[11px]">
+                  Ensure your GoldMailer account uses a strong, unique password with at least 6 characters.
+                </p>
+                <form onSubmit={handleChangePassword} className="space-y-3 pt-1">
+                  <div>
+                    <label className="block text-zinc-400 text-[11px] mb-1">Current Password (Optional if newly logged in)</label>
+                    <input
+                      type="password"
+                      value={currentPasswordInput}
+                      onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                      placeholder="Enter current password"
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00] placeholder-zinc-600 text-xs"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-zinc-400 text-[11px] mb-1">New Password</label>
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={newPasswordInput}
+                        onChange={(e) => setNewPasswordInput(e.target.value)}
+                        placeholder="At least 6 characters"
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00] placeholder-zinc-600 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-zinc-400 text-[11px] mb-1">Confirm New Password</label>
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={confirmPasswordInput}
+                        onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                        placeholder="Confirm new password"
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-[#FF6A00] placeholder-zinc-600 text-xs"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isChangingPassword || !newPasswordInput}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6A00] to-[#FF8C42] hover:opacity-90 disabled:opacity-50 text-white font-bold text-xs cursor-pointer shadow"
+                  >
+                    {isChangingPassword ? 'Saving New Password...' : 'Save New Password'}
+                  </button>
+                </form>
               </div>
             </div>
           )}

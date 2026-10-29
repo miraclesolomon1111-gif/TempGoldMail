@@ -137,6 +137,26 @@ export const AuthWizardModal: React.FC<AuthWizardModalProps> = ({
     setMode(initialMode);
     if (initialResetToken) setResetTokenVal(initialResetToken);
     if (initialResetEmail) setResetEmailVal(initialResetEmail);
+
+    if (!initialResetToken && typeof window !== 'undefined') {
+      try {
+        const hash = window.location.hash || '';
+        const search = window.location.search || '';
+        let foundToken = new URLSearchParams(search).get('token') || '';
+        let foundEmail = new URLSearchParams(search).get('email') || '';
+        if (!foundToken && hash.includes('?')) {
+          const hashParams = new URLSearchParams(hash.substring(hash.indexOf('?')));
+          foundToken = hashParams.get('token') || '';
+          if (!foundEmail) foundEmail = hashParams.get('email') || '';
+        }
+        if (foundToken) {
+          setResetTokenVal(foundToken);
+          setMode('reset');
+        }
+        if (foundEmail) setResetEmailVal(foundEmail);
+      } catch {}
+    }
+
     if (!isOpen) {
       setStep(1);
       setError(null);

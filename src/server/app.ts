@@ -21,7 +21,7 @@ import {
   where,
   getDocs
 } from 'firebase/firestore';
-import { db, StoredSettings, StoredConnectedEmail, StoredConnectedEmailVerification, StoredEmail } from './db';
+import { db, StoredSettings, StoredConnectedEmail, StoredConnectedEmailVerification } from './db';
 import { fetchEmailsFromImap, extractCleanAddress } from './imapService';
 import {
   StoredSMS,
@@ -1365,16 +1365,14 @@ export function extractCleanEmail(input: any): string {
 export function emailMatchesTarget(fieldVal: any, targetEmail: string): boolean {
   if (!targetEmail) return false;
   const cleanTarget = targetEmail.trim().toLowerCase();
-  const targetPrefix = cleanTarget.replace(/@.*$/, '');
   const addresses = getAllEmailAddresses(fieldVal);
   for (const addr of addresses) {
     const cleanAddr = addr.trim().toLowerCase();
-    if (
-      cleanAddr === cleanTarget ||
-      cleanAddr === targetPrefix ||
-      cleanAddr === `${targetPrefix}@goldmailer.xyz` ||
-      (cleanTarget.endsWith('@goldmailer.xyz') && cleanAddr.replace(/@.*$/, '') === targetPrefix)
-    ) {
+    if (cleanAddr === cleanTarget) {
+      return true;
+    }
+    // Also match if cleanAddr is plain username representing @goldmailer.xyz
+    if (!cleanAddr.includes('@') && `${cleanAddr}@goldmailer.xyz` === cleanTarget) {
       return true;
     }
   }
@@ -2622,9 +2620,41 @@ app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
       success: true,
       message: `Password reset link dispatched to linked recovery email (${maskedRecovery}).`,
       recovery_email: maskedRecovery,
-      reset_url: resetUrl,
-      reset_token: resetToken,
       sent_via: sentVia
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Change Password: authenticated user changes their password
+app.post('/api/auth/change-password', async (req: Request, res: Response) => {
+  try {
+    ensureDataLoaded();
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { current_password, new_password } = req.body;
+    if (!new_password || new_password.trim().length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    if (current_password && user.password_hash) {
+      const match = await bcrypt.compare(current_password, user.password_hash);
+      if (!match) {
+        return res.status(400).json({ error: 'Current password does not match' });
+      }
+    }
+
+    user.password_hash = bcrypt.hashSync(new_password.trim(), 10);
+    await db.updateAccount(user.id, {
+      password_hash: user.password_hash
+    });
+    saveData();
+
+    return res.json({
+      success: true,
+      message: 'Password changed successfully!'
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -3426,7 +3456,7 @@ async function forwardIncomingEmailIfNeeded(email: StoredEmail): Promise<boolean
       return false;
     }
 
-    console.log(`🚀 [AUTO-FORWARD] Forwarding incoming email "${email.subject}" (${email.id}) from ${user.email} -> ${forwardTo}...`);
+    console.log(`🚀 [AUTO-FORWARD] Forwarding incoming email "${email.subject}" (${email.id}) from ${user?.email || recipientRaw} -> ${forwardTo}...`);
 
     const forwardSubject = email.subject?.startsWith('Fwd:') ? email.subject : `Fwd: ${email.subject || '(No Subject)'}`;
     const headerDetails = `---------- Forwarded message ---------
@@ -3502,7 +3532,7 @@ To: ${email.recipient}
     (email as any).forwarded_to = forwardTo;
 
     // Apply Gmail-style forwarding action on original copy:
-    const action = user.forwarding_action || 'keep';
+    const action = user?.forwarding_action || 'keep';
     if (action === 'read') {
       email.is_read = true;
     } else if (action === 'archive') {
@@ -5440,6 +5470,9 @@ const getAppUrl = (req?: Request): string => {
 
 const getUserIdFromReq = (req: Request): string => {
   ensureDataLoaded();
+  const explicitUid = (req.headers['x-user-id'] as string) || '';
+  if (explicitUid) return explicitUid.trim();
+
   const authHeader = req.headers.authorization;
   if (authHeader) {
     const token = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -5449,6 +5482,12 @@ const getUserIdFromReq = (req: Request): string => {
       const u = goldUsers.find(gu => gu.email && gu.email.toLowerCase() === decoded.email.toLowerCase());
       if (u) return u.id;
       return decoded.email;
+    }
+    // Direct UID token from Firebase Auth
+    if (token && token.length > 5 && !token.includes('.')) {
+      const u = goldUsers.find(gu => gu.id === token || (gu.email && gu.email.toLowerCase() === token.toLowerCase()));
+      if (u) return u.id;
+      return token;
     }
   }
   const cookies = parseCookies(req);
@@ -6105,13 +6144,45 @@ const getAuthenticatedUser = (req: Request): StoredGoldUser | null => {
       const u = goldUsers.find(gu => gu.id === decoded.id || (gu.email && decoded.email && gu.email.toLowerCase() === decoded.email.toLowerCase()));
       if (u) return u;
     }
+    // Check if token itself matches user ID
+    if (token) {
+      const u = goldUsers.find(gu => gu.id === token || (gu.email && gu.email.toLowerCase() === token.toLowerCase()));
+      if (u) return u;
+    }
   }
-  const activeEmail = (req.query.email as string) || (req.headers['x-active-email'] as string);
-  if (activeEmail) {
-    const u = goldUsers.find(gu => gu.email.toLowerCase() === activeEmail.toLowerCase());
-    if (u) return u;
+  const activeEmail = (req.query.email as string) || (req.headers['x-active-email'] as string) || (req.headers['x-user-email'] as string);
+  if (activeEmail && activeEmail.includes('@')) {
+    const cleanEmail = activeEmail.toLowerCase().trim();
+    const existing = goldUsers.find(gu => gu.email.toLowerCase() === cleanEmail);
+    if (existing) return existing;
+
+    const cleanUsername = cleanEmail.replace(/@.*$/, '');
+    const newUser: StoredGoldUser = {
+      id: userId || ('usr_' + cleanUsername),
+      email: cleanEmail,
+      username: cleanUsername,
+      password_hash: '',
+      first_name: cleanUsername.charAt(0).toUpperCase() + cleanUsername.slice(1),
+      last_name: '',
+      dob: '1998-05-15',
+      gender: 'Prefer not to say',
+      phone: '',
+      two_factor_enabled: false,
+      backup_codes: [],
+      role: cleanEmail === 'miracle@goldmailer.xyz' ? 'admin' : 'user',
+      created_at: new Date().toISOString(),
+      is_banned: false,
+      storage_used_bytes: 0,
+      storage_limit_bytes: 15 * 1024 * 1024 * 1024,
+      forwarding_enabled: false,
+      forwarding_email: '',
+      forwarding_addresses: []
+    };
+    goldUsers.push(newUser);
+    db.upsertAccount(newUser);
+    return newUser;
   }
-  return goldUsers[0] || null;
+  return null;
 };
 
 // 1. Get Forwarding Settings

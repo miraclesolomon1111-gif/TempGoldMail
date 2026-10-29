@@ -23,7 +23,11 @@ import {
   batchEmailAction,
   syncClientAccounts,
   fetchCurrentActivity,
-  getHeaders
+  getHeaders,
+  getDeletedEmailIds,
+  setDeletedEmailId,
+  getTrashedEmailIds,
+  setTrashedEmailId
 } from './lib/api';
 
 import { useAuth } from './context/AuthContext.tsx';
@@ -391,8 +395,15 @@ export default function App() {
 
       // Reset Password route from email link
       if (hash.startsWith('#reset-password') || path === '/reset-password') {
-        const rawToken = url.searchParams.get('token') || '';
-        const rawEmail = url.searchParams.get('email') || '';
+        let rawToken = url.searchParams.get('token') || '';
+        let rawEmail = url.searchParams.get('email') || '';
+        if (!rawToken && hash.includes('?')) {
+          try {
+            const hashParams = new URLSearchParams(hash.substring(hash.indexOf('?')));
+            rawToken = hashParams.get('token') || '';
+            if (!rawEmail) rawEmail = hashParams.get('email') || '';
+          } catch {}
+        }
         setResetToken(rawToken);
         setResetEmail(rawEmail);
         setAuthMode('reset');
@@ -542,14 +553,15 @@ export default function App() {
           });
         });
 
-        list.sort((a, b) => new Date(b.date || b.received_at || 0).getTime() - new Date(a.date || a.received_at || 0).getTime());
-        if (list.length > 0) {
-          setAllEmails((prev) => {
-            const merged = deduplicateEmailList([...list, ...prev]);
-            setCachedEmails(activeEmail, merged);
-            return merged;
-          });
-        }
+        const deletedIds = getDeletedEmailIds();
+        const trashedIds = getTrashedEmailIds();
+        const cleaned: EmailMessage[] = list
+          .filter(e => !deletedIds.has(e.id))
+          .map(e => (trashedIds.has(e.id) ? ({ ...e, folder: 'trash' as MailFolder, status: 'trash' as const } as EmailMessage) : e));
+
+        cleaned.sort((a, b) => new Date(b.date || b.received_at || 0).getTime() - new Date(a.date || a.received_at || 0).getTime());
+        setAllEmails(cleaned);
+        setCachedEmails(activeEmail, cleaned);
         setIsLoadingEmails(false);
       },
       (err) => {
@@ -570,12 +582,33 @@ export default function App() {
         fetchEmails(emailToFetch, 'all').catch(() => []),
         fetchDrafts().catch(() => [])
       ]);
-      if (Array.isArray(emailList) && emailList.length > 0) {
-        setAllEmails((prev) => {
-          const merged = deduplicateEmailList([...emailList, ...prev]);
-          setCachedEmails(emailToFetch, merged);
-          return merged;
-        });
+      if (Array.isArray(emailList)) {
+        const deletedIds = getDeletedEmailIds();
+        const trashedIds = getTrashedEmailIds();
+        const clean: EmailMessage[] = emailList
+          .filter(e => !deletedIds.has(e.id))
+          .filter(e => {
+            const r = (e.recipient || e.to_email || e.to || '').toLowerCase();
+            const s = (e.sender || e.from_email || e.from || '').toLowerCase();
+            const cleanTarget = emailToFetch.toLowerCase();
+            return r === cleanTarget || s === cleanTarget;
+          })
+          .map(e => (trashedIds.has(e.id) ? ({ ...e, folder: 'trash' as MailFolder, status: 'trash' as const } as EmailMessage) : e));
+
+        if (clean.length > 0) {
+          setAllEmails((prev) => {
+            const map = new Map<string, EmailMessage>();
+            for (const item of clean) map.set(item.id, item);
+            for (const item of prev) {
+              if (!deletedIds.has(item.id) && !map.has(item.id)) {
+                map.set(item.id, item);
+              }
+            }
+            const merged = Array.from(map.values());
+            setCachedEmails(emailToFetch, merged);
+            return merged;
+          });
+        }
       }
       if (Array.isArray(draftList)) {
         setDrafts(draftList);
@@ -786,10 +819,9 @@ export default function App() {
 
   // Email Move to trash (instant optimistic update + permanent Firestore update)
   const handleMoveToTrash = async (id: string) => {
+    setTrashedEmailId(id, true);
     setAllEmails((prev) =>
-      deduplicateEmailList(
-        prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
-      )
+      prev.map((m) => (m.id === id ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
     );
     setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'trash', status: 'trash' } : prev));
     try {
@@ -800,10 +832,9 @@ export default function App() {
 
   // Restore email from trash back to Inbox
   const handleRestoreEmail = async (id: string) => {
+    setTrashedEmailId(id, false);
     setAllEmails((prev) =>
-      deduplicateEmailList(
-        prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
-      )
+      prev.map((m) => (m.id === id ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
     );
     setSelectedEmail((prev) => (prev && prev.id === id ? { ...prev, folder: 'primary', status: 'inbox' } : prev));
     try {
@@ -815,9 +846,7 @@ export default function App() {
   // Email Move to spam
   const handleMoveToSpam = async (id: string) => {
     setAllEmails((prev) =>
-      deduplicateEmailList(
-        prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
-      )
+      prev.map((m) => (m.id === id ? { ...m, folder: 'spam' as MailFolder } : m))
     );
     setSelectedEmail(null);
     try {
@@ -828,7 +857,9 @@ export default function App() {
 
   // Delete email permanently
   const handleDeleteEmail = async (id: string) => {
-    setAllEmails((prev) => deduplicateEmailList(prev.filter((m) => m.id !== id)));
+    setDeletedEmailId(id);
+    setTrashedEmailId(id, false);
+    setAllEmails((prev) => prev.filter((m) => m.id !== id));
     setSelectedEmail(null);
     try {
       await deleteEmailInFirestore(id, true);
@@ -839,10 +870,9 @@ export default function App() {
   // Batch move to trash
   const handleBatchMoveToTrash = async (ids: string[]) => {
     const idSet = new Set(ids);
+    ids.forEach(id => setTrashedEmailId(id, true));
     setAllEmails((prev) =>
-      deduplicateEmailList(
-        prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
-      )
+      prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'trash' as MailFolder, status: 'trash' } : m))
     );
     try {
       await Promise.all(ids.map(id => deleteEmailInFirestore(id, false)));
@@ -853,7 +883,11 @@ export default function App() {
   // Batch delete permanently
   const handleBatchDeletePermanently = async (ids: string[]) => {
     const idSet = new Set(ids);
-    setAllEmails((prev) => deduplicateEmailList(prev.filter((m) => !idSet.has(m.id))));
+    ids.forEach(id => {
+      setDeletedEmailId(id);
+      setTrashedEmailId(id, false);
+    });
+    setAllEmails((prev) => prev.filter((m) => !idSet.has(m.id)));
     try {
       await Promise.all(ids.map(id => deleteEmailInFirestore(id, true)));
       await batchEmailAction(ids, 'delete_permanent').catch(() => {});
@@ -863,10 +897,9 @@ export default function App() {
   // Batch restore
   const handleBatchRestore = async (ids: string[]) => {
     const idSet = new Set(ids);
+    ids.forEach(id => setTrashedEmailId(id, false));
     setAllEmails((prev) =>
-      deduplicateEmailList(
-        prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
-      )
+      prev.map((m) => (idSet.has(m.id) ? { ...m, folder: 'primary' as MailFolder, status: 'inbox' } : m))
     );
     try {
       await Promise.all(ids.map(id => updateEmailInFirestore(id, { folder: 'primary' })));
@@ -881,8 +914,12 @@ export default function App() {
     const confirmEmpty = window.confirm ? window.confirm('Empty Trash? All messages in Trash will be permanently deleted.') : true;
     if (!confirmEmpty) return;
 
+    trashEmails.forEach(e => {
+      setDeletedEmailId(e.id);
+      setTrashedEmailId(e.id, false);
+    });
     setAllEmails((prev) =>
-      deduplicateEmailList(prev.filter((m) => m.folder !== 'trash' && (m as any).status !== 'trash'))
+      prev.filter((m) => m.folder !== 'trash' && (m as any).status !== 'trash')
     );
     try {
       await Promise.all(trashEmails.map(e => deleteEmailInFirestore(e.id, true)));
@@ -940,7 +977,8 @@ export default function App() {
       setActiveEmail(email);
       setStoredActiveEmail(email);
     }
-    // Instant cache switch
+    // Reset selection and switch to target account's emails
+    setSelectedEmail(null);
     const cached = getCachedEmails(targetEmail);
     setAllEmails(cached);
     // Fetch fresh emails for target account

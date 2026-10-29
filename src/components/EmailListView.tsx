@@ -532,7 +532,7 @@ export const EmailListView: React.FC<EmailListViewProps> = ({
                         </button>
                       </div>
                     ) : (
-                      <div className="hidden sm:group-hover:flex items-center">
+                      <div className="flex sm:hidden sm:group-hover:flex items-center">
                         <button
                           type="button"
                           onClick={(evt) => {
