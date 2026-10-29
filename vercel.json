@@ -26,11 +26,11 @@
     },
     {
       "source": "/api/(.*)",
-      "destination": "/api"
+      "destination": "/api?__route=$1"
     },
     {
       "source": "/oauth/(.*)",
-      "destination": "/api"
+      "destination": "/api?__route=oauth/$1"
     },
     {
       "source": "/(.*)",

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Shield,
   FileText,
@@ -48,6 +48,12 @@ export const HeroLegalPage: React.FC<HeroLegalPageProps> = ({
   user
 }) => {
   const [activeTab, setActiveTab] = useState<'hero' | 'terms' | 'privacy'>(initialSection);
+
+  useEffect(() => {
+    if (initialSection) {
+      setActiveTab(initialSection);
+    }
+  }, [initialSection]);
 
   const handlePrimaryGetStarted = () => {
     if (onGetStarted) {

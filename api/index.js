@@ -2467,11 +2467,41 @@ app.get(["/privacy", "/privacy.html", "/api/privacy", "/api/privacy.html"], (_re
   return res.redirect("/#privacy");
 });
 app.use((req, _res, next) => {
+  let url = req.url || "/";
+  if (url.startsWith("/api/") || url.startsWith("/oauth/")) {
+    return next();
+  }
+  if (req.originalUrl && (req.originalUrl.startsWith("/api/") || req.originalUrl.startsWith("/oauth/"))) {
+    req.url = req.originalUrl;
+    return next();
+  }
+  try {
+    const parsed = new URL(url, "http://localhost");
+    const routeParam = parsed.searchParams.get("__route");
+    if (routeParam) {
+      parsed.searchParams.delete("__route");
+      const cleanRoute = routeParam.startsWith("/") ? routeParam : "/" + routeParam;
+      const fullPath = cleanRoute.startsWith("/api") || cleanRoute.startsWith("/oauth") ? cleanRoute : "/api" + cleanRoute;
+      const search = parsed.searchParams.toString();
+      req.url = fullPath + (search ? "?" + search : "");
+      return next();
+    }
+  } catch {
+  }
   const matchedPath = req.headers["x-matched-path"] || req.headers["x-now-matched-path"];
-  if (matchedPath && typeof matchedPath === "string" && (req.url === "/api" || req.url === "/" || !req.url.startsWith("/api/"))) {
+  if (matchedPath && typeof matchedPath === "string" && matchedPath !== "/api" && matchedPath !== "/api/") {
     req.url = matchedPath.startsWith("/") ? matchedPath : "/" + matchedPath;
-  } else if (req.url && !req.url.startsWith("/api") && !req.url.startsWith("/oauth") && !req.url.startsWith("/googleaf6d742afb618102.html") && !req.url.startsWith("/privacy")) {
-    req.url = "/api" + (req.url.startsWith("/") ? req.url : "/" + req.url);
+    return next();
+  }
+  const routeMatches = req.headers["x-now-route-matches"];
+  if (routeMatches && typeof routeMatches === "string") {
+    const m = routeMatches.match(/1=([^&;]+)/);
+    if (m) {
+      const decoded = decodeURIComponent(m[1]);
+      const clean = decoded.startsWith("/") ? decoded : "/" + decoded;
+      req.url = clean.startsWith("/api") || clean.startsWith("/oauth") ? clean : "/api" + clean;
+      return next();
+    }
   }
   next();
 });
@@ -9427,13 +9457,46 @@ app.delete("/api/phone/calls", (req, res) => {
 });
 
 // src/server/apiEntry.ts
-function handler(req, res) {
-  const matchedPath = req.headers?.["x-matched-path"] || req.headers?.["x-now-route-matches"];
-  if (matchedPath && typeof matchedPath === "string" && (req.url === "/api" || req.url === "/" || !req.url.startsWith("/api/"))) {
-    req.url = matchedPath;
+function resolveVercelUrl(req) {
+  let url = req.url || "/";
+  if (url.startsWith("/api/") || url.startsWith("/oauth/")) {
+    return url;
   }
+  if (req.originalUrl && (req.originalUrl.startsWith("/api/") || req.originalUrl.startsWith("/oauth/"))) {
+    return req.originalUrl;
+  }
+  try {
+    const parsed = new URL(url, "http://localhost");
+    const routeParam = parsed.searchParams.get("__route");
+    if (routeParam) {
+      parsed.searchParams.delete("__route");
+      const cleanRoute = routeParam.startsWith("/") ? routeParam : "/" + routeParam;
+      const fullPath = cleanRoute.startsWith("/api") || cleanRoute.startsWith("/oauth") ? cleanRoute : "/api" + cleanRoute;
+      const search = parsed.searchParams.toString();
+      return fullPath + (search ? "?" + search : "");
+    }
+  } catch {
+  }
+  const matchedPath = req.headers?.["x-matched-path"];
+  if (matchedPath && typeof matchedPath === "string" && matchedPath !== "/api" && matchedPath !== "/api/") {
+    return matchedPath;
+  }
+  const routeMatches = req.headers?.["x-now-route-matches"];
+  if (routeMatches && typeof routeMatches === "string") {
+    const m = routeMatches.match(/1=([^&;]+)/);
+    if (m) {
+      const decoded = decodeURIComponent(m[1]);
+      const clean = decoded.startsWith("/") ? decoded : "/" + decoded;
+      return clean.startsWith("/api") || clean.startsWith("/oauth") ? clean : "/api" + clean;
+    }
+  }
+  return url;
+}
+function handler(req, res) {
+  req.url = resolveVercelUrl(req);
   return app(req, res);
 }
 export {
-  handler as default
+  handler as default,
+  resolveVercelUrl
 };

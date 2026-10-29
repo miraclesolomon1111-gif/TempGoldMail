@@ -350,13 +350,13 @@ export default function App() {
         setViewMode('hero');
         setHeroInitialSection('hero');
       } else if (path === '/login' || path === '/signin' || hash === '#login' || hash === '#signin') {
-        if (!getStoredUser()) {
+        if (!getStoredUser() && !authUser) {
           setViewMode('hero');
           setAuthMode('login');
           setIsAuthOpen(true);
         }
       } else if (path === '/signup' || path === '/register' || hash === '#signup' || hash === '#register') {
-        if (!getStoredUser()) {
+        if (!getStoredUser() && !authUser) {
           setViewMode('hero');
           setAuthMode('register');
           setIsAuthOpen(true);
@@ -372,7 +372,7 @@ export default function App() {
         hash.startsWith('#inbox') ||
         hash.startsWith('#phone')
       ) {
-        if (getStoredUser()) {
+        if (getStoredUser() || authUser) {
           setViewMode('app');
         } else {
           setViewMode('hero');
@@ -381,7 +381,7 @@ export default function App() {
         }
       } else {
         // Authenticated users stay in app dashboard (never bounce back to hero)
-        if (getStoredUser()) {
+        if (getStoredUser() || authUser) {
           setViewMode('app');
         } else {
           setViewMode('hero');
@@ -543,7 +543,13 @@ export default function App() {
         });
 
         list.sort((a, b) => new Date(b.date || b.received_at || 0).getTime() - new Date(a.date || a.received_at || 0).getTime());
-        setAllEmails(list);
+        if (list.length > 0) {
+          setAllEmails((prev) => {
+            const merged = deduplicateEmailList([...list, ...prev]);
+            setCachedEmails(activeEmail, merged);
+            return merged;
+          });
+        }
         setIsLoadingEmails(false);
       },
       (err) => {
@@ -555,15 +561,29 @@ export default function App() {
     return () => unsubscribe();
   }, [firebaseUser?.uid, user?.id, activeEmail]);
 
-  // Load drafts
-  const loadMailData = useCallback(async (_targetEmail?: string, _silent = false) => {
+  // Load emails and drafts for active email (both API & cache)
+  const loadMailData = useCallback(async (targetEmail?: string, silent = false) => {
+    const emailToFetch = targetEmail || activeEmail;
+    if (!emailToFetch) return;
     try {
-      const draftList = await fetchDrafts().catch(() => []);
+      const [emailList, draftList] = await Promise.all([
+        fetchEmails(emailToFetch, 'all').catch(() => []),
+        fetchDrafts().catch(() => [])
+      ]);
+      if (Array.isArray(emailList) && emailList.length > 0) {
+        setAllEmails((prev) => {
+          const merged = deduplicateEmailList([...emailList, ...prev]);
+          setCachedEmails(emailToFetch, merged);
+          return merged;
+        });
+      }
       if (Array.isArray(draftList)) {
         setDrafts(draftList);
       }
-    } catch {}
-  }, []);
+    } catch {} finally {
+      if (!silent) setIsLoadingEmails(false);
+    }
+  }, [activeEmail]);
 
   useEffect(() => {
     loadMailData(activeEmail);
@@ -632,7 +652,7 @@ export default function App() {
           }
           if (isMounted) {
             clearTimeout(reconnectTimeout);
-            reconnectTimeout = setTimeout(connectSSE, 2000);
+            reconnectTimeout = setTimeout(connectSSE, 10000);
           }
         };
       } catch {}
@@ -1065,7 +1085,8 @@ export default function App() {
     );
   });
 
-  if (authLoading) {
+  // Only show minimal loader if user explicitly requested webmail without any cached session
+  if (authLoading && !user && !getStoredUser() && viewMode === 'app') {
     return (
       <div className={`min-h-screen flex flex-col items-center justify-center font-sans ${darkMode ? 'bg-[#121214] text-white' : 'bg-[#faf8f6] text-zinc-900'}`}>
         <div className="flex flex-col items-center space-y-3.5">
