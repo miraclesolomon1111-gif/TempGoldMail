@@ -933,9 +933,11 @@ export const ensureDataLoaded = () => {
         seenEmailIds.add(ge.id);
 
         const msgId = (ge as any).messageId || ge.raw?.messageId;
+        const isSent = ge.folder === 'sent' || ge.status === 'sent';
+        const folder = ge.folder || 'inbox';
         const fingerprint = msgId
-          ? `msgid:${msgId}`
-          : `${(ge.from_email || ge.sender || '').toLowerCase()}|${(ge.to_email || ge.recipient || '').toLowerCase()}|${(ge.subject || '').trim().toLowerCase()}|${(ge.received_at || ge.created_at || '').slice(0, 16)}`;
+          ? `msgid:${msgId}|sent:${isSent}|uid:${ge.user_id || ''}`
+          : `${(ge.from_email || ge.sender || '').toLowerCase()}|${(ge.to_email || ge.recipient || '').toLowerCase()}|${(ge.subject || '').trim().toLowerCase()}|${(ge.received_at || ge.created_at || '').slice(0, 16)}|folder:${folder}|sent:${isSent}|uid:${ge.user_id || ''}`;
 
         if (fingerprint && seenEmailFingerprints.has(fingerprint)) continue;
         if (fingerprint) seenEmailFingerprints.add(fingerprint);

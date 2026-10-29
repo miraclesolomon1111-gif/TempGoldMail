@@ -1078,8 +1078,20 @@ class GoldDatabase {
     const targetTime = new Date(email.received_at || email.created_at || 0).getTime();
     const targetBodyLen = (email.body_text || email.text || email.body || '').replace(/<[^>]+>/g, '').trim().length;
 
+    const isTargetSent = email.folder === 'sent' || email.status === 'sent';
+    const isTargetTrash = email.folder === 'trash' || email.status === 'trash';
+
     const existingIdx = this.emails.findIndex(e => {
       if (e.id === email.id) return true;
+
+      const isESent = e.folder === 'sent' || e.status === 'sent';
+      const isETrash = e.folder === 'trash' || e.status === 'trash';
+
+      // Never deduplicate an email across different states (sent vs inbox vs trash)
+      if (isTargetSent !== isESent || isTargetTrash !== isETrash) return false;
+
+      // If user_id is explicitly specified on both and differs, they belong to different accounts
+      if (email.user_id && e.user_id && email.user_id !== e.user_id) return false;
 
       const eMsgId = ((e as any).messageId || e.raw?.messageId || '').trim().toLowerCase().replace(/^[<]+|[>]+$/g, '');
       if (targetMsgId && eMsgId && targetMsgId === eMsgId) return true;

@@ -730,8 +730,14 @@ var GoldDatabase = class {
     const targetSub = (email.subject || "").trim().toLowerCase().replace(/^(re|fwd|fw):\s*/i, "");
     const targetTime = new Date(email.received_at || email.created_at || 0).getTime();
     const targetBodyLen = (email.body_text || email.text || email.body || "").replace(/<[^>]+>/g, "").trim().length;
+    const isTargetSent = email.folder === "sent" || email.status === "sent";
+    const isTargetTrash = email.folder === "trash" || email.status === "trash";
     const existingIdx = this.emails.findIndex((e) => {
       if (e.id === email.id) return true;
+      const isESent = e.folder === "sent" || e.status === "sent";
+      const isETrash = e.folder === "trash" || e.status === "trash";
+      if (isTargetSent !== isESent || isTargetTrash !== isETrash) return false;
+      if (email.user_id && e.user_id && email.user_id !== e.user_id) return false;
       const eMsgId = (e.messageId || e.raw?.messageId || "").trim().toLowerCase().replace(/^[<]+|[>]+$/g, "");
       if (targetMsgId && eMsgId && targetMsgId === eMsgId) return true;
       const eFrom = (e.from_email || e.sender || "").trim().toLowerCase();
@@ -2907,7 +2913,9 @@ var ensureDataLoaded = () => {
         if (seenEmailIds.has(ge.id)) continue;
         seenEmailIds.add(ge.id);
         const msgId = ge.messageId || ge.raw?.messageId;
-        const fingerprint = msgId ? `msgid:${msgId}` : `${(ge.from_email || ge.sender || "").toLowerCase()}|${(ge.to_email || ge.recipient || "").toLowerCase()}|${(ge.subject || "").trim().toLowerCase()}|${(ge.received_at || ge.created_at || "").slice(0, 16)}`;
+        const isSent = ge.folder === "sent" || ge.status === "sent";
+        const folder = ge.folder || "inbox";
+        const fingerprint = msgId ? `msgid:${msgId}|sent:${isSent}|uid:${ge.user_id || ""}` : `${(ge.from_email || ge.sender || "").toLowerCase()}|${(ge.to_email || ge.recipient || "").toLowerCase()}|${(ge.subject || "").trim().toLowerCase()}|${(ge.received_at || ge.created_at || "").slice(0, 16)}|folder:${folder}|sent:${isSent}|uid:${ge.user_id || ""}`;
         if (fingerprint && seenEmailFingerprints.has(fingerprint)) continue;
         if (fingerprint) seenEmailFingerprints.add(fingerprint);
         dedupedEmails.push(ge);
